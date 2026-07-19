@@ -155,7 +155,7 @@ Nq/
 | 3 | Feature Store | ✅ مكتملة |
 | 4 | النموذج التأسيسي | ✅ مكتملة (أساس + بنية تحتية) |
 | 5 | التمثيلات الكامنة | ✅ مكتملة |
-| 6 | الاختبار الإحصائي | ⏳ |
+| 6 | الاختبار الإحصائي | ✅ مكتملة |
 | 7 | مساعد البحث LLM | ⏳ |
 | 8 | المخرجات النهائية | ⏳ |
 
@@ -197,6 +197,7 @@ pytest --cov                 # اختبارات الوحدة + التسريب
   * `NextStatePredictor` — نموذج العالم التنبّئي (next-state).
   * `augment_windows` / `info_nce_loss` — التعلّم التبايني (contrastive).
 * `nq.states` — **حالات السوق / الأنظمة (Regimes)**: `KMeansRegimes` (تجميع حتمي fit-on-train)، `transition_matrix` و `dwell_times` (ديناميكية سببية)، `silhouette_score` (استقرار)، و `regime_summary` (تفسير) — بطوابع زمنية سليمة.
+* `nq.statistics` — **الاختبار الإحصائي**: `permutation_test` / `bootstrap_ci` / `moving_block_bootstrap_ci` (دلالة ومتانة)، `benjamini_hochberg` / `holm` / `bonferroni` (تصحيح التعدّد)، `sharpe_ratio` / `information_coefficient` / `t_statistic`، `regime_difference_test`، و `verify_hypotheses` (تقرير موحّد مصحّح).
 
 ## قواعد المساهمة (Contribution Rules)
 
