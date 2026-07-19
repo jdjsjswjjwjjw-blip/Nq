@@ -41,6 +41,10 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "PL", "NPY"]
 ignore = ["PLR0913"]  # allow explicit multi-arg scientific signatures
 
+[tool.ruff.lint.per-file-ignores]
+# الاختبارات تقارن بقيم متوقّعة حرفية (idiomatic)؛ لا داعي لثوابت مسمّاة لها.
+"tests/**" = ["PLR2004"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

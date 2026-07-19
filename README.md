@@ -150,7 +150,7 @@ Nq/
 | المحطة | الوصف | الحالة |
 |--------|-------|--------|
 | 0 | الأساسات والحوكمة | ✅ مكتملة |
-| 1 | استيعاب MBO + إعادة بناء الدفتر | ⏳ التالية |
+| 1 | استيعاب MBO + إعادة بناء الدفتر | ✅ مكتملة |
 | 2 | طبقة المحاكاة | ⏳ |
 | 3 | Feature Store | ⏳ |
 | 4 | النموذج التأسيسي | ⏳ |
@@ -179,6 +179,8 @@ pytest --cov                 # اختبارات الوحدة + التسريب
 * `nq.contracts` — عقد MBO والحقول الزمنية (`MBO_SCHEMA`, `validate_mbo_frame`).
 * `nq.core` — الحتمية (`seed_everything`) والترتيب السببي (`sort_causal`).
 * `nq.validation` — **أداة اختبار التسريب الزمني** (`detect_leakage_by_perturbation`, ...).
+* `nq.ingestion` — قارئ MBO تدفّقي (`load_mbo_frame`, `iter_mbo_batches`).
+* `nq.orderbook` — إعادة بناء الدفتر (`OrderBook`, `reconstruct`) وفحوص السلامة (`check_integrity`).
 
 ## قواعد المساهمة (Contribution Rules)
 
