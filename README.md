@@ -154,7 +154,7 @@ Nq/
 | 2 | طبقة المحاكاة | ✅ مكتملة |
 | 3 | Feature Store | ✅ مكتملة |
 | 4 | النموذج التأسيسي | ✅ مكتملة (أساس + بنية تحتية) |
-| 5 | التمثيلات الكامنة | ⏳ |
+| 5 | التمثيلات الكامنة | ✅ مكتملة |
 | 6 | الاختبار الإحصائي | ⏳ |
 | 7 | مساعد البحث LLM | ⏳ |
 | 8 | المخرجات النهائية | ⏳ |
@@ -196,6 +196,7 @@ pytest --cov                 # اختبارات الوحدة + التسريب
   * `mask_matrix` / `masked_reconstruction_error` — النمذجة المُقنّعة.
   * `NextStatePredictor` — نموذج العالم التنبّئي (next-state).
   * `augment_windows` / `info_nce_loss` — التعلّم التبايني (contrastive).
+* `nq.states` — **حالات السوق / الأنظمة (Regimes)**: `KMeansRegimes` (تجميع حتمي fit-on-train)، `transition_matrix` و `dwell_times` (ديناميكية سببية)، `silhouette_score` (استقرار)، و `regime_summary` (تفسير) — بطوابع زمنية سليمة.
 
 ## قواعد المساهمة (Contribution Rules)
 
