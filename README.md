@@ -156,7 +156,7 @@ Nq/
 | 4 | النموذج التأسيسي | ✅ مكتملة (أساس + بنية تحتية) |
 | 5 | التمثيلات الكامنة | ✅ مكتملة |
 | 6 | الاختبار الإحصائي | ✅ مكتملة |
-| 7 | مساعد البحث LLM | ⏳ |
+| 7 | مساعد البحث LLM | ✅ مكتملة (مؤسَّس على الأدلّة) |
 | 8 | المخرجات النهائية | ⏳ |
 
 ---
@@ -198,6 +198,7 @@ pytest --cov                 # اختبارات الوحدة + التسريب
   * `augment_windows` / `info_nce_loss` — التعلّم التبايني (contrastive).
 * `nq.states` — **حالات السوق / الأنظمة (Regimes)**: `KMeansRegimes` (تجميع حتمي fit-on-train)، `transition_matrix` و `dwell_times` (ديناميكية سببية)، `silhouette_score` (استقرار)، و `regime_summary` (تفسير) — بطوابع زمنية سليمة.
 * `nq.statistics` — **الاختبار الإحصائي**: `permutation_test` / `bootstrap_ci` / `moving_block_bootstrap_ci` (دلالة ومتانة)، `benjamini_hochberg` / `holm` / `bonferroni` (تصحيح التعدّد)، `sharpe_ratio` / `information_coefficient` / `t_statistic`، `regime_difference_test`، و `verify_hypotheses` (تقرير موحّد مصحّح).
+* `nq.research` — **مساعد البحث المُؤسَّس على الأدلّة**: `Evidence`/`EvidenceStore` (أدلّة قابلة للتتبّع)، `Finding`/`verify_finding` (بوابة "لا دليل مُختلَق")، و `ResearchAssistant` (مقارنة حالات، تقييم إشارات، توليد فرضيات، تخطيط، وكتابة تقارير موثّقة). واجهة `LanguageModel` لتوصيل LLM شرط مروره ببوابة التحقّق.
 
 ## قواعد المساهمة (Contribution Rules)
 
