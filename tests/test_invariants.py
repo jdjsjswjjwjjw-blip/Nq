@@ -105,9 +105,7 @@ def test_footprint_time_shift_invariance(spec: TradeSpec, k: int) -> None:
         "bucket_start"
     )
     assert base["delta"].to_list() == shifted["delta"].to_list()
-    assert [b + shift for b in base["bucket_start"].to_list()] == shifted[
-        "bucket_start"
-    ].to_list()
+    assert [b + shift for b in base["bucket_start"].to_list()] == shifted["bucket_start"].to_list()
 
 
 # --- Volume Profile ----------------------------------------------------------
