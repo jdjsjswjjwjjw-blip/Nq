@@ -205,16 +205,16 @@ pytest --cov                 # اختبارات الوحدة + التسريب
   * `auction_states` — حالات المزاد (توازن/تمدّد/دفاع ارتداد).
   * `cross_market_features` — **NQ↔MNQ** (Lead/Lag، تباعد، فشل تأكيد، مصيدة المتداولين).
 * `nq.features` — **مخزن الميزات point-in-time** (`FeatureStore`): توحيد مخرجات المحاكيات، استرجاع `as_of`، دمج `point_in_time_join`، إصدارات، وحفظ/قراءة Parquet.
-* `nq.models` — **النموذج التأسيسي ذاتي الإشراف** (أساس numpy، خالٍ من التسريب):
+* `nq.models` — **النموذج التأسيسي ذاتي الإشراف** + **`run_ssl_pipeline`** (خط SSL كامل مع تقرير):
   * `purged_walk_forward_split` — تقسيم زمني مع purge/embargo.
   * `build_sequences` / `CausalStandardScaler` — تقطيع سببي وتطبيع fit-on-train.
   * `PCAEncoder` (خلف `Encoder` Protocol) — تعلّم تمثيلي كامن.
   * `mask_matrix` / `masked_reconstruction_error` — النمذجة المُقنّعة.
   * `NextStatePredictor` — نموذج العالم التنبّئي (next-state).
   * `augment_windows` / `info_nce_loss` — التعلّم التبايني (contrastive).
+* `nq.research` — **مساعد البحث + المنسّق الموحّد**: `run_ssl_research_pipeline` (من `nq.research.orchestrator` — SSL + M9 خلفية + LLM/ألفا → تقرير شامل)، `Evidence`/`EvidenceStore`، `ResearchAssistant`، و `LanguageModel`.
 * `nq.states` — **حالات السوق / الأنظمة (Regimes)**: `KMeansRegimes` (تجميع حتمي fit-on-train)، `transition_matrix` و `dwell_times` (ديناميكية سببية)، `silhouette_score` (استقرار)، و `regime_summary` (تفسير) — بطوابع زمنية سليمة.
 * `nq.statistics` — **الاختبار الإحصائي**: `permutation_test` / `bootstrap_ci` / `moving_block_bootstrap_ci` (دلالة ومتانة)، `benjamini_hochberg` / `holm` / `bonferroni` (تصحيح التعدّد)، `sharpe_ratio` / `information_coefficient` / `t_statistic`، `regime_difference_test`، و `verify_hypotheses` (تقرير موحّد مصحّح).
-* `nq.research` — **مساعد البحث المُؤسَّس على الأدلّة**: `Evidence`/`EvidenceStore` (أدلّة قابلة للتتبّع)، `Finding`/`verify_finding` (بوابة "لا دليل مُختلَق")، و `ResearchAssistant` (مقارنة حالات، تقييم إشارات، توليد فرضيات، تخطيط، وكتابة تقارير موثّقة). واجهة `LanguageModel` لتوصيل LLM شرط مروره ببوابة التحقّق.
 * `nq.alpha` — **المخرجات النهائية / إشارات الألفا**: `align_forward_returns` / `evaluate_signal` (IC + دلالة + Sharpe)، `screen_signals` (فرز مع تصحيح التعدّد)، `run_research_pipeline` (خط كامل من MBO الخام إلى إشارات ألفا)، و `run_full_research_pipeline` (تغطية + ألفا).
 * `nq.coverage` — **مراقب التغطية البنيوية (المحطة 9)**: `mbo_window_descriptors` (واصفات MBO كافية)، `distance_correlation` / `max_axis_dependence`، مقاييس `measure_mfig` / `measure_cer` / `measure_psg` / `measure_crs` / `measure_lori` / `measure_qduf`، `run_coverage_pipeline` (من MBO خام إلى تقرير عمى بنيوي موثّق)، و `CoverageAlert`/`CoverageReport`.
 

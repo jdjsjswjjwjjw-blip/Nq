@@ -47,14 +47,15 @@ def discover_alpha_from_features(
     alpha: float = 0.05,
     n_permutations: int = 2000,
     rng: np.random.Generator | None = None,
+    assistant: ResearchAssistant | None = None,
 ) -> AlphaDiscovery:
     """يقيّم ويفرز إشارات مرشّحة من إطار ميزات، ويكتب تقريرًا موثّقًا."""
     generator = rng if rng is not None else np.random.default_rng(0)
-    assistant = ResearchAssistant(alpha=alpha)
+    research = assistant if assistant is not None else ResearchAssistant(alpha=alpha)
 
     if frame.height == 0:
         empty = screen_signals([], alpha=alpha)
-        return AlphaDiscovery(empty, [], assistant.write_report([], title="Alpha Discovery"))
+        return AlphaDiscovery(empty, [], research.write_report([], title="Alpha Discovery"))
 
     prices = frame[price_col].to_numpy().astype(np.float64)
     forward = align_forward_returns(prices, horizon=horizon)
@@ -88,9 +89,9 @@ def discover_alpha_from_features(
             f"إشارة '{row['name']}' تحمل ألفا تنبّئيًا دالًّا "
             f"(IC={row['ic']:.3f}, adj_p={row['adjusted_pvalue']:.4g}, Sharpe={row['sharpe']:.3f})."
         )
-        findings.append(assistant.generate_hypothesis(claim, evidence, category="alpha"))
+        findings.append(research.generate_hypothesis(claim, evidence, category="alpha"))
 
-    report = assistant.write_report(findings, title="Novel Alpha Signals — Research Report")
+    report = research.write_report(findings, title="Novel Alpha Signals — Research Report")
     return AlphaDiscovery(evaluations=screened, selected=selected, report=report)
 
 

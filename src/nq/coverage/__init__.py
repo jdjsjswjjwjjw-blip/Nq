@@ -27,7 +27,11 @@ from nq.coverage.metrics import (
     metric_to_evidence,
     run_all_metrics,
 )
-from nq.coverage.monitor import build_coverage_report, run_coverage_pipeline
+from nq.coverage.monitor import (
+    build_coverage_report,
+    run_coverage_on_features,
+    run_coverage_pipeline,
+)
 from nq.coverage.types import CoverageAlert, CoverageReport
 
 __all__ = [
@@ -47,5 +51,6 @@ __all__ = [
     "metric_to_evidence",
     "resolve_block_columns",
     "run_all_metrics",
+    "run_coverage_on_features",
     "run_coverage_pipeline",
 ]

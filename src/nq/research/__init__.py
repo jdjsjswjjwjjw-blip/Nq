@@ -18,6 +18,7 @@ from __future__ import annotations
 from nq.research.assistant import LanguageModel, ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence, EvidenceStore
 from nq.research.findings import Finding, VerificationOutcome, verify_finding, verify_report
+from nq.research.unified import UnifiedResearchReport, build_unified_report
 
 __all__ = [
     "Evidence",
@@ -26,7 +27,9 @@ __all__ = [
     "LanguageModel",
     "ResearchAssistant",
     "ResearchReport",
+    "UnifiedResearchReport",
     "VerificationOutcome",
+    "build_unified_report",
     "verify_finding",
     "verify_report",
 ]

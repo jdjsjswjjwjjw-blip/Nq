@@ -87,9 +87,10 @@ def build_coverage_report(
     )
 
 
-def run_coverage_pipeline(
+def run_coverage_on_features(
     nq: pl.DataFrame,
     mnq: pl.DataFrame,
+    features: pl.DataFrame,
     *,
     interval_ns: int,
     price_col: str = "nq_close",
@@ -97,16 +98,13 @@ def run_coverage_pipeline(
     n_splits: int = 3,
     embargo: int = 0,
     n_permutations: int = 2000,
-    lead_lag_window: int = 2,
     rng: np.random.Generator | None = None,
+    assistant: ResearchAssistant | None = None,
 ) -> CoverageReport:
-    """خط تغطية كامل: من MBO الخام إلى تقرير عمى بنيوي موثّق."""
-    features = cross_market_features(
-        nq, mnq, interval_ns=interval_ns, lead_lag_window=lead_lag_window
-    )
+    """يشغّل مراقب التغطية على ميزات مُسبَقة البناء (بدون إعادة حساب المحاكيات)."""
     if features.height == 0:
-        assistant = ResearchAssistant(alpha=alpha)
-        empty_report = assistant.write_report([], title="Structural Coverage — Blind-Spot Report")
+        research = assistant if assistant is not None else ResearchAssistant(alpha=alpha)
+        empty_report = research.write_report([], title="Structural Coverage — Blind-Spot Report")
         return CoverageReport(
             alerts=[],
             evidence=[],
@@ -139,4 +137,35 @@ def run_coverage_pipeline(
         n_permutations=n_permutations,
         rng=rng,
     )
-    return build_coverage_report(results, alpha=alpha)
+    return build_coverage_report(results, assistant=assistant, alpha=alpha)
+
+
+def run_coverage_pipeline(
+    nq: pl.DataFrame,
+    mnq: pl.DataFrame,
+    *,
+    interval_ns: int,
+    price_col: str = "nq_close",
+    alpha: float = 0.05,
+    n_splits: int = 3,
+    embargo: int = 0,
+    n_permutations: int = 2000,
+    lead_lag_window: int = 2,
+    rng: np.random.Generator | None = None,
+) -> CoverageReport:
+    """خط تغطية كامل: من MBO الخام إلى تقرير عمى بنيوي موثّق."""
+    features = cross_market_features(
+        nq, mnq, interval_ns=interval_ns, lead_lag_window=lead_lag_window
+    )
+    return run_coverage_on_features(
+        nq,
+        mnq,
+        features,
+        interval_ns=interval_ns,
+        price_col=price_col,
+        alpha=alpha,
+        n_splits=n_splits,
+        embargo=embargo,
+        n_permutations=n_permutations,
+        rng=rng,
+    )
