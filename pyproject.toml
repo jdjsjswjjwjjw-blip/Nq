@@ -39,7 +39,10 @@ src = ["src", "tests"]
 # Strict, science-grade linting. E/F=pyflakes+pycodestyle, I=isort, B=bugbear,
 # UP=pyupgrade, SIM=simplify, RUF=ruff-specific, PL=pylint, NPY=numpy.
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "PL", "NPY"]
-ignore = ["PLR0913"]  # allow explicit multi-arg scientific signatures
+ignore = [
+    "PLR0913",              # allow explicit multi-arg scientific signatures
+    "RUF001", "RUF002", "RUF003",  # Arabic docs + math symbols (×, Σ) are intentional
+]
 
 [tool.ruff.lint.per-file-ignores]
 # الاختبارات تقارن بقيم متوقّعة حرفية (idiomatic)؛ لا داعي لثوابت مسمّاة لها.

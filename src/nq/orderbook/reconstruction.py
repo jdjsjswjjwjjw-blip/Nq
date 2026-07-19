@@ -162,7 +162,5 @@ def reconstruct_by_instrument(
     if frame.height == 0:
         return results
     for (instrument_id,), group in frame.group_by(["instrument_id"], maintain_order=True):
-        results[int(instrument_id)] = reconstruct(
-            group, record_top_of_book=record_top_of_book
-        )
+        results[int(instrument_id)] = reconstruct(group, record_top_of_book=record_top_of_book)
     return results
