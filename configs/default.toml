@@ -1,0 +1,22 @@
+# الإعدادات الافتراضية للنظام — كل تجربة يجب أن ترث من هذا الملف وتوثّق أي تغيير.
+# Default configuration. Every experiment must inherit from this and version any override.
+
+[project]
+instruments = ["NQ", "MNQ"]      # MBO-only universe
+data_source = "MBO"              # المصدر الوحيد للحقيقة (single source of truth)
+
+[determinism]
+# البذرة العامة لضمان قابلية إعادة الإنتاج (reproducibility).
+global_seed = 20260719
+
+[temporal]
+# منع التسريب الزمني: كل التقسيمات زمنية صارمة (walk-forward + embargo).
+# embargo يُقاس بالنانوثانية بين نهاية التدريب وبداية الاختبار.
+split_strategy = "walk_forward"
+embargo_ns = 1_000_000_000       # 1 second embargo (adjust per horizon)
+
+[performance]
+# أسلوب متجهي/عمودي ومعالجة تدفّقية للبيانات الضخمة.
+engine = "polars"
+streaming = true
+batch_events = 5_000_000         # حجم الدفعة عند المعالجة التدفّقية

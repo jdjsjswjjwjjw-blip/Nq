@@ -149,8 +149,8 @@ Nq/
 
 | المحطة | الوصف | الحالة |
 |--------|-------|--------|
-| 0 | الأساسات والحوكمة | ⏳ قيد التخطيط |
-| 1 | استيعاب MBO + إعادة بناء الدفتر | ⏳ |
+| 0 | الأساسات والحوكمة | ✅ مكتملة |
+| 1 | استيعاب MBO + إعادة بناء الدفتر | ⏳ التالية |
 | 2 | طبقة المحاكاة | ⏳ |
 | 3 | Feature Store | ⏳ |
 | 4 | النموذج التأسيسي | ⏳ |
@@ -160,6 +160,25 @@ Nq/
 | 8 | المخرجات النهائية | ⏳ |
 
 ---
+
+## التطوير المحلي وبوابات الجودة (Local Dev & Quality Gates)
+
+```bash
+pip install -e ".[dev]"     # التثبيت مع أدوات التطوير
+
+ruff check src tests         # فحص الأسلوب
+ruff format --check src tests
+mypy                         # فحص أنواع صارم (strict)
+pytest --cov                 # اختبارات الوحدة + التسريب
+```
+
+بوابات الجودة نفسها تُنفَّذ آليًا في CI (`.github/workflows/ci.yml`) على كل PR.
+
+المكوّنات المتاحة بعد المحطة 0:
+
+* `nq.contracts` — عقد MBO والحقول الزمنية (`MBO_SCHEMA`, `validate_mbo_frame`).
+* `nq.core` — الحتمية (`seed_everything`) والترتيب السببي (`sort_causal`).
+* `nq.validation` — **أداة اختبار التسريب الزمني** (`detect_leakage_by_perturbation`, ...).
 
 ## قواعد المساهمة (Contribution Rules)
 
