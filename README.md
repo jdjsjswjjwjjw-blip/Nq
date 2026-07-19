@@ -151,7 +151,7 @@ Nq/
 |--------|-------|--------|
 | 0 | الأساسات والحوكمة | ✅ مكتملة |
 | 1 | استيعاب MBO + إعادة بناء الدفتر | ✅ مكتملة |
-| 2 | طبقة المحاكاة | ⏳ |
+| 2 | طبقة المحاكاة | ✅ مكتملة |
 | 3 | Feature Store | ⏳ |
 | 4 | النموذج التأسيسي | ⏳ |
 | 5 | التمثيلات الكامنة | ⏳ |
@@ -181,6 +181,13 @@ pytest --cov                 # اختبارات الوحدة + التسريب
 * `nq.validation` — **أداة اختبار التسريب الزمني** (`detect_leakage_by_perturbation`, ...).
 * `nq.ingestion` — قارئ MBO تدفّقي (`load_mbo_frame`, `iter_mbo_batches`).
 * `nq.orderbook` — إعادة بناء الدفتر (`OrderBook`, `reconstruct`) وفحوص السلامة (`check_integrity`).
+* `nq.simulation` — طبقة المحاكاة الكاملة:
+  * `footprint_cells` / `footprint_summary` — البصمة السعرية (Delta، Imbalance، Absorption).
+  * `build_volume_profile` / `value_area` / `classify_nodes` / `developing_value_area` — ملف الحجم (POC، VAH/VAL، HVN/LVN، هجرة القيمة).
+  * `order_flow_summary` / `order_flow_imbalance` / `ofi_by_bucket` — تدفّق الأوامر و OFI.
+  * `liquidity_summary` / `detect_icebergs` — السيولة وكشف الآيسبرغ.
+  * `auction_states` — حالات المزاد (توازن/تمدّد/دفاع ارتداد).
+  * `cross_market_features` — **NQ↔MNQ** (Lead/Lag، تباعد، فشل تأكيد، مصيدة المتداولين).
 
 ## قواعد المساهمة (Contribution Rules)
 
