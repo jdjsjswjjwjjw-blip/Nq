@@ -2,9 +2,11 @@
 
 يستند إلى نظرية المزاد ومنطقة القيمة لوصف حالة السوق لكل نافذة زمنية:
 
-* التوازن/الاختلال (Balance / Imbalance): يُقاس بحصّة الحجم المُنفَّذ داخل منطقة
-  القيمة ``in_value_fraction``؛ ارتفاعها = سوق متوازن (تدوير داخل القيمة)،
-  وانخفاضها = اختلال (اتجاه/توسّع خارج القيمة).
+* التوازن/الاختلال (Balance / Imbalance): السوق **متوازن** حين يُغلق داخل منطقة
+  القيمة (قبول القيمة، ``close_in_value``) دون تمدّد مدى؛ و**مختلّ** حين يُغلق
+  خارج منطقة القيمة (رفض/قبول بعيدًا عن القيمة → اتجاه) أو مع تمدّد مدى. الانقلاب
+  من متوازن إلى مختلّ يُكشَف بتغيّر ``is_balanced`` من ``True`` إلى ``False``.
+  (تبقى ``in_value_fraction`` مقياسًا مُبلَّغًا مساعدًا.)
 * التمدّد (Expansion): ``expansion_ratio = range_t / range_{t-1}`` حيث
   ``range = high - low`` للنافذة؛ علم ``is_expansion`` عند تجاوز العتبة.
 * دفاع الارتداد (Pullback Defense): حين تصنع النافذة نهايةً جديدة (قمة/قاع) ثم
@@ -90,6 +92,7 @@ def auction_states(
     made_new_high = (prev_high.is_not_null()) & (pl.col("high") > prev_high)
     made_new_low = (prev_low.is_not_null()) & (pl.col("low") < prev_low)
     closed_in_value = (pl.col("close") >= pl.col("val")) & (pl.col("close") <= pl.col("vah"))
+    is_expansion = expansion_ratio.is_not_null() & (expansion_ratio >= expansion_threshold)
 
     return merged.with_columns(
         price_range.alias("range"),
@@ -97,13 +100,17 @@ def auction_states(
         expansion_ratio.alias("expansion_ratio"),
         made_new_high.alias("made_new_high"),
         made_new_low.alias("made_new_low"),
+        closed_in_value.alias("close_in_value"),
+        is_expansion.alias("is_expansion"),
     ).with_columns(
-        (pl.col("in_value_fraction") >= balance_threshold).alias("is_balanced"),
+        # التوازن (rotational): أُغلق داخل منطقة القيمة (قبول للقيمة) دون تمدّد مدى،
+        # مع بقاء حصّة الحجم داخل القيمة فوق العتبة. غير ذلك = اختلال (اتجاه/رفض القيمة).
         (
-            pl.col("expansion_ratio").is_not_null()
-            & (pl.col("expansion_ratio") >= expansion_threshold)
-        ).alias("is_expansion"),
-        ((pl.col("made_new_high") | pl.col("made_new_low")) & closed_in_value).alias(
+            pl.col("close_in_value")
+            & ~pl.col("is_expansion")
+            & (pl.col("in_value_fraction") >= balance_threshold)
+        ).alias("is_balanced"),
+        ((pl.col("made_new_high") | pl.col("made_new_low")) & pl.col("close_in_value")).alias(
             "pullback_defended"
         ),
     )

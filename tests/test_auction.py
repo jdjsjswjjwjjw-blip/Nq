@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import polars as pl
+
 from nq.simulation.auction import auction_states
 from tests.mbo_factory import make_stream
 
@@ -54,6 +56,27 @@ def test_availability_is_bucket_end() -> None:
     )
     states = auction_states(frame, interval_ns=10)
     assert states["availability_ts"].to_list() == states["bucket_end"].to_list()
+
+
+def test_balance_flips_to_imbalance() -> None:
+    # نافذة 0 متوازنة (تدوير حول 100)، نافذة 100 مختلّة (اتجاه يُغلق عند القمة).
+    balanced = [("T", "B", 100 + d, 2, 0) for d in (0, 0, 1, -1, 0)]
+    trend = [("T", "B", 100 + j, 2, 0) for j in range(10)]
+    events = balanced + trend
+    ts = list(range(len(balanced))) + list(range(100, 100 + len(trend)))
+    seq = list(range(1, len(events) + 1))
+    frame = make_stream(events, event_ts=ts, sequence=seq)
+
+    states = auction_states(frame, interval_ns=50).sort("bucket_start")
+    states = states.with_columns(
+        (pl.col("is_balanced").shift(1) & ~pl.col("is_balanced"))
+        .fill_null(value=False)
+        .alias("flip_to_imbalance")
+    )
+    assert states["is_balanced"].to_list()[0] is True
+    assert states["is_balanced"].to_list()[1] is False
+    assert states["flip_to_imbalance"].to_list()[1] is True
+    assert "close_in_value" in states.columns
 
 
 def test_empty_stream() -> None:
