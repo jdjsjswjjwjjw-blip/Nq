@@ -50,7 +50,7 @@ ignore = [
 "tests/**" = ["PLR2004"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 warn_unreachable = true
 warn_redundant_casts = true
