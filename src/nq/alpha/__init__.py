@@ -10,7 +10,13 @@
 
 from __future__ import annotations
 
-from nq.alpha.discovery import AlphaDiscovery, discover_alpha_from_features, run_research_pipeline
+from nq.alpha.discovery import (
+    AlphaDiscovery,
+    FullResearchResult,
+    discover_alpha_from_features,
+    run_full_research_pipeline,
+    run_research_pipeline,
+)
 from nq.alpha.signals import (
     AlphaSignal,
     SignalEvaluation,
@@ -22,10 +28,12 @@ from nq.alpha.signals import (
 __all__ = [
     "AlphaDiscovery",
     "AlphaSignal",
+    "FullResearchResult",
     "SignalEvaluation",
     "align_forward_returns",
     "discover_alpha_from_features",
     "evaluate_signal",
+    "run_full_research_pipeline",
     "run_research_pipeline",
     "screen_signals",
 ]

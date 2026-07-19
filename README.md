@@ -49,6 +49,7 @@ MBO Raw Data
    → Feature Store
    → Self-Supervised Foundation Model
    → Latent Market Representations / Market States
+   → **Coverage Monitor** (Structural Blind-Spot Detection)
    → Statistical Testing
    → LLM Research Assistant
    → Research Reports | Trading Hypotheses | Novel Alpha Signals
@@ -119,6 +120,18 @@ MBO Raw Data
 - Research Reports، Trading Hypotheses، Discovered Market Structures، Novel Alpha Signals.
 - **DoD**: كل مخرج مدعوم بنتائج إحصائية وقابل لإعادة الإنتاج من البيانات الخام.
 
+### المحطة 9 — مراقب التغطية البنيوية (Structural Coverage Monitor)
+- **الهدف**: كشف أنماط في MBO لا تلتقطها بنية المحاكيات/الميزات الحالية (عمى بنيوي).
+- **المقاييس** (walk-forward + embargo + p-value لكل منها):
+  - **MFIG** — فجوة المعلومات الشرطية (MBO vs Features → Price).
+  - **CER** — بقايا التعرّض السببي لكل كتلة محاكاة.
+  - **PSG** — فجوة الكفاية التنبؤية (World Model surprise).
+  - **CRS** — كفاية إعادة البناء المُقنّعة لكل كتلة.
+  - **LORI** — الأنظمة اليتيمة + Transition Surprise.
+  - **QDUF** — نسبة ديناميكية الطابور غير المفسَّرة.
+- **المخرجات**: `CoverageAlert` + `Evidence` + تقرير موثّق عبر `ResearchAssistant`.
+- **DoD**: كل تنبيه يمرّ `verify_hypotheses` مع تصحيح التعدّد؛ تكامل مع `run_full_research_pipeline`.
+
 ---
 
 ## هيكل المستودع المقترح (Proposed Repository Layout)
@@ -138,7 +151,9 @@ Nq/
 │   ├── models/                  # المحطة 4: النموذج التأسيسي
 │   ├── representations/         # المحطة 5: الحالات الكامنة
 │   ├── statistics/              # المحطة 6: الاختبار الإحصائي
-│   └── research_assistant/      # المحطة 7: مساعد LLM
+│   ├── research/                # المحطة 7: مساعد LLM المؤسَّس على الأدلّة
+│   ├── alpha/                   # المحطة 8: إشارات الألفا والمخرجات
+│   └── coverage/                # المحطة 9: مراقب التغطية البنيوية
 ├── tests/                       # اختبارات وحدة + خصائص + منع تسريب
 └── benchmarks/                  # قياسات الأداء
 ```
@@ -158,6 +173,7 @@ Nq/
 | 6 | الاختبار الإحصائي | ✅ مكتملة |
 | 7 | مساعد البحث LLM | ✅ مكتملة (مؤسَّس على الأدلّة) |
 | 8 | المخرجات النهائية | ✅ مكتملة |
+| 9 | مراقب التغطية البنيوية | ✅ مكتملة |
 
 ---
 
@@ -199,7 +215,8 @@ pytest --cov                 # اختبارات الوحدة + التسريب
 * `nq.states` — **حالات السوق / الأنظمة (Regimes)**: `KMeansRegimes` (تجميع حتمي fit-on-train)، `transition_matrix` و `dwell_times` (ديناميكية سببية)، `silhouette_score` (استقرار)، و `regime_summary` (تفسير) — بطوابع زمنية سليمة.
 * `nq.statistics` — **الاختبار الإحصائي**: `permutation_test` / `bootstrap_ci` / `moving_block_bootstrap_ci` (دلالة ومتانة)، `benjamini_hochberg` / `holm` / `bonferroni` (تصحيح التعدّد)، `sharpe_ratio` / `information_coefficient` / `t_statistic`، `regime_difference_test`، و `verify_hypotheses` (تقرير موحّد مصحّح).
 * `nq.research` — **مساعد البحث المُؤسَّس على الأدلّة**: `Evidence`/`EvidenceStore` (أدلّة قابلة للتتبّع)، `Finding`/`verify_finding` (بوابة "لا دليل مُختلَق")، و `ResearchAssistant` (مقارنة حالات، تقييم إشارات، توليد فرضيات، تخطيط، وكتابة تقارير موثّقة). واجهة `LanguageModel` لتوصيل LLM شرط مروره ببوابة التحقّق.
-* `nq.alpha` — **المخرجات النهائية / إشارات الألفا**: `align_forward_returns` / `evaluate_signal` (IC + دلالة + Sharpe)، `screen_signals` (فرز مع تصحيح التعدّد)، و `run_research_pipeline` (خط كامل قابل لإعادة الإنتاج من MBO الخام إلى إشارات ألفا مُقيَّمة + تقرير موثّق).
+* `nq.alpha` — **المخرجات النهائية / إشارات الألفا**: `align_forward_returns` / `evaluate_signal` (IC + دلالة + Sharpe)، `screen_signals` (فرز مع تصحيح التعدّد)، `run_research_pipeline` (خط كامل من MBO الخام إلى إشارات ألفا)، و `run_full_research_pipeline` (تغطية + ألفا).
+* `nq.coverage` — **مراقب التغطية البنيوية (المحطة 9)**: `mbo_window_descriptors` (واصفات MBO كافية)، `distance_correlation` / `max_axis_dependence`، مقاييس `measure_mfig` / `measure_cer` / `measure_psg` / `measure_crs` / `measure_lori` / `measure_qduf`، `run_coverage_pipeline` (من MBO خام إلى تقرير عمى بنيوي موثّق)، و `CoverageAlert`/`CoverageReport`.
 
 ## قواعد المساهمة (Contribution Rules)
 

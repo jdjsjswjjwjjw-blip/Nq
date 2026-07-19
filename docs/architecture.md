@@ -128,6 +128,19 @@ Self-Supervised Foundation Model
 Latent Market Representations / Market States
       │
       ▼
+=====================================================
+Structural Coverage Monitor (Milestone 9)
+=====================================================
+
+      ├── MFIG  — Conditional Information Gap (MBO vs Features → Price)
+      ├── CER   — Causal Exposure Residual (per simulator block)
+      ├── PSG   — Predictive Sufficiency Gap (World Model surprise)
+      ├── CRS   — Conditional Reconstruction Sufficiency (masked blocks)
+      ├── LORI  — Latent Orphan Regime Index + Transition Surprise
+      └── QDUF  — Queue Dynamics Unexplained Fraction
+
+      │
+      ▼
 Statistical Testing
       │
       ├── Significance Testing
