@@ -153,10 +153,7 @@ class ResearchAssistant:
                 detail=f"return significance of signal '{signal_name}' (sign-flip test)",
             )
         )
-        claim = (
-            f"إشارة '{signal_name}' ذات عائد دالّ إحصائيًا "
-            f"(Sharpe={sharpe:.3f}, p={pvalue:.4g})."
-        )
+        claim = f"إشارة '{signal_name}' ذات عائد دالّ إحصائيًا (Sharpe={sharpe:.3f}, p={pvalue:.4g})."
         return Finding(claim=claim, evidence_ids=(eid,), alpha=self.alpha, category="signal")
 
     def generate_hypothesis(
