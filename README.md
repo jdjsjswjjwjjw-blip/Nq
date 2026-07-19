@@ -153,7 +153,7 @@ Nq/
 | 1 | استيعاب MBO + إعادة بناء الدفتر | ✅ مكتملة |
 | 2 | طبقة المحاكاة | ✅ مكتملة |
 | 3 | Feature Store | ✅ مكتملة |
-| 4 | النموذج التأسيسي | ⏳ |
+| 4 | النموذج التأسيسي | ✅ مكتملة (أساس + بنية تحتية) |
 | 5 | التمثيلات الكامنة | ⏳ |
 | 6 | الاختبار الإحصائي | ⏳ |
 | 7 | مساعد البحث LLM | ⏳ |
@@ -189,6 +189,13 @@ pytest --cov                 # اختبارات الوحدة + التسريب
   * `auction_states` — حالات المزاد (توازن/تمدّد/دفاع ارتداد).
   * `cross_market_features` — **NQ↔MNQ** (Lead/Lag، تباعد، فشل تأكيد، مصيدة المتداولين).
 * `nq.features` — **مخزن الميزات point-in-time** (`FeatureStore`): توحيد مخرجات المحاكيات، استرجاع `as_of`، دمج `point_in_time_join`، إصدارات، وحفظ/قراءة Parquet.
+* `nq.models` — **النموذج التأسيسي ذاتي الإشراف** (أساس numpy، خالٍ من التسريب):
+  * `purged_walk_forward_split` — تقسيم زمني مع purge/embargo.
+  * `build_sequences` / `CausalStandardScaler` — تقطيع سببي وتطبيع fit-on-train.
+  * `PCAEncoder` (خلف `Encoder` Protocol) — تعلّم تمثيلي كامن.
+  * `mask_matrix` / `masked_reconstruction_error` — النمذجة المُقنّعة.
+  * `NextStatePredictor` — نموذج العالم التنبّئي (next-state).
+  * `augment_windows` / `info_nce_loss` — التعلّم التبايني (contrastive).
 
 ## قواعد المساهمة (Contribution Rules)
 
