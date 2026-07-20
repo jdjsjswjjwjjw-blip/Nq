@@ -168,7 +168,7 @@ Nq/
 | 1 | استيعاب MBO + إعادة بناء الدفتر | ✅ مكتملة |
 | 2 | طبقة المحاكاة | ✅ مكتملة |
 | 3 | Feature Store | ✅ مكتملة |
-| 4 | النموذج التأسيسي | ✅ مكتملة (أساس + بنية تحتية) |
+| 4 | النموذج التأسيسي | ✅ مكتملة (bucket + tick/event SSL) |
 | 5 | التمثيلات الكامنة | ✅ مكتملة |
 | 6 | الاختبار الإحصائي | ✅ مكتملة |
 | 7 | مساعد البحث LLM | ✅ مكتملة (مؤسَّس على الأدلّة) |
@@ -199,21 +199,26 @@ pytest --cov                 # اختبارات الوحدة + التسريب
 * `nq.orderbook` — إعادة بناء الدفتر (`OrderBook`, `reconstruct`) وفحوص السلامة (`check_integrity`).
 * `nq.simulation` — طبقة المحاكاة الكاملة:
   * `footprint_cells` / `footprint_summary` — البصمة السعرية (Delta، Imbalance، Absorption).
-  * `build_volume_profile` / `value_area` / `classify_nodes` / `developing_value_area` — ملف الحجم (POC، VAH/VAL، HVN/LVN، هجرة القيمة).
+  * `build_volume_profile` / `value_area` / `classify_nodes` / `developing_value_area` / `DevelopingVolumeProfile` — ملف الحجم (POC، VAH/VAL، HVN/LVN، هجرة القيمة، VP متطوّر event-by-event).
   * `order_flow_summary` / `order_flow_imbalance` / `ofi_by_bucket` — تدفّق الأوامر و OFI.
   * `liquidity_summary` / `detect_icebergs` — السيولة وكشف الآيسبرغ.
   * `auction_states` — حالات المزاد (توازن/تمدّد/دفاع ارتداد).
   * `cross_market_features` — **NQ↔MNQ** (Lead/Lag، تباعد، فشل تأكيد، مصيدة المتداولين).
 * `nq.features` — **مخزن الميزات point-in-time** (`FeatureStore`): توحيد مخرجات المحاكيات، استرجاع `as_of`، دمج `point_in_time_join`، إصدارات، وحفظ/قراءة Parquet.
-* `nq.models` — **النموذج التأسيسي ذاتي الإشراف** + **`run_ssl_pipeline`** (خط SSL كامل مع تقرير):
+* `nq.models` — **النموذج التأسيسي ذاتي الإشراف** (مساران: bucket + tick/event):
+  * `run_ssl_pipeline` — SSL على ميزات مجمّعة (bucket) مع `mask_matrix` عشوائي.
+  * `run_ssl_tick_pipeline` — SSL على tick/event: دفتر حي + ميزات inline + إخفاء هيكلي.
+  * `build_tick_stream` — تدفّق MBO موحّد (NQ/MNQ): `OrderBook` حي، VP متطوّر، عمق الدفتر عند VAH/VAL، إشارات cross.
+  * `build_tick_sequences` / `TickSequenceDataset` — تقطيع سببي مع `mask_path` و `market_phase`.
+  * `structural_mask_sample` / `structural_mask_batch` — إخفاء هيكلي (balance/expansion/cross-trap على مستويات الدفتر الفعلية).
   * `purged_walk_forward_split` — تقسيم زمني مع purge/embargo.
   * `build_sequences` / `CausalStandardScaler` — تقطيع سببي وتطبيع fit-on-train.
   * `PCAEncoder` (خلف `Encoder` Protocol) — تعلّم تمثيلي كامن.
-  * `mask_matrix` / `masked_reconstruction_error` — النمذجة المُقنّعة.
+  * `mask_matrix` / `masked_reconstruction_error` — النمذجة المُقنّعة العشوائية (مسار bucket).
   * `NextStatePredictor` — نموذج العالم التنبّئي (next-state).
   * `augment_windows` / `info_nce_loss` — التعلّم التبايني (contrastive).
-* `nq.research` — **مساعد البحث + المنسّق الموحّد**: `run_ssl_research_pipeline` (من `nq.research.orchestrator` — SSL + M9 خلفية + LLM/ألفا → تقرير شامل)، `Evidence`/`EvidenceStore`، `ResearchAssistant`، و `LanguageModel`.
-* `nq.states` — **حالات السوق / الأنظمة (Regimes)**: `KMeansRegimes` (تجميع حتمي fit-on-train)، `transition_matrix` و `dwell_times` (ديناميكية سببية)، `silhouette_score` (استقرار)، و `regime_summary` (تفسير) — بطوابع زمنية سليمة.
+* `nq.research` — **مساعد البحث + المنسّق الموحّد**: `run_research_pipeline` / `run_ssl_research_pipeline` (من `nq.research.orchestrator` — خط واحد MBO→تقرير؛ `ssl_mode`: `tick` أو `bucket`، SSL + M9 + ألفا)، `Evidence`/`EvidenceStore`، `ResearchAssistant`، و `LanguageModel`.
+* `nq.states` — **حالات السوق / الأنظمة (Regimes)**: `KMeansRegimes` (تجميع حتمي fit-on-train)، `CausalRegimeTracker` (تتبّع سببي لمرحلة السوق في tick stream)، `infer_market_phase_map` / `heuristic_market_phase`، `transition_matrix` و `dwell_times` (ديناميكية سببية)، `silhouette_score` (استقرار)، و `regime_summary` (تفسير) — بطوابع زمنية سليمة.
 * `nq.statistics` — **الاختبار الإحصائي**: `permutation_test` / `bootstrap_ci` / `moving_block_bootstrap_ci` (دلالة ومتانة)، `benjamini_hochberg` / `holm` / `bonferroni` (تصحيح التعدّد)، `sharpe_ratio` / `information_coefficient` / `t_statistic`، `regime_difference_test`، و `verify_hypotheses` (تقرير موحّد مصحّح).
 * `nq.alpha` — **المخرجات النهائية / إشارات الألفا**: `align_forward_returns` / `evaluate_signal` (IC + دلالة + Sharpe)، `screen_signals` (فرز مع تصحيح التعدّد)، `run_research_pipeline` (خط كامل من MBO الخام إلى إشارات ألفا)، و `run_full_research_pipeline` (تغطية + ألفا).
 * `nq.coverage` — **مراقب التغطية البنيوية (المحطة 9)**: `mbo_window_descriptors` (واصفات MBO كافية)، `distance_correlation` / `max_axis_dependence`، مقاييس `measure_mfig` / `measure_cer` / `measure_psg` / `measure_crs` / `measure_lori` / `measure_qduf`، `run_coverage_pipeline` (من MBO خام إلى تقرير عمى بنيوي موثّق)، و `CoverageAlert`/`CoverageReport`.
