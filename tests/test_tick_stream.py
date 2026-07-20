@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import polars as pl
+
 from nq.models.tick_stream import MarketPhase, MaskPath, build_tick_stream
 from tests.mbo_factory import Event, make_stream
 
 
-def _paired_mbo(n: int) -> tuple:
+def _paired_mbo(n: int) -> tuple[pl.DataFrame, pl.DataFrame]:
     events: list[Event] = []
     ts: list[int] = []
     seq: list[int] = []
