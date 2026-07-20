@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 
+from nq.alpha.execution import ExecutionMode, evaluate_signal_intraday
 from nq.alpha.signals import align_forward_returns, evaluate_signal, screen_signals
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.core.temporal_policy import TemporalPolicy
 from nq.coverage import run_coverage_pipeline
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
@@ -44,6 +46,12 @@ def discover_alpha_from_features(
     price_col: str,
     time_col: str = AVAILABILITY_TS,
     horizon: int = 1,
+    execution_mode: ExecutionMode = "mid",
+    bid_col: str = "nq_bid",
+    ask_col: str = "nq_ask",
+    slippage_ticks: float = 0.5,
+    tick_size: float = 0.25,
+    commission_bps: float = 0.0,
     alpha: float = 0.05,
     n_permutations: int = 2000,
     rng: np.random.Generator | None = None,
@@ -57,19 +65,42 @@ def discover_alpha_from_features(
         empty = screen_signals([], alpha=alpha)
         return AlphaDiscovery(empty, [], research.write_report([], title="Alpha Discovery"))
 
-    prices = frame[price_col].to_numpy().astype(np.float64)
-    forward = align_forward_returns(prices, horizon=horizon)
-
-    evaluations = [
-        evaluate_signal(
-            col,
-            frame[col].to_numpy().astype(np.float64),
-            forward,
-            n_permutations=n_permutations,
-            rng=generator,
-        )
-        for col in signal_columns
-    ]
+    evaluations = []
+    if execution_mode == "intraday":
+        if bid_col not in frame.columns or ask_col not in frame.columns:
+            raise ValueError(
+                f"intraday execution requires {bid_col!r} and {ask_col!r} in feature frame"
+            )
+        bid = frame[bid_col].to_numpy().astype(np.float64)
+        ask = frame[ask_col].to_numpy().astype(np.float64)
+        for col in signal_columns:
+            evaluations.append(
+                evaluate_signal_intraday(
+                    col,
+                    frame[col].to_numpy().astype(np.float64),
+                    bid,
+                    ask,
+                    horizon=horizon,
+                    slippage_ticks=slippage_ticks,
+                    tick_size=tick_size,
+                    commission_bps=commission_bps,
+                    n_permutations=n_permutations,
+                    rng=generator,
+                )
+            )
+    else:
+        prices = frame[price_col].to_numpy().astype(np.float64)
+        forward = align_forward_returns(prices, horizon=horizon)
+        evaluations = [
+            evaluate_signal(
+                col,
+                frame[col].to_numpy().astype(np.float64),
+                forward,
+                n_permutations=n_permutations,
+                rng=generator,
+            )
+            for col in signal_columns
+        ]
     screened = screen_signals(evaluations, alpha=alpha)
 
     findings: list[Finding] = []
@@ -115,10 +146,17 @@ def run_full_research_pipeline(
     n_permutations: int = 2000,
     lead_lag_window: int = 2,
     coverage_splits: int = 3,
-    coverage_embargo: int = 0,
+    coverage_embargo: int | None = None,
+    ssl_window: int = 5,
     rng: np.random.Generator | None = None,
 ) -> FullResearchResult:
     """خط بحثي متكامل: مراقبة التغطية ثم اكتشاف الألفا (قابل لإعادة الإنتاج)."""
+    policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window)
+    embargo_val = (
+        coverage_embargo
+        if coverage_embargo is not None
+        else policy.embargo_time_units(interval_ns=interval_ns)
+    )
     coverage = run_coverage_pipeline(
         nq,
         mnq,
@@ -126,7 +164,7 @@ def run_full_research_pipeline(
         price_col=price_col,
         alpha=alpha,
         n_splits=coverage_splits,
-        embargo=coverage_embargo,
+        embargo=embargo_val,
         n_permutations=n_permutations,
         lead_lag_window=lead_lag_window,
         rng=rng,
@@ -157,6 +195,10 @@ def run_research_pipeline(
     alpha: float = 0.05,
     n_permutations: int = 2000,
     lead_lag_window: int = 2,
+    execution_mode: ExecutionMode = "mid",
+    slippage_ticks: float = 0.5,
+    tick_size: float = 0.25,
+    commission_bps: float = 0.0,
     rng: np.random.Generator | None = None,
 ) -> AlphaDiscovery:
     """خط بحثي كامل قابل لإعادة الإنتاج: من MBO الخام (NQ/MNQ) إلى إشارات الألفا.
@@ -178,6 +220,10 @@ def run_research_pipeline(
         price_col=price_col,
         time_col=AVAILABILITY_TS,
         horizon=horizon,
+        execution_mode=execution_mode,
+        slippage_ticks=slippage_ticks,
+        tick_size=tick_size,
+        commission_bps=commission_bps,
         alpha=alpha,
         n_permutations=n_permutations,
         rng=rng,

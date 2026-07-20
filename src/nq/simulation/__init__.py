@@ -19,6 +19,10 @@ from __future__ import annotations
 from nq.simulation.auction import auction_states
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 from nq.simulation.cross_market import cross_market_features
+from nq.simulation.execution import (
+    directional_execution_returns,
+    execution_forward_returns,
+)
 from nq.simulation.footprint import footprint_cells, footprint_summary
 from nq.simulation.liquidity import detect_icebergs, liquidity_summary
 from nq.simulation.order_flow import ofi_by_bucket, order_flow_imbalance, order_flow_summary
@@ -41,6 +45,8 @@ __all__ = [
     "cross_market_features",
     "detect_icebergs",
     "developing_value_area",
+    "directional_execution_returns",
+    "execution_forward_returns",
     "extract_trades",
     "footprint_cells",
     "footprint_summary",

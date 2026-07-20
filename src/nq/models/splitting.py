@@ -28,6 +28,7 @@ def purged_walk_forward_split(
     *,
     n_splits: int,
     embargo: int = 0,
+    purge_samples: int = 0,
     min_train_size: int = 1,
 ) -> list[WalkForwardFold]:
     """يُنتج طيّات walk-forward متوسّعة مع فترة حظر زمنية.
@@ -37,6 +38,8 @@ def purged_walk_forward_split(
         n_splits: عدد كتل الاختبار المتتالية.
         embargo: فترة الحظر الزمنية؛ يُستبعَد من التدريب كل ما يقع زمنه ضمن
             ``embargo`` قبل بداية كتلة الاختبار.
+        purge_samples: يُزال من التدريب آخر ``purge_samples`` عيّنة قبل بداية
+            الاختبار (لتداخل نوافذ SSL المتتالية).
         min_train_size: أدنى حجم تدريب لقبول الطيّة.
 
     يرفع ``ValueError`` عند طوابع متناقصة أو معاملات غير صالحة.
@@ -45,6 +48,8 @@ def purged_walk_forward_split(
         raise ValueError(f"n_splits must be >= 1, got {n_splits}")
     if embargo < 0:
         raise ValueError(f"embargo must be non-negative, got {embargo}")
+    if purge_samples < 0:
+        raise ValueError(f"purge_samples must be non-negative, got {purge_samples}")
 
     ts = np.asarray(times)
     n = ts.shape[0]
@@ -66,6 +71,9 @@ def purged_walk_forward_split(
         cutoff = ts[test_start] - embargo
         train_mask = np.arange(test_start, dtype=np.intp)
         train_idx = train_mask[ts[:test_start] <= cutoff]
+        if purge_samples > 0 and test_idx.size > 0:
+            index_cutoff = int(test_idx.min()) - purge_samples
+            train_idx = train_idx[train_idx < index_cutoff]
 
         if train_idx.shape[0] < min_train_size:
             continue

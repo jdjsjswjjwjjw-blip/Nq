@@ -1,0 +1,17 @@
+# إعدادات مسار البحث — ترث من default.toml
+# Research pipeline settings (inherits defaults from configs/default.toml)
+
+[temporal]
+# يُشتق embargo تلقائيًا من interval_ns + window عند التشغيل
+embargo_ns = 1_000_000_000
+
+[execution]
+# intraday: bid/ask + slippage | mid: تقييم على mid فقط
+mode = "mid"
+slippage_ticks = 0.5
+tick_size = 0.25
+commission_bps = 0.0
+
+[ssl]
+window = 5
+n_splits = 3

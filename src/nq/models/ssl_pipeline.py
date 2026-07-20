@@ -14,6 +14,7 @@ import numpy.typing as npt
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.core.temporal_policy import TemporalPolicy
 from nq.models.contrastive import augment_windows, info_nce_loss
 from nq.models.encoder import PCAEncoder
 from nq.models.masking import mask_matrix, masked_reconstruction_error
@@ -147,7 +148,13 @@ def _feature_columns(frame: pl.DataFrame) -> list[str]:
     ]
 
 
-def _walk_forward_folds(times: np.ndarray, *, n_splits: int, embargo: int) -> list[WalkForwardFold]:
+def _walk_forward_folds(
+    times: np.ndarray,
+    *,
+    n_splits: int,
+    embargo: int,
+    purge_samples: int,
+) -> list[WalkForwardFold]:
     n = times.shape[0]
     if n < _MIN_SSL_SAMPLES:
         return []
@@ -155,7 +162,12 @@ def _walk_forward_folds(times: np.ndarray, *, n_splits: int, embargo: int) -> li
         if n < splits + 1:
             continue
         try:
-            folds = purged_walk_forward_split(times, n_splits=splits, embargo=embargo)
+            folds = purged_walk_forward_split(
+                times,
+                n_splits=splits,
+                embargo=embargo,
+                purge_samples=purge_samples,
+            )
         except ValueError:
             continue
         if folds:
@@ -170,7 +182,9 @@ def run_ssl_pipeline(
     window: int = _DEFAULT_WINDOW,
     n_components: int = 4,
     n_splits: int = 3,
-    embargo: int = 0,
+    embargo: int | None = None,
+    purge_samples: int | None = None,
+    interval_ns: int | None = None,
     mask_ratio: float = 0.2,
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
@@ -188,8 +202,28 @@ def run_ssl_pipeline(
     if len(sequences) < _MIN_SSL_SAMPLES:
         return _empty_ssl_result(research)
 
+    policy = TemporalPolicy.for_run(
+        interval_ns=interval_ns if interval_ns is not None else 1,
+        window=window,
+    )
+    embargo_val = (
+        embargo
+        if embargo is not None
+        else (
+            policy.embargo_time_units(interval_ns=interval_ns, times=sequences.times)
+            if interval_ns is not None
+            else 0
+        )
+    )
+    purge_val = purge_samples if purge_samples is not None else policy.purge_samples()
+
     flat = sequences.flatten()
-    folds = _walk_forward_folds(sequences.times, n_splits=n_splits, embargo=embargo)
+    folds = _walk_forward_folds(
+        sequences.times,
+        n_splits=n_splits,
+        embargo=embargo_val,
+        purge_samples=purge_val,
+    )
     fold_rows: list[dict[str, float | int]] = []
     embedding_rows: list[dict[str, float | int]] = []
 

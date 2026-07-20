@@ -28,6 +28,14 @@ def test_embargo_purges_adjacent_train() -> None:
     assert gap >= 5
 
 
+def test_purge_samples_removes_overlapping_train() -> None:
+    times = np.arange(100, dtype=np.int64)
+    no_purge = purged_walk_forward_split(times, n_splits=4, embargo=0, purge_samples=0)
+    with_purge = purged_walk_forward_split(times, n_splits=4, embargo=0, purge_samples=4)
+    assert with_purge[0].train_idx.shape[0] < no_purge[0].train_idx.shape[0]
+    assert with_purge[0].train_idx.max() < no_purge[0].train_idx.max()
+
+
 def test_non_decreasing_required() -> None:
     with pytest.raises(ValueError, match="non-decreasing"):
         purged_walk_forward_split(np.array([0, 2, 1], dtype=np.int64), n_splits=1)
@@ -38,6 +46,8 @@ def test_invalid_params() -> None:
         purged_walk_forward_split([0, 1, 2], n_splits=0)
     with pytest.raises(ValueError, match="embargo"):
         purged_walk_forward_split([0, 1, 2], n_splits=1, embargo=-1)
+    with pytest.raises(ValueError, match="purge_samples"):
+        purged_walk_forward_split([0, 1, 2], n_splits=1, purge_samples=-1)
 
 
 def test_expanding_train_grows() -> None:

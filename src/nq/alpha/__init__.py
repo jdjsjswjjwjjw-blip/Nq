@@ -17,6 +17,7 @@ from nq.alpha.discovery import (
     run_full_research_pipeline,
     run_research_pipeline,
 )
+from nq.alpha.execution import ExecutionMode, evaluate_signal_intraday
 from nq.alpha.signals import (
     AlphaSignal,
     SignalEvaluation,
@@ -28,11 +29,13 @@ from nq.alpha.signals import (
 __all__ = [
     "AlphaDiscovery",
     "AlphaSignal",
+    "ExecutionMode",
     "FullResearchResult",
     "SignalEvaluation",
     "align_forward_returns",
     "discover_alpha_from_features",
     "evaluate_signal",
+    "evaluate_signal_intraday",
     "run_full_research_pipeline",
     "run_research_pipeline",
     "screen_signals",

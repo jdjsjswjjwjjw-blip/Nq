@@ -49,6 +49,8 @@ def _market_windows(frame: pl.DataFrame, *, interval_ns: int) -> pl.DataFrame:
         .group_by(BUCKET_START)
         .agg(
             pl.col("mid").last().alias("close"),
+            pl.col("best_bid").last().alias("bid"),
+            pl.col("best_ask").last().alias("ask"),
             pl.col(BUCKET_END).first(),
         )
     )
@@ -83,7 +85,7 @@ def cross_market_features(
         raise ValueError(f"lead_lag_window must be >= 2, got {lead_lag_window}")
 
     nq_w = _market_windows(nq, interval_ns=interval_ns).rename(
-        {"close": "nq_close", "delta": "nq_delta"}
+        {"close": "nq_close", "bid": "nq_bid", "ask": "nq_ask", "delta": "nq_delta"}
     )
     mnq_w = _market_windows(mnq, interval_ns=interval_ns).rename(
         {"close": "mnq_close", "delta": "mnq_delta", BUCKET_END: "mnq_bucket_end"}

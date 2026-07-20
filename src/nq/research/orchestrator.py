@@ -17,7 +17,9 @@ import numpy as np
 import polars as pl
 
 from nq.alpha.discovery import AlphaDiscovery, discover_alpha_from_features
+from nq.alpha.execution import ExecutionMode
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.core.temporal_policy import TemporalPolicy
 from nq.coverage.monitor import run_coverage_on_features
 from nq.coverage.types import CoverageReport
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_pipeline
@@ -86,7 +88,11 @@ def run_ssl_research_pipeline(
     ssl_window: int = 5,
     ssl_components: int = 4,
     coverage_splits: int = 3,
-    coverage_embargo: int = 0,
+    coverage_embargo: int | None = None,
+    execution_mode: ExecutionMode = "mid",
+    slippage_ticks: float = 0.5,
+    tick_size: float = 0.25,
+    commission_bps: float = 0.0,
     parallel_coverage: bool = True,
     language_model: LanguageModel | None = None,
     rng: np.random.Generator | None = None,
@@ -100,6 +106,14 @@ def run_ssl_research_pipeline(
     """
     generator = rng if rng is not None else np.random.default_rng(0)
     seed = int(generator.integers(0, 2**31))
+
+    policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window)
+    embargo_val = (
+        coverage_embargo
+        if coverage_embargo is not None
+        else policy.embargo_time_units(interval_ns=interval_ns)
+    )
+    purge_val = policy.purge_samples()
 
     features = cross_market_features(
         nq, mnq, interval_ns=interval_ns, lead_lag_window=lead_lag_window
@@ -119,7 +133,7 @@ def run_ssl_research_pipeline(
                 price_col=price_col,
                 alpha=alpha,
                 n_splits=coverage_splits,
-                embargo=coverage_embargo,
+                embargo=embargo_val,
                 n_permutations=n_permutations,
                 seed=seed,
             )
@@ -128,7 +142,9 @@ def run_ssl_research_pipeline(
                 window=ssl_window,
                 n_components=ssl_components,
                 n_splits=coverage_splits,
-                embargo=coverage_embargo,
+                embargo=embargo_val,
+                purge_samples=purge_val,
+                interval_ns=interval_ns,
                 alpha=alpha,
                 rng=generator,
                 assistant=ssl_assistant,
@@ -144,6 +160,10 @@ def run_ssl_research_pipeline(
                 price_col=price_col,
                 time_col=AVAILABILITY_TS,
                 horizon=horizon,
+                execution_mode=execution_mode,
+                slippage_ticks=slippage_ticks,
+                tick_size=tick_size,
+                commission_bps=commission_bps,
                 alpha=alpha,
                 n_permutations=n_permutations,
                 rng=generator,
@@ -156,7 +176,9 @@ def run_ssl_research_pipeline(
             window=ssl_window,
             n_components=ssl_components,
             n_splits=coverage_splits,
-            embargo=coverage_embargo,
+            embargo=embargo_val,
+            purge_samples=purge_val,
+            interval_ns=interval_ns,
             alpha=alpha,
             rng=generator,
             assistant=ssl_assistant,
@@ -185,7 +207,7 @@ def run_ssl_research_pipeline(
             price_col=price_col,
             alpha=alpha,
             n_splits=coverage_splits,
-            embargo=coverage_embargo,
+            embargo=embargo_val,
             n_permutations=n_permutations,
             rng=np.random.default_rng(seed),
         )
