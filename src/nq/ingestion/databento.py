@@ -10,15 +10,13 @@ from typing import Final
 
 import polars as pl
 
-from nq.contracts.mbo import MBO_SCHEMA, MboAction, MboSide
+from nq.contracts.mbo import MBO_SCHEMA, PRICE_SCALE, MboAction, MboSide
 from nq.contracts.temporal import EVENT_TS, INGEST_TS, SEQUENCE
 
-# أعمدة Databento الشائعة → العقد القانوني
-_DATABENTO_COLUMN_MAP: Final[dict[str, str]] = {
+# إعادة تسمية بدون تصادم (لا نُعيد ts_recv و ts_in_delta إلى نفس العمود)
+_DATABENTO_RENAMES: Final[dict[str, str]] = {
     "ts_event": EVENT_TS,
     "ts_recv": INGEST_TS,
-    "ts_in_delta": INGEST_TS,
-    "rtype": "flags",
 }
 
 _ACTION_MAP: Final[dict[str, str]] = {
@@ -45,6 +43,9 @@ _SIDE_MAP: Final[dict[str, str]] = {
     "n": MboSide.NONE.value,
 }
 
+_CLEAR_ACTION = MboAction.CLEAR.value
+_NONE_ACTION = MboAction.NONE.value
+
 
 def is_databento_frame(frame: pl.DataFrame) -> bool:
     """هل الإطار يحمل أعمدة Databento (وليس العقد القانوني بعد)؟"""
@@ -54,9 +55,52 @@ def is_databento_frame(frame: pl.DataFrame) -> bool:
     return "ts_event" in cols or "ts_recv" in cols
 
 
+def _rename_databento_columns(frame: pl.DataFrame) -> pl.DataFrame:
+    """يُعيد تسمية أعمدة Databento دون إنشاء أعمدة مكرّرة."""
+    renamed = frame
+    for src, dst in _DATABENTO_RENAMES.items():
+        if src in renamed.columns and dst not in renamed.columns:
+            renamed = renamed.rename({src: dst})
+    if INGEST_TS not in renamed.columns and "ts_in_delta" in renamed.columns:
+        renamed = renamed.rename({"ts_in_delta": INGEST_TS})
+    return renamed
+
+
+def _ensure_flags_column(frame: pl.DataFrame) -> pl.DataFrame:
+    if "flags" in frame.columns:
+        return frame
+    if "rtype" in frame.columns:
+        return frame.with_columns(pl.col("rtype").cast(pl.UInt8).alias("flags"))
+    return frame.with_columns(pl.lit(0, dtype=pl.UInt8).alias("flags"))
+
+
+def _scale_price_column(frame: pl.DataFrame) -> pl.DataFrame:
+    """يحوّل أسعار float (دولار) إلى fixed-point Int64 وفق ``PRICE_SCALE``."""
+    dtype = frame.schema["price"]
+    if dtype.is_float():
+        scaled = (pl.col("price") / PRICE_SCALE).round().cast(pl.Int64)
+    else:
+        scaled = pl.col("price").cast(pl.Int64)
+    return frame.with_columns(
+        pl.when(pl.col("price").is_null())
+        .then(0)
+        .otherwise(scaled)
+        .alias("price")
+    )
+
+
+def _sanitize_prices(frame: pl.DataFrame) -> pl.DataFrame:
+    """يُسقط صفوف السعر الفارغ (ما عدا Clear/None) ثم يُحوّل السعر إلى fixed-point."""
+    action = pl.col("action").cast(pl.Utf8).str.to_uppercase()
+    keep = pl.col("price").is_not_null() | action.is_in([_CLEAR_ACTION, _NONE_ACTION])
+    cleaned = frame.filter(keep)
+    return _scale_price_column(cleaned)
+
+
 def normalize_databento_frame(frame: pl.DataFrame) -> pl.DataFrame:
     """يحوّل إطار Databento MBO إلى مخطط ``MBO_SCHEMA``."""
-    renamed = frame.rename({k: v for k, v in _DATABENTO_COLUMN_MAP.items() if k in frame.columns})
+    renamed = _rename_databento_columns(frame)
+    renamed = _ensure_flags_column(renamed)
 
     if EVENT_TS not in renamed.columns:
         raise ValueError("Databento frame must contain ts_event or event_ts")
@@ -69,9 +113,6 @@ def normalize_databento_frame(frame: pl.DataFrame) -> pl.DataFrame:
             pl.arange(0, renamed.height, dtype=pl.UInt64).alias(SEQUENCE)
         )
 
-    if "flags" not in renamed.columns:
-        renamed = renamed.with_columns(pl.lit(0, dtype=pl.UInt8).alias("flags"))
-
     action_expr = pl.col("action").cast(pl.Utf8).str.to_lowercase()
     for raw, canonical in _ACTION_MAP.items():
         action_expr = pl.when(action_expr == raw).then(pl.lit(canonical)).otherwise(action_expr)
@@ -82,9 +123,15 @@ def normalize_databento_frame(frame: pl.DataFrame) -> pl.DataFrame:
         side_expr = pl.when(side_expr == raw).then(pl.lit(canonical)).otherwise(side_expr)
     renamed = renamed.with_columns(side_expr.alias("side"))
 
+    renamed = _sanitize_prices(renamed)
+
     missing = [name for name in MBO_SCHEMA if name not in renamed.columns]
     if missing:
         raise ValueError(f"Databento frame missing required fields after mapping: {missing}")
+
+    drop_extra = [c for c in renamed.columns if c not in MBO_SCHEMA]
+    if drop_extra:
+        renamed = renamed.drop(drop_extra)
 
     return renamed.select([pl.col(name).cast(dtype) for name, dtype in MBO_SCHEMA.items()])
 

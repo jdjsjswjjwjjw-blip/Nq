@@ -141,13 +141,25 @@ def _ssl_findings(metrics: pl.DataFrame, research: ResearchAssistant) -> list[Fi
     ]
 
 
-def _feature_columns(frame: pl.DataFrame) -> list[str]:
-    return [
-        c
-        for c, dtype in frame.schema.items()
-        if c not in {AVAILABILITY_TS, "bucket_start", "bucket_end", "nq_close", "mnq_close"}
-        and dtype.is_numeric()
-    ]
+def _feature_columns(frame: pl.DataFrame, *, max_null_frac: float = 0.05) -> list[str]:
+    if frame.height == 0:
+        return []
+    excluded = {
+        AVAILABILITY_TS,
+        "bucket_start",
+        "bucket_end",
+        "nq_close",
+        "mnq_close",
+        "session_phase",
+        "minutes_since_rth_open",
+    }
+    cols: list[str] = []
+    for c, dtype in frame.schema.items():
+        if c in excluded or not dtype.is_numeric():
+            continue
+        if frame[c].null_count() / frame.height <= max_null_frac:
+            cols.append(c)
+    return cols
 
 
 def _walk_forward_folds(
@@ -200,7 +212,11 @@ def run_ssl_pipeline(
     if not cols or features.height < window:
         return _empty_ssl_result(research)
 
-    sequences = build_sequences(features, feature_columns=cols, window=window)
+    work = features.select([AVAILABILITY_TS, *cols])
+    for col in cols:
+        work = work.with_columns(pl.col(col).fill_null(0).alias(col))
+
+    sequences = build_sequences(work, feature_columns=cols, window=window)
     if len(sequences) < _MIN_SSL_SAMPLES:
         return _empty_ssl_result(research)
 

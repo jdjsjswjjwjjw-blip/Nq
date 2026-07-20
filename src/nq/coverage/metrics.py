@@ -487,9 +487,12 @@ def measure_lori(
                 block = (
                     features.select(cols).fill_null(0).to_numpy().astype(np.float64)[fold.test_idx]
                 )
-                block_norm = np.linalg.norm(block[mask], axis=1)
+                block_norm = np.linalg.norm(block, axis=1)
                 result = regime_difference_test(
-                    block_norm, test_labels, n_permutations=_LORI_PERMUTATIONS, rng=generator
+                    block_norm,
+                    test_labels,
+                    n_permutations=_LORI_PERMUTATIONS,
+                    rng=generator,
                 )
                 min_p = min(min_p, result.pvalue)
             orphan = min_p > alpha

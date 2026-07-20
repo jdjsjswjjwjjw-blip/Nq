@@ -30,7 +30,11 @@ alpha = 0.05
 n_permutations = 2000
 
 [data]
-# مسارات أسبوعية نسبية من جذر المستودع (يُملأ عند التشغيل)
+# مسارات MBO (Parquet/Arrow/CSV/.zst) — أو مرّر --nq / --mnq من CLI
 nq_path = "data/raw/nq.parquet"
 mnq_path = "data/raw/mnq.parquet"
 output_dir = "data/runs/latest"
+# dual = NQ+MNQ | nq_only = ملف NQ واحد فقط (يُكرَّر داخليًا لـ cross-market)
+cross_market_mode = "nq_only"
+# حد صفوف للتجارب (0 = بدون حد) — أو --max-rows من CLI
+max_rows = 0

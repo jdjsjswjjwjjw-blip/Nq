@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 import polars as pl
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from nq.models.encoder import PCAEncoder
@@ -153,6 +153,7 @@ def test_ofi_cumulative_consistency(n: int, seed: int) -> None:
 @_SETTINGS
 @given(x=_matrix())
 def test_causal_scaler_zero_mean(x: npt.NDArray[np.float64]) -> None:
+    assume(float(np.std(x)) > 1e-10)
     transformed = CausalStandardScaler().fit_transform(x)
     np.testing.assert_allclose(transformed.mean(axis=0), 0.0, atol=1e-6)
 

@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from nq.alpha.discovery import AlphaDiscovery
 
 SslMode = Literal["bucket", "tick"]
+CrossMarketMode = Literal["dual", "nq_only"]
 
 _DEFAULT_SIGNAL_COLUMNS = (
     "nq_delta",
@@ -79,6 +80,8 @@ class PipelineConfig:
     global_seed: int = 0
     parallel_coverage: bool = True
     ssl_mode: SslMode = "tick"
+    cross_market_mode: CrossMarketMode = "dual"
+    max_rows: int | None = None
 
     @classmethod
     def from_toml(cls, path: Path | str) -> PipelineConfig:
@@ -89,7 +92,10 @@ class PipelineConfig:
         cross = raw.get("cross_market", {})
         exec_cfg = raw.get("execution", {})
         ssl = raw.get("ssl", {})
+        data = raw.get("data", {})
         det = raw.get("determinism", {})
+        max_rows_raw = data.get("max_rows")
+        max_rows = None if max_rows_raw in (None, 0) else int(max_rows_raw)
         return cls(
             interval_ns=int(temporal.get("interval_ns", 1_000_000_000)),
             horizon=int(temporal.get("horizon", 1)),
@@ -106,6 +112,8 @@ class PipelineConfig:
             n_permutations=int(raw.get("statistics", {}).get("n_permutations", 2000)),
             global_seed=int(det.get("global_seed", 0)),
             ssl_mode=str(ssl.get("mode", "tick")),  # type: ignore[arg-type]
+            cross_market_mode=str(data.get("cross_market_mode", "dual")),  # type: ignore[arg-type]
+            max_rows=max_rows,
         )
 
 
@@ -203,6 +211,7 @@ def run_ssl_research_pipeline(
             )
         return run_ssl_pipeline(
             features,
+            feature_columns=columns or None,
             window=ssl_window,
             n_components=ssl_components,
             n_splits=coverage_splits,
@@ -302,6 +311,51 @@ def run_ssl_research_pipeline(
     return ssl_result, coverage_result, alpha_result, unified
 
 
+def _resolve_pipeline_config(
+    config: PipelineConfig | None,
+    config_path: Path | str | None,
+    *,
+    interval_ns: int | None,
+    latency_ns: int | None,
+    horizon: int | None,
+    execution_mode: ExecutionMode | None,
+    parallel_coverage: bool | None,
+    n_permutations: int | None,
+) -> PipelineConfig:
+    cfg = config
+    if cfg is None:
+        path = config_path if config_path is not None else Path("configs/research.toml")
+        cfg = PipelineConfig.from_toml(path) if Path(path).is_file() else PipelineConfig()
+    if interval_ns is not None:
+        cfg = replace(cfg, interval_ns=interval_ns)
+    if latency_ns is not None:
+        cfg = replace(cfg, latency_ns=latency_ns)
+    if horizon is not None:
+        cfg = replace(cfg, horizon=horizon)
+    if execution_mode is not None:
+        cfg = replace(cfg, execution_mode=execution_mode)
+    if parallel_coverage is not None:
+        cfg = replace(cfg, parallel_coverage=parallel_coverage)
+    if n_permutations is not None:
+        cfg = replace(cfg, n_permutations=n_permutations)
+    return cfg
+
+
+def _load_pipeline_frames(
+    nq: pl.DataFrame | str | Path,
+    mnq: pl.DataFrame | str | Path,
+    cfg: PipelineConfig,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """يُحمّل NQ/MNQ مع دعم nq_only و max_rows."""
+    nq_frame = nq if isinstance(nq, pl.DataFrame) else load_mbo_frame(nq, max_rows=cfg.max_rows)
+    if cfg.cross_market_mode == "nq_only":
+        return nq_frame, nq_frame
+    mnq_frame = (
+        mnq if isinstance(mnq, pl.DataFrame) else load_mbo_frame(mnq, max_rows=cfg.max_rows)
+    )
+    return nq_frame, mnq_frame
+
+
 def run_research_pipeline(
     nq: pl.DataFrame | str | Path,
     mnq: pl.DataFrame | str | Path,
@@ -331,29 +385,21 @@ def run_research_pipeline(
     output_dir:
         عند التحديد يُحفظ ``report.md`` والمقاييس في هذا المجلد.
     """
-    cfg = config
-    if cfg is None:
-        path = config_path if config_path is not None else Path("configs/research.toml")
-        cfg = PipelineConfig.from_toml(path) if Path(path).is_file() else PipelineConfig()
-
-    if interval_ns is not None:
-        cfg = replace(cfg, interval_ns=interval_ns)
-    if latency_ns is not None:
-        cfg = replace(cfg, latency_ns=latency_ns)
-    if horizon is not None:
-        cfg = replace(cfg, horizon=horizon)
-    if execution_mode is not None:
-        cfg = replace(cfg, execution_mode=execution_mode)
-    if parallel_coverage is not None:
-        cfg = replace(cfg, parallel_coverage=parallel_coverage)
-    if n_permutations is not None:
-        cfg = replace(cfg, n_permutations=n_permutations)
+    cfg = _resolve_pipeline_config(
+        config,
+        config_path,
+        interval_ns=interval_ns,
+        latency_ns=latency_ns,
+        horizon=horizon,
+        execution_mode=execution_mode,
+        parallel_coverage=parallel_coverage,
+        n_permutations=n_permutations,
+    )
 
     seed_everything(cfg.global_seed)
     generator = rng if rng is not None else np.random.default_rng(cfg.global_seed)
 
-    nq_frame = nq if isinstance(nq, pl.DataFrame) else load_mbo_frame(nq)
-    mnq_frame = mnq if isinstance(mnq, pl.DataFrame) else load_mbo_frame(mnq)
+    nq_frame, mnq_frame = _load_pipeline_frames(nq, mnq, cfg)
 
     features = cross_market_features(
         nq_frame,
