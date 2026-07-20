@@ -294,10 +294,7 @@ class CausalRegimeTracker:
     def update(self, features: Sequence[float]) -> int:
         vec = np.asarray(features, dtype=np.float64)
         self._history.append(vec)
-        if (
-            len(self._history) >= self.min_samples
-            and len(self._history) % self.refit_interval == 0
-        ):
+        if len(self._history) >= self.min_samples and len(self._history) % self.refit_interval == 0:
             mat = np.stack(self._history)
             self._model = KMeansRegimes(self.n_regimes, seed=self.seed).fit(mat)
             if self._model.centroids_ is not None:
