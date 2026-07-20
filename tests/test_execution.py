@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from nq.alpha.execution import evaluate_signal_intraday
+from nq.alpha.signals import evaluate_signal_intraday
 from nq.core.determinism import make_generator
 from nq.simulation.execution import (
     buy_fill_price,

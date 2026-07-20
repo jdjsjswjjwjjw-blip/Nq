@@ -1,17 +1,35 @@
-# إعدادات مسار البحث — ترث من default.toml
-# Research pipeline settings (inherits defaults from configs/default.toml)
+# إعدادات الخط الموحّد — من MBO إلى التقرير (يرث من default.toml)
+# Unified research pipeline: load → features → SSL‖M9 → alpha → report
+
+[determinism]
+global_seed = 20260719
 
 [temporal]
-# يُشتق embargo تلقائيًا من interval_ns + window عند التشغيل
+interval_ns = 1_000_000_000    # 1 second buckets
+horizon = 1
 embargo_ns = 1_000_000_000
 
+[cross_market]
+latency_ns = 5_000_000         # 5 µs MNQ lag vs NQ (adjust per venue)
+lead_lag_window = 20
+
 [execution]
-# intraday: bid/ask + slippage | mid: تقييم على mid فقط
-mode = "mid"
+mode = "intraday"              # intraday | mid
 slippage_ticks = 0.5
 tick_size = 0.25
 commission_bps = 0.0
 
 [ssl]
 window = 5
+n_components = 4
 n_splits = 3
+
+[statistics]
+alpha = 0.05
+n_permutations = 2000
+
+[data]
+# مسارات أسبوعية نسبية من جذر المستودع (يُملأ عند التشغيل)
+nq_path = "data/raw/nq.parquet"
+mnq_path = "data/raw/mnq.parquet"
+output_dir = "data/runs/latest"

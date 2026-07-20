@@ -7,6 +7,12 @@
 
 from __future__ import annotations
 
+from nq.ingestion.databento import is_databento_frame, normalize_databento_frame
 from nq.ingestion.reader import iter_mbo_batches, load_mbo_frame
 
-__all__ = ["iter_mbo_batches", "load_mbo_frame"]
+__all__ = [
+    "is_databento_frame",
+    "iter_mbo_batches",
+    "load_mbo_frame",
+    "normalize_databento_frame",
+]

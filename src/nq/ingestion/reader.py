@@ -18,6 +18,7 @@ import polars as pl
 
 from nq.contracts.mbo import MBO_SCHEMA, validate_mbo_frame
 from nq.core.time import sort_causal
+from nq.ingestion.databento import is_databento_frame, normalize_databento_frame
 
 
 def _read_columnar(path: Path) -> pl.DataFrame:
@@ -36,6 +37,9 @@ def load_mbo_frame(source: pl.DataFrame | str | Path) -> pl.DataFrame:
     خرق للعقد (نقص أعمدة، أنواع خاطئة، أو ``ingest_ts < event_ts``).
     """
     frame = source if isinstance(source, pl.DataFrame) else _read_columnar(Path(source))
+
+    if is_databento_frame(frame):
+        frame = normalize_databento_frame(frame)
 
     # فرض ترتيب الأعمدة القانوني قبل التحقق لتفادي التباسات المخطط.
     frame = frame.select([name for name in MBO_SCHEMA if name in frame.columns])

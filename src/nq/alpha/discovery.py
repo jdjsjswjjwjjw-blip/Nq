@@ -9,20 +9,23 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
 
-from nq.alpha.execution import ExecutionMode, evaluate_signal_intraday
-from nq.alpha.signals import align_forward_returns, evaluate_signal, screen_signals
+from nq.alpha.signals import (
+    ExecutionMode,
+    align_forward_returns,
+    evaluate_signal,
+    evaluate_signal_intraday,
+    screen_signals,
+)
 from nq.contracts.temporal import AVAILABILITY_TS
-from nq.core.temporal_policy import TemporalPolicy
-from nq.coverage import run_coverage_pipeline
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
 from nq.research.findings import Finding
-from nq.simulation.cross_market import cross_market_features
 
 if TYPE_CHECKING:
     from nq.coverage.types import CoverageReport
@@ -135,96 +138,67 @@ class FullResearchResult:
 
 
 def run_full_research_pipeline(
-    nq: pl.DataFrame,
-    mnq: pl.DataFrame,
+    nq: pl.DataFrame | str | Path,
+    mnq: pl.DataFrame | str | Path,
     *,
-    interval_ns: int,
+    interval_ns: int = 1_000_000_000,
     horizon: int = 1,
     signal_columns: Sequence[str] | None = None,
     price_col: str = "nq_close",
     alpha: float = 0.05,
     n_permutations: int = 2000,
+    latency_ns: int = 0,
     lead_lag_window: int = 2,
     coverage_splits: int = 3,
-    coverage_embargo: int | None = None,
-    ssl_window: int = 5,
+    execution_mode: ExecutionMode = "intraday",
     rng: np.random.Generator | None = None,
 ) -> FullResearchResult:
-    """خط بحثي متكامل: مراقبة التغطية ثم اكتشاف الألفا (قابل لإعادة الإنتاج)."""
-    policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window)
-    embargo_val = (
-        coverage_embargo
-        if coverage_embargo is not None
-        else policy.embargo_time_units(interval_ns=interval_ns)
-    )
-    coverage = run_coverage_pipeline(
-        nq,
-        mnq,
-        interval_ns=interval_ns,
-        price_col=price_col,
-        alpha=alpha,
-        n_splits=coverage_splits,
-        embargo=embargo_val,
-        n_permutations=n_permutations,
-        lead_lag_window=lead_lag_window,
-        rng=rng,
-    )
-    alpha_result = run_research_pipeline(
-        nq,
-        mnq,
+    """يُفوِّض إلى الخط الموحّد ويُعيد تغطية + ألفا فقط."""
+    from nq.research.orchestrator import PipelineConfig, run_research_pipeline  # noqa: PLC0415
+
+    cfg = PipelineConfig(
         interval_ns=interval_ns,
         horizon=horizon,
-        signal_columns=signal_columns,
-        price_col=price_col,
+        latency_ns=latency_ns,
+        lead_lag_window=lead_lag_window,
+        coverage_splits=coverage_splits,
+        execution_mode=execution_mode,
         alpha=alpha,
         n_permutations=n_permutations,
-        lead_lag_window=lead_lag_window,
-        rng=rng,
     )
-    return FullResearchResult(coverage=coverage, alpha=alpha_result)
+    result = run_research_pipeline(nq, mnq, config=cfg, rng=rng)
+    return FullResearchResult(coverage=result.coverage, alpha=result.alpha)
 
 
 def run_research_pipeline(
-    nq: pl.DataFrame,
-    mnq: pl.DataFrame,
+    nq: pl.DataFrame | str | Path,
+    mnq: pl.DataFrame | str | Path,
     *,
-    interval_ns: int,
+    interval_ns: int = 1_000_000_000,
     horizon: int = 1,
     signal_columns: Sequence[str] | None = None,
     price_col: str = "nq_close",
     alpha: float = 0.05,
     n_permutations: int = 2000,
+    latency_ns: int = 0,
     lead_lag_window: int = 2,
-    execution_mode: ExecutionMode = "mid",
+    execution_mode: ExecutionMode = "intraday",
     slippage_ticks: float = 0.5,
     tick_size: float = 0.25,
     commission_bps: float = 0.0,
     rng: np.random.Generator | None = None,
 ) -> AlphaDiscovery:
-    """خط بحثي كامل قابل لإعادة الإنتاج: من MBO الخام (NQ/MNQ) إلى إشارات الألفا.
+    """اختصار للخط الموحّد — يُعيد قناة الألفا فقط (للتوافق مع الاختبارات)."""
+    from nq.research.orchestrator import run_research_pipeline  # noqa: PLC0415
 
-    يعيد بناء ميزات عبر السوقين ثم يكتشف الألفا ويفرزه ويكتب التقرير — وكله
-    حتمي، فيُعاد إنتاج المخرجات نفسها من البيانات الخام نفسها.
-    """
-    features = cross_market_features(
-        nq, mnq, interval_ns=interval_ns, lead_lag_window=lead_lag_window
-    )
-    columns = (
-        list(signal_columns)
-        if signal_columns is not None
-        else [c for c in _DEFAULT_SIGNAL_COLUMNS if c in features.columns]
-    )
-    return discover_alpha_from_features(
-        features,
-        signal_columns=columns,
-        price_col=price_col,
-        time_col=AVAILABILITY_TS,
+    return run_research_pipeline(
+        nq,
+        mnq,
+        interval_ns=interval_ns,
+        latency_ns=latency_ns,
         horizon=horizon,
+        signal_columns=signal_columns,
+        price_col=price_col,
         execution_mode=execution_mode,
-        slippage_ticks=slippage_ticks,
-        tick_size=tick_size,
-        commission_bps=commission_bps,
-        alpha=alpha,
-        n_permutations=n_permutations,
         rng=rng,
-    )
+    ).alpha

@@ -11,6 +11,8 @@
 * مصيدة المتداولين (Trader Trap): إشارة سببية لاحتمال إيقاع المتداولين العدوانيين
   في MNQ — حين يصنع MNQ نهايةً جديدة بدلتا عدوانية قويّة أحادية الاتجاه بينما
   يفشل NQ في التأكيد (تباعد قيادي).
+* ``session_phase`` / ``minutes_since_rth_open`` — سياق جلسة intraday سببي.
+* محاذاة MNQ مع تأخير ``latency_ns`` (NQ يقود MNQ).
 
 منع التسريب: كل الميزات مُجمّعة على نوافذ ومتاحة عند ``bucket_end``، وكل
 الإزاحات/الارتباطات المتدحرجة تستخدم الماضي فقط. لا تُحسب أي نتيجة مستقبلية
@@ -22,6 +24,7 @@ from __future__ import annotations
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.core.session import add_session_columns
 from nq.orderbook import reconstruct
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket
 from nq.simulation.order_flow import order_flow_summary
@@ -72,6 +75,44 @@ def _rolling_corr(x: pl.Expr, y: pl.Expr, window: int) -> pl.Expr:
     return pl.when(denom > 0).then(cov / denom).otherwise(None)
 
 
+def _align_markets(
+    nq_w: pl.DataFrame,
+    mnq_w: pl.DataFrame,
+    *,
+    latency_ns: int,
+) -> pl.DataFrame:
+    """يحاذي NQ مع MNQ مع تأخير سببي ``latency_ns`` (MNQ عند t−latency)."""
+    nq_renamed = nq_w.rename(
+        {"close": "nq_close", "bid": "nq_bid", "ask": "nq_ask", "delta": "nq_delta"}
+    )
+    mnq_renamed = mnq_w.rename(
+        {"close": "mnq_close", "delta": "mnq_delta", BUCKET_END: "mnq_bucket_end"}
+    )
+
+    if latency_ns > 0:
+        nq_renamed = nq_renamed.with_columns(
+            (pl.col(BUCKET_START) - latency_ns).alias("_mnq_align")
+        )
+        aligned = nq_renamed.sort("_mnq_align").join_asof(
+            mnq_renamed.sort(BUCKET_START),
+            left_on="_mnq_align",
+            right_on=BUCKET_START,
+            strategy="backward",
+        )
+    else:
+        aligned = nq_renamed.join(mnq_renamed, on=BUCKET_START, how="inner")
+
+    return (
+        aligned.sort(BUCKET_START)
+        .with_columns(
+            pl.coalesce(pl.col(BUCKET_END), pl.col("mnq_bucket_end")).alias(BUCKET_END),
+            pl.col("nq_delta").fill_null(0),
+            pl.col("mnq_delta").fill_null(0),
+        )
+        .drop("mnq_bucket_end", "_mnq_align", strict=False)
+    )
+
+
 def cross_market_features(
     nq: pl.DataFrame,
     mnq: pl.DataFrame,
@@ -79,27 +120,17 @@ def cross_market_features(
     interval_ns: int,
     lead_lag_window: int = _DEFAULT_LEAD_LAG_WINDOW,
     min_trap_delta: int = _DEFAULT_MIN_TRAP_DELTA,
+    latency_ns: int = 0,
 ) -> pl.DataFrame:
     """يشتق ميزات عبر السوقين على شبكة زمنية موحّدة (متاحة عند ``bucket_end``)."""
     if lead_lag_window < _MIN_LEAD_LAG_WINDOW:
         raise ValueError(f"lead_lag_window must be >= 2, got {lead_lag_window}")
+    if latency_ns < 0:
+        raise ValueError(f"latency_ns must be non-negative, got {latency_ns}")
 
-    nq_w = _market_windows(nq, interval_ns=interval_ns).rename(
-        {"close": "nq_close", "bid": "nq_bid", "ask": "nq_ask", "delta": "nq_delta"}
-    )
-    mnq_w = _market_windows(mnq, interval_ns=interval_ns).rename(
-        {"close": "mnq_close", "delta": "mnq_delta", BUCKET_END: "mnq_bucket_end"}
-    )
-    aligned = (
-        nq_w.join(mnq_w, on=BUCKET_START, how="inner")
-        .sort(BUCKET_START)
-        .with_columns(
-            pl.coalesce(pl.col(BUCKET_END), pl.col("mnq_bucket_end")).alias(BUCKET_END),
-            pl.col("nq_delta").fill_null(0),
-            pl.col("mnq_delta").fill_null(0),
-        )
-        .drop("mnq_bucket_end")
-    )
+    nq_w = _market_windows(nq, interval_ns=interval_ns)
+    mnq_w = _market_windows(mnq, interval_ns=interval_ns)
+    aligned = _align_markets(nq_w, mnq_w, latency_ns=latency_ns)
     if aligned.height == 0:
         return aligned
 
@@ -153,13 +184,14 @@ def cross_market_features(
         .otherwise(0)
     )
 
-    return aligned.with_columns(
+    result = aligned.with_columns(
         divergence.fill_null(value=False).alias("divergence"),
         confirmation_failure.alias("confirmation_failure"),
         lead_lag.alias("lead_lag"),
         trap_setup.alias("trap_setup"),
         pl.col(BUCKET_END).alias(AVAILABILITY_TS),
     )
+    return add_session_columns(result, time_col=AVAILABILITY_TS)
 
 
 __all__ = ["cross_market_features"]
