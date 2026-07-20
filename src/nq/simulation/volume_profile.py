@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import polars as pl
 
@@ -22,6 +22,7 @@ from nq.contracts.temporal import AVAILABILITY_TS
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 
 _DEFAULT_VALUE_AREA_FRACTION = 0.7
+_PRICE_SCALE: float = 1_000_000  # خطوة ~1$ لعقود NQ تقريبًا (fixed-point)
 
 
 def build_volume_profile(frame: pl.DataFrame) -> pl.DataFrame:
@@ -90,6 +91,59 @@ def value_area(
         total_volume=total,
         fraction=fraction,
     )
+
+
+@dataclass
+class DevelopingVolumeProfile:
+    """ملف حجم متطوّر event-by-event — يُحدَّث سببيًا مع كل صفقة.
+
+    يُكمّل ``developing_value_area`` (نافذة زمنية) بتحديث فوري لكل tick.
+    """
+
+    fraction: float = _DEFAULT_VALUE_AREA_FRACTION
+    _levels: dict[int, int] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        if not 0 < self.fraction <= 1:
+            raise ValueError(f"fraction must be in (0, 1], got {self.fraction}")
+
+    def add_trade(self, price: int, size: int) -> None:
+        """يُضيف حجم صفقة إلى المستوى السعري."""
+        self._levels[price] = self._levels.get(price, 0) + size
+
+    def to_frame(self) -> pl.DataFrame:
+        """يُعيد ملف الحجم الحالي كإطار polars مرتّب بالسعر."""
+        if not self._levels:
+            return pl.DataFrame(schema={"price": pl.Int64(), "volume": pl.Int64()})
+        return pl.DataFrame(
+            {"price": list(self._levels.keys()), "volume": list(self._levels.values())}
+        ).sort("price")
+
+    def value_area(self) -> ValueArea | None:
+        """POC/VAH/VAL من الحالة الحالية."""
+        return value_area(self.to_frame(), fraction=self.fraction)
+
+    def features_at_mid(
+        self,
+        mid: float,
+        *,
+        ref_price: float,
+        near_ticks: int,
+    ) -> tuple[float, float, float, float, float, float]:
+        """ميزات VP سببية: مسافات POC/VAH/VAL + أعلام القرب/داخل المنطقة."""
+        if not self._levels or mid <= 0 or ref_price <= 0:
+            return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        va = self.value_area()
+        if va is None:
+            return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        scale = near_ticks * _PRICE_SCALE
+        poc_d = (mid - va.poc) / ref_price
+        vah_d = (mid - va.vah) / ref_price
+        val_d = (mid - va.val) / ref_price
+        near_vah = 1.0 if abs(mid - va.vah) <= scale else 0.0
+        near_val = 1.0 if abs(mid - va.val) <= scale else 0.0
+        in_va = 1.0 if va.val <= mid <= va.vah else 0.0
+        return (poc_d, vah_d, val_d, near_vah, near_val, in_va)
 
 
 def classify_nodes(profile: pl.DataFrame) -> pl.DataFrame:

@@ -12,8 +12,12 @@
 from __future__ import annotations
 
 from nq.states.regimes import (
+    MARKET_REGIME_FEATURE_NAMES,
+    CausalRegimeTracker,
     KMeansRegimes,
     dwell_times,
+    heuristic_market_phase,
+    infer_market_phase_map,
     regime_labels_frame,
     regime_summary,
     silhouette_score,
@@ -21,8 +25,12 @@ from nq.states.regimes import (
 )
 
 __all__ = [
+    "MARKET_REGIME_FEATURE_NAMES",
+    "CausalRegimeTracker",
     "KMeansRegimes",
     "dwell_times",
+    "heuristic_market_phase",
+    "infer_market_phase_map",
     "regime_labels_frame",
     "regime_summary",
     "silhouette_score",

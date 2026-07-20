@@ -5,6 +5,7 @@ from __future__ import annotations
 import polars as pl
 
 from nq.simulation.volume_profile import (
+    DevelopingVolumeProfile,
     build_volume_profile,
     classify_nodes,
     developing_value_area,
@@ -56,6 +57,17 @@ def test_classify_nodes_hvn_lvn() -> None:
     # 100 is a local max (HVN); interior local minima none here besides edges
     hvn_prices = nodes.filter(nodes["is_hvn"])["price"].to_list()
     assert 100 in hvn_prices
+
+
+def test_developing_volume_profile_incremental() -> None:
+    profile = DevelopingVolumeProfile()
+    for price, size in [(100, 5), (100, 5), (110, 3)]:
+        profile.add_trade(price, size)
+    va = profile.value_area()
+    assert va is not None
+    assert va.poc == 100
+    feats = profile.features_at_mid(100.0, ref_price=1.0, near_ticks=2)
+    assert feats[5] == 1.0  # in_value_area
 
 
 def test_developing_value_area_migration() -> None:

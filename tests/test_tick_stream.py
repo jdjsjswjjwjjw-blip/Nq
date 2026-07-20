@@ -33,6 +33,7 @@ def test_build_tick_stream_has_book_and_vp_columns() -> None:
     stream = build_tick_stream(nq, mnq)
     assert stream.height > 0
     assert "nq_best_bid_norm" in stream.frame.columns
+    assert "nq_vah_bid_liq_log" in stream.frame.columns
     assert "poc_dist_norm" in stream.frame.columns
     assert "mask_path" in stream.frame.columns
     assert "market_phase" in stream.frame.columns

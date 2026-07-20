@@ -2,9 +2,9 @@
 
 مساران لا يتداخلان:
 
-* **Standalone** (NQ/MNQ منفرد): balance (إخفاء سيولة عند VAH/VAL) أو
+* **Standalone** (NQ/MNQ منفرد): balance (إخفاء سيولة الدفتر عند VAH/VAL) أو
   expansion (إخفاء trailing liquidity خلف السعر).
-* **Cross-trap**: MNQ مكشوف، إخفاء أوامر NQ التجميعية (bid/ask size).
+* **Cross-trap**: MNQ مكشوف، إخفاء سيولة NQ عند حدود VAH/VAL.
 
 يُكمّل ``mask_matrix`` العشوائي في ``masking.py`` دون تعديله.
 """
@@ -26,26 +26,24 @@ from nq.models.tick_stream import (
 FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
 
-# فهارس الميزات للإخفاء السريع
 _NAME_TO_IDX: dict[str, int] = {name: i for i, name in enumerate(TICK_FEATURE_NAMES)}
 
 _NQ_LIQUIDITY_IDX: tuple[int, ...] = (
     _NAME_TO_IDX["nq_bid_size_log"],
     _NAME_TO_IDX["nq_ask_size_log"],
 )
-_MNQ_FLOW_IDX: tuple[int, ...] = (
-    _NAME_TO_IDX["mnq_signed_vol"],
-    _NAME_TO_IDX["trap_setup"],
+_VAH_BOOK_IDX: tuple[int, ...] = (
+    _NAME_TO_IDX["nq_vah_bid_liq_log"],
+    _NAME_TO_IDX["nq_vah_ask_liq_log"],
 )
-_VP_BOUNDARY_IDX: tuple[int, ...] = (
-    _NAME_TO_IDX["near_vah"],
-    _NAME_TO_IDX["near_val"],
-    _NAME_TO_IDX["in_value_area"],
+_VAL_BOOK_IDX: tuple[int, ...] = (
+    _NAME_TO_IDX["nq_val_bid_liq_log"],
+    _NAME_TO_IDX["nq_val_ask_liq_log"],
 )
-_TRAILING_IDX: tuple[int, ...] = (
-    _NAME_TO_IDX["nq_bid_size_log"],
-    _NAME_TO_IDX["nq_ask_size_log"],
-    _NAME_TO_IDX["nq_spread_norm"],
+_BOOK_BOUNDARY_IDX: tuple[int, ...] = _VAH_BOOK_IDX + _VAL_BOOK_IDX
+_TRAILING_DEPTH_IDX: tuple[int, ...] = (
+    _NAME_TO_IDX["nq_trail_bid_liq_log"],
+    _NAME_TO_IDX["nq_trail_ask_liq_log"],
 )
 
 
@@ -72,25 +70,26 @@ def structural_mask_sample(
     fill_value: float = 0.0,
 ) -> MaskedMatrix:
     """يُقنّع عيّنة tick واحدة ``(window, n_features)`` حسب المسار والمرحلة."""
-    _ = feature_names  # أسماء ثابتة من TICK_FEATURE_NAMES؛ للتوافق المستقبلي
+    _ = feature_names
     arr = np.asarray(x, dtype=np.float64)
     mask = np.zeros_like(arr, dtype=bool)
 
     if mask_path == int(MaskPath.CROSS_TRAP):
-        # مسار 2: إخفاء سيولة NQ التجميعية، إبقاء تدفّق MNQ
         mask |= _mask_feature_indices(arr, _NQ_LIQUIDITY_IDX)
+        mask |= _mask_feature_indices(arr, _BOOK_BOUNDARY_IDX)
     elif market_phase == int(MarketPhase.BALANCE):
         near_vah = bool(np.any(arr[:, _NAME_TO_IDX["near_vah"]] > 0))
         near_val = bool(np.any(arr[:, _NAME_TO_IDX["near_val"]] > 0))
         in_va = bool(np.any(arr[:, _NAME_TO_IDX["in_value_area"]] > 0))
-        if near_vah or near_val or in_va:
-            mask |= _mask_feature_indices(arr, _NQ_LIQUIDITY_IDX)
-            mask |= _mask_feature_indices(arr, _VP_BOUNDARY_IDX)
+        if near_vah:
+            mask |= _mask_feature_indices(arr, _VAH_BOOK_IDX)
+        if near_val:
+            mask |= _mask_feature_indices(arr, _VAL_BOOK_IDX)
+        if in_va:
+            mask |= _mask_feature_indices(arr, _BOOK_BOUNDARY_IDX)
     elif market_phase == int(MarketPhase.EXPANSION):
-        # مسار 1 — expansion: إخفاء trailing liquidity (آخر tick في النافذة)
-        mask |= _mask_feature_indices(arr, _TRAILING_IDX, time_slice=slice(-1, None))
+        mask |= _mask_feature_indices(arr, _TRAILING_DEPTH_IDX, time_slice=slice(-1, None))
     else:
-        # neutral: إخفاء خفيف على spread فقط
         spread_idx = _NAME_TO_IDX["nq_spread_norm"]
         mask |= _mask_feature_indices(arr, (spread_idx,), time_slice=slice(-1, None))
 

@@ -7,8 +7,11 @@ import pytest
 
 from nq.core.determinism import make_generator
 from nq.states import (
+    CausalRegimeTracker,
     KMeansRegimes,
     dwell_times,
+    heuristic_market_phase,
+    infer_market_phase_map,
     regime_labels_frame,
     regime_summary,
     silhouette_score,
@@ -22,6 +25,34 @@ def _three_clusters(rng: np.random.Generator, per: int = 60) -> tuple[np.ndarray
     x = np.vstack(parts)
     truth = np.repeat([0, 1, 2], per)
     return x, truth
+
+
+def test_heuristic_market_phase_balance() -> None:
+    feats = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert heuristic_market_phase(feats) == 0
+
+
+def test_causal_regime_tracker_is_causal() -> None:
+    tracker = CausalRegimeTracker(min_samples=4, refit_interval=4, seed=0)
+    phases: list[int] = []
+    for i in range(20):
+        near_vah = 1.0 if i % 5 == 0 else 0.0
+        phases.append(tracker.update([near_vah, 0.0, near_vah, 0.0, 0.0, 0.0, 0.1, 0.1]))
+    assert len(phases) == 20
+    assert all(p in {0, 1, 2} for p in phases)
+
+
+def test_infer_market_phase_map() -> None:
+    centroids = np.array(
+        [
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.1],
+        ]
+    )
+    mapping = infer_market_phase_map(centroids)
+    assert mapping[0] == 0  # balance
+    assert mapping[1] == 1  # expansion
 
 
 def test_kmeans_recovers_separated_clusters() -> None:

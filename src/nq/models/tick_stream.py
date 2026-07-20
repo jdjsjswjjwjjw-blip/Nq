@@ -3,8 +3,9 @@
 يبني tensor سببي لكل حدث MBO:
 
 * **الدفتر الحي** (top-of-book NQ/MNQ) — جزء من المدخل.
-* **volume profile متطوّر** (POC/VAH/VAL) — يُحدَّث مع كل صفقة.
-* **مرحلة السوق** (balance / expansion) — لمسار الإخفاء standalone.
+* **سيولة الدفتر عند VAH/VAL** — مستويات فعلية من ``OrderBook``.
+* **volume profile متطوّر** (POC/VAH/VAL) — عبر ``DevelopingVolumeProfile``.
+* **مرحلة السوق** (balance / expansion) — عبر ``CausalRegimeTracker`` (KMeansRegimes).
 * **إشارات cross** (delta MNQ، trap setup) — لمسار الإخفاء cross.
 
 كل صف متاح عند ``event_ts`` للحدث (point-in-time).
@@ -24,17 +25,16 @@ from nq.contracts.mbo import MboAction
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS, SEQUENCE
 from nq.core.time import sort_causal
 from nq.orderbook.book import OrderBook
-from nq.simulation.volume_profile import value_area
+from nq.simulation.volume_profile import DevelopingVolumeProfile, ValueArea
+from nq.states.regimes import CausalRegimeTracker
 
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.int64]
 
 _TRADE = MboAction.TRADE.value
 _BID = "B"
-_ASK = "A"
 _NEAR_TICKS = 2  # قرب VAH/VAL بوحدات السعر الثابتة (fixed-point steps)
-_PRICE_SCALE: Final = 1_000_000  # خطوة ~1$ لعقود NQ تقريبًا
-_IN_VALUE_ACTIVE = 0.5
+_REF_PRICE: Final = 20_000_000_000.0
 
 
 class MarketPhase(IntEnum):
@@ -52,7 +52,6 @@ class MaskPath(IntEnum):
     CROSS_TRAP = 1
 
 
-# أسماء القنوات بالترتيب الثابت
 BOOK_NQ_NAMES: Final = (
     "nq_best_bid_norm",
     "nq_best_ask_norm",
@@ -68,6 +67,14 @@ BOOK_MNQ_NAMES: Final = (
     "mnq_ask_size_log",
     "mnq_spread_norm",
     "mnq_mid_norm",
+)
+BOOK_DEPTH_NAMES: Final = (
+    "nq_vah_bid_liq_log",
+    "nq_vah_ask_liq_log",
+    "nq_val_bid_liq_log",
+    "nq_val_ask_liq_log",
+    "nq_trail_bid_liq_log",
+    "nq_trail_ask_liq_log",
 )
 VP_NAMES: Final = (
     "poc_dist_norm",
@@ -88,6 +95,7 @@ CROSS_NAMES: Final = (
 TICK_FEATURE_NAMES: Final = (
     *BOOK_NQ_NAMES,
     *BOOK_MNQ_NAMES,
+    *BOOK_DEPTH_NAMES,
     *VP_NAMES,
     *PHASE_NAMES,
     *CROSS_NAMES,
@@ -149,50 +157,29 @@ def _book_row(
     )
 
 
-def _update_profile(profile: dict[int, int], price: int, size: int) -> None:
-    profile[price] = profile.get(price, 0) + size
-
-
-def _profile_features(
-    profile: dict[int, int],
-    mid: float,
-    *,
-    ref_price: float,
+def _book_depth_features(
+    book: OrderBook,
+    va: ValueArea | None,
 ) -> tuple[float, float, float, float, float, float]:
-    if not profile or mid <= 0:
-        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    rows = pl.DataFrame({"price": list(profile.keys()), "volume": list(profile.values())}).sort(
-        "price"
-    )
-    va = value_area(rows)
+    """سيولة فعلية عند VAH/VAL و trailing liquidity خلف أفضل سعر."""
     if va is None:
         return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    poc_d = (mid - va.poc) / ref_price
-    vah_d = (mid - va.vah) / ref_price
-    val_d = (mid - va.val) / ref_price
-    near_vah = 1.0 if abs(mid - va.vah) <= _NEAR_TICKS * _PRICE_SCALE else 0.0
-    near_val = 1.0 if abs(mid - va.val) <= _NEAR_TICKS * _PRICE_SCALE else 0.0
-    in_va = 1.0 if va.val <= mid <= va.vah else 0.0
-    return (poc_d, vah_d, val_d, near_vah, near_val, in_va)
-
-
-def _detect_phase(
-    in_value_area: float,
-    near_vah: float,
-    near_val: float,
-    price: float,
-    prev_high: float | None,
-    prev_low: float | None,
-) -> MarketPhase:
-    if near_vah > 0 or near_val > 0 or in_value_area > _IN_VALUE_ACTIVE:
-        return MarketPhase.BALANCE
-    if (
-        prev_high is not None
-        and prev_low is not None
-        and (price > prev_high or price < prev_low)
-    ):
-        return MarketPhase.EXPANSION
-    return MarketPhase.NEUTRAL
+    vah_bid = book.bids.get(va.vah, 0)
+    vah_ask = book.asks.get(va.vah, 0)
+    val_bid = book.bids.get(va.val, 0)
+    val_ask = book.asks.get(va.val, 0)
+    best_bid = book.best_bid()
+    best_ask = book.best_ask()
+    trail_bid = sum(sz for p, sz in book.bids.items() if best_bid and p < best_bid[0])
+    trail_ask = sum(sz for p, sz in book.asks.items() if best_ask and p > best_ask[0])
+    return (
+        _log_size(vah_bid),
+        _log_size(vah_ask),
+        _log_size(val_bid),
+        _log_size(val_ask),
+        _log_size(trail_bid),
+        _log_size(trail_ask),
+    )
 
 
 def _phase_one_hot(phase: MarketPhase) -> tuple[float, float]:
@@ -219,6 +206,23 @@ def _trap_setup(
     return 0.0
 
 
+def _regime_features(
+    vp_feats: tuple[float, float, float, float, float, float],
+    depth_feats: tuple[float, float, float, float, float, float],
+) -> list[float]:
+    """متجه ميزات KMeansRegimes (يطابق ``MARKET_REGIME_FEATURE_NAMES``)."""
+    return [
+        vp_feats[3],
+        vp_feats[4],
+        vp_feats[5],
+        vp_feats[0],
+        vp_feats[1],
+        vp_feats[2],
+        depth_feats[4],
+        depth_feats[5],
+    ]
+
+
 def _tick_row(
     *,
     action: str,
@@ -232,23 +236,20 @@ def _tick_row(
     nq_instrument_id: int,
     nq_book: OrderBook,
     mnq_book: OrderBook,
-    nq_profile: dict[int, int],
+    nq_profile: DevelopingVolumeProfile,
+    regime_tracker: CausalRegimeTracker,
     mnq_signed: int,
     nq_high: float,
     mnq_high: float,
     mnq_low: float,
     ref_price: float,
     prev_nq_mid: float | None,
-    prev_low: float | None,
-    prev_high: float | None,
 ) -> tuple[
     dict[str, float | int],
     int,
     float,
     float,
     float,
-    float | None,
-    float | None,
     float | None,
 ]:
     """يُحدّث الدفاتر ويُرجع صف tick واحد مع حالة السوق المحدّثة."""
@@ -257,7 +258,7 @@ def _tick_row(
     book.apply(str(action), str(side), int(price), int(size), int(order_id))
 
     if is_nq and str(action) == _TRADE:
-        _update_profile(nq_profile, int(price), int(size))
+        nq_profile.add_trade(int(price), int(size))
 
     if not is_nq and str(action) == _TRADE:
         trade_size = int(size)
@@ -271,16 +272,15 @@ def _tick_row(
 
     if nq_mid > 0:
         nq_high = max(nq_high, nq_mid)
-        if prev_nq_mid is not None:
-            prev_low = nq_mid if prev_low is None else min(prev_low, nq_mid)
-            prev_high = nq_mid if prev_high is None else max(prev_high, nq_mid)
 
     if mnq_mid > 0:
         mnq_high = max(mnq_high, mnq_mid)
         mnq_low = mnq_mid if mnq_low == 0.0 else min(mnq_low, mnq_mid)
 
-    vp_feats = _profile_features(nq_profile, nq_mid, ref_price=ref_price)
-    phase = _detect_phase(vp_feats[5], vp_feats[3], vp_feats[4], nq_mid, prev_high, prev_low)
+    va = nq_profile.value_area()
+    vp_feats = nq_profile.features_at_mid(nq_mid, ref_price=ref_price, near_ticks=_NEAR_TICKS)
+    depth_feats = _book_depth_features(nq_book, va)
+    phase = MarketPhase(regime_tracker.update(_regime_features(vp_feats, depth_feats)))
     phase_oh = _phase_one_hot(phase)
     trap = _trap_setup(mnq_signed, nq_mid, mnq_mid, nq_high, mnq_high)
     mask_path = MaskPath.CROSS_TRAP if abs(trap) > 0 else MaskPath.STANDALONE
@@ -294,13 +294,14 @@ def _tick_row(
         AVAILABILITY_TS: int(ts),
         **dict(zip(BOOK_NQ_NAMES, nq_row, strict=True)),
         **dict(zip(BOOK_MNQ_NAMES, mnq_row, strict=True)),
+        **dict(zip(BOOK_DEPTH_NAMES, depth_feats, strict=True)),
         **dict(zip(VP_NAMES, vp_feats, strict=True)),
         **dict(zip(PHASE_NAMES, phase_oh, strict=True)),
         "mnq_signed_vol": float(mnq_signed),
         "trap_setup": trap,
     }
     next_prev_nq_mid = nq_mid if nq_mid > 0 else prev_nq_mid
-    return row, mnq_signed, nq_high, mnq_high, mnq_low, next_prev_nq_mid, prev_low, prev_high
+    return row, mnq_signed, nq_high, mnq_high, mnq_low, next_prev_nq_mid
 
 
 def build_tick_stream(
@@ -317,12 +318,13 @@ def build_tick_stream(
 
     nq_book = OrderBook()
     mnq_book = OrderBook()
-    nq_profile: dict[int, int] = {}
+    nq_profile = DevelopingVolumeProfile()
+    regime_tracker = CausalRegimeTracker(min_samples=8, refit_interval=16)
     mnq_signed = 0
     nq_high = 0.0
     mnq_high = 0.0
     mnq_low = 0.0
-    ref_price = 20_000_000_000.0
+    ref_price = _REF_PRICE
 
     rows: list[dict[str, float | int]] = []
     actions = combined["action"].to_list()
@@ -335,8 +337,6 @@ def build_tick_stream(
     instruments = combined["instrument_id"].to_list()
 
     prev_nq_mid: float | None = None
-    prev_low: float | None = None
-    prev_high: float | None = None
 
     for action, side, price, size, order_id, ts, seq, inst in zip(
         actions,
@@ -349,7 +349,7 @@ def build_tick_stream(
         instruments,
         strict=True,
     ):
-        row, mnq_signed, nq_high, mnq_high, mnq_low, prev_nq_mid, prev_low, prev_high = _tick_row(
+        row, mnq_signed, nq_high, mnq_high, mnq_low, prev_nq_mid = _tick_row(
             action=str(action),
             side=str(side),
             price=int(price),
@@ -362,14 +362,13 @@ def build_tick_stream(
             nq_book=nq_book,
             mnq_book=mnq_book,
             nq_profile=nq_profile,
+            regime_tracker=regime_tracker,
             mnq_signed=mnq_signed,
             nq_high=nq_high,
             mnq_high=mnq_high,
             mnq_low=mnq_low,
             ref_price=ref_price,
             prev_nq_mid=prev_nq_mid,
-            prev_low=prev_low,
-            prev_high=prev_high,
         )
         rows.append(row)
 

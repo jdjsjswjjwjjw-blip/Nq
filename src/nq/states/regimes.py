@@ -9,7 +9,9 @@ numpy، يُلائَم على التدريب فقط ويُوسِّم الاخت�
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from itertools import pairwise
+from typing import Final
 
 import numpy as np
 import numpy.typing as npt
@@ -22,6 +24,26 @@ IntArray = npt.NDArray[np.intp]
 
 _MATRIX_NDIM = 2
 _MIN_CLUSTERS = 2
+
+# ترتيب ميزات التجميع في tick stream (يجب أن يطابق ``tick_stream``)
+MARKET_REGIME_FEATURE_NAMES: Final = (
+    "near_vah",
+    "near_val",
+    "in_value_area",
+    "poc_dist_norm",
+    "vah_dist_norm",
+    "val_dist_norm",
+    "nq_trail_bid_liq_log",
+    "nq_trail_ask_liq_log",
+)
+
+PHASE_BALANCE = 0
+PHASE_EXPANSION = 1
+PHASE_NEUTRAL = 2
+
+_IN_VALUE_ACTIVE = 0.5
+_MIN_PHASE_FEATURES = 3
+_REGIME_FEATURE_DIM = len(MARKET_REGIME_FEATURE_NAMES)
 
 
 def _pairwise_sqdist(x: FloatArray, centers: FloatArray) -> FloatArray:
@@ -220,3 +242,67 @@ def regime_summary(
             row[name] = float(value)
         rows.append(row)
     return pl.DataFrame(rows)
+
+
+def infer_market_phase_map(
+    centroids: FloatArray,
+    *,
+    in_value_idx: int = 2,
+    trail_bid_idx: int = 6,
+    trail_ask_idx: int = 7,
+) -> dict[int, int]:
+    """يربط كل عنقود KMeans بمرحلة سوق (balance/expansion/neutral)."""
+    k = centroids.shape[0]
+    phases = dict.fromkeys(range(k), PHASE_NEUTRAL)
+    balance_cluster = int(np.argmax(centroids[:, in_value_idx]))
+    phases[balance_cluster] = PHASE_BALANCE
+    trail_scores = centroids[:, trail_bid_idx] + centroids[:, trail_ask_idx]
+    expansion_candidates = [i for i in range(k) if i != balance_cluster]
+    if expansion_candidates:
+        expansion_cluster = max(expansion_candidates, key=lambda i: float(trail_scores[i]))
+        phases[expansion_cluster] = PHASE_EXPANSION
+    return phases
+
+
+def heuristic_market_phase(features: Sequence[float]) -> int:
+    """مرحلة سوق سببية قبل توفر نموذج KMeans كافٍ."""
+    arr = np.asarray(features, dtype=np.float64)
+    if arr.shape[0] < _MIN_PHASE_FEATURES:
+        return PHASE_NEUTRAL
+    near_vah, near_val, in_va = float(arr[0]), float(arr[1]), float(arr[2])
+    if near_vah > 0 or near_val > 0 or in_va > _IN_VALUE_ACTIVE:
+        return PHASE_BALANCE
+    if arr.shape[0] >= _REGIME_FEATURE_DIM:
+        trail = float(arr[6]) + float(arr[7])
+        if trail > 0:
+            return PHASE_EXPANSION
+    return PHASE_NEUTRAL
+
+
+@dataclass
+class CausalRegimeTracker:
+    """تتبّع سببي لحالات السوق عبر KMeansRegimes على الماضي فقط."""
+
+    n_regimes: int = 3
+    seed: int = 0
+    refit_interval: int = 50
+    min_samples: int = 12
+    _history: list[FloatArray] = field(default_factory=list, repr=False)
+    _model: KMeansRegimes | None = field(default=None, repr=False)
+    _phase_map: dict[int, int] = field(default_factory=dict, repr=False)
+
+    def update(self, features: Sequence[float]) -> int:
+        vec = np.asarray(features, dtype=np.float64)
+        self._history.append(vec)
+        if (
+            len(self._history) >= self.min_samples
+            and len(self._history) % self.refit_interval == 0
+        ):
+            mat = np.stack(self._history)
+            self._model = KMeansRegimes(self.n_regimes, seed=self.seed).fit(mat)
+            if self._model.centroids_ is not None:
+                self._phase_map = infer_market_phase_map(self._model.centroids_)
+        if self._model is None or self._model.centroids_ is None:
+            return heuristic_market_phase(vec.tolist())
+        regime = int(self._model.predict(vec.reshape(1, -1))[0])
+        return self._phase_map.get(regime, PHASE_NEUTRAL)

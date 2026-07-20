@@ -27,6 +27,7 @@ from nq.simulation.footprint import footprint_cells, footprint_summary
 from nq.simulation.liquidity import detect_icebergs, liquidity_summary
 from nq.simulation.order_flow import ofi_by_bucket, order_flow_imbalance, order_flow_summary
 from nq.simulation.volume_profile import (
+    DevelopingVolumeProfile,
     ValueArea,
     build_volume_profile,
     classify_nodes,
@@ -37,6 +38,7 @@ from nq.simulation.volume_profile import (
 __all__ = [
     "BUCKET_END",
     "BUCKET_START",
+    "DevelopingVolumeProfile",
     "ValueArea",
     "add_time_bucket",
     "auction_states",
