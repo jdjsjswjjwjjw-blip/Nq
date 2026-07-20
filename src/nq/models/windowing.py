@@ -83,3 +83,52 @@ def build_sequences(
         times=np.asarray(times, dtype=np.int64),
         feature_names=tuple(feature_columns),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class TickSequenceDataset(SequenceDataset):
+    """تسلسل tick مع بيانات وصفية لمسارات الإخفاء الهيكلي.
+
+    * ``mask_paths``: ``(n_samples,)`` مسار الإخفاء عند نهاية النافذة.
+    * ``market_phases``: ``(n_samples,)`` مرحلة السوق (balance/expansion/neutral).
+    """
+
+    mask_paths: IntArray
+    market_phases: IntArray
+
+
+def build_tick_sequences(
+    frame: pl.DataFrame,
+    *,
+    feature_columns: Sequence[str],
+    window: int,
+    time_col: str = AVAILABILITY_TS,
+    stride: int = 1,
+) -> TickSequenceDataset:
+    """يبني تسلسلات tick/event مع ``mask_path`` و ``market_phase`` لكل عيّنة."""
+    base = build_sequences(
+        frame,
+        feature_columns=feature_columns,
+        window=window,
+        time_col=time_col,
+        stride=stride,
+    )
+    if base.x.shape[0] == 0:
+        return TickSequenceDataset(
+            x=base.x,
+            times=base.times,
+            feature_names=base.feature_names,
+            mask_paths=np.empty(0, dtype=np.int64),
+            market_phases=np.empty(0, dtype=np.int64),
+        )
+
+    ends = list(range(window - 1, frame.height, stride))
+    mask_paths = frame["mask_path"].to_numpy().astype(np.int64)[ends]
+    market_phases = frame["market_phase"].to_numpy().astype(np.int64)[ends]
+    return TickSequenceDataset(
+        x=base.x,
+        times=base.times,
+        feature_names=base.feature_names,
+        mask_paths=mask_paths,
+        market_phases=market_phases,
+    )

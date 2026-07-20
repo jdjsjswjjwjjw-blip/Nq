@@ -18,9 +18,11 @@ from nq.core.temporal_policy import TemporalPolicy
 from nq.models.contrastive import augment_windows, info_nce_loss
 from nq.models.encoder import PCAEncoder
 from nq.models.masking import mask_matrix, masked_reconstruction_error
+from nq.models.masking_structural import batch_masked_mse, structural_mask_batch
 from nq.models.preprocessing import CausalStandardScaler
 from nq.models.splitting import WalkForwardFold, purged_walk_forward_split
-from nq.models.windowing import build_sequences
+from nq.models.tick_stream import TICK_FEATURE_NAMES, build_tick_stream
+from nq.models.windowing import TickSequenceDataset, build_sequences, build_tick_sequences
 from nq.models.world_model import NextStatePredictor, r2_score
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
@@ -257,4 +259,143 @@ def run_ssl_pipeline(
     )
     findings = _ssl_findings(metrics, research)
     report = research.write_report(findings, title="SSL Foundation Model — Research Report")
+    return SSLPipelineResult(metrics=metrics, embeddings=embeddings, report=report)
+
+
+def _evaluate_ssl_tick_fold(
+    fold_idx: int,
+    train: FloatArray,
+    test: FloatArray,
+    test_times: np.ndarray,
+    test_paths: np.ndarray,
+    test_phases: np.ndarray,
+    *,
+    window: int,
+    n_components: int,
+    generator: np.random.Generator,
+) -> _FoldMetrics | None:
+    """يقيّم طيّة tick SSL بإخفاء هيكلي (لا ``mask_matrix`` عشوائي)."""
+    n_feat = len(TICK_FEATURE_NAMES)
+    if train.shape[0] < _MIN_SSL_SAMPLES or test.shape[0] < _MIN_SSL_TEST:
+        return None
+
+    test_3d = test.reshape(test.shape[0], window, n_feat)
+    scaler = CausalStandardScaler().fit(train)
+    x_train = scaler.transform(train)
+    x_test = scaler.transform(test)
+    k = min(n_components, x_train.shape[1], x_train.shape[0] - 1)
+    encoder = PCAEncoder(k).fit(x_train)
+
+    masked_batch = structural_mask_batch(
+        test_3d,
+        mask_paths=test_paths,
+        market_phases=test_phases,
+    )
+    recon_flat = encoder.reconstruct(x_test)
+    recon_3d = recon_flat.reshape(test_3d.shape)
+    mse = batch_masked_mse(recon_3d, masked_batch)
+
+    z_train = encoder.transform(x_train)
+    z_test = encoder.transform(x_test)
+    wm_r2 = 0.0
+    if z_train.shape[0] >= _MIN_WM_SAMPLES and z_test.shape[0] >= _MIN_WM_SAMPLES:
+        predictor = NextStatePredictor().fit(z_train[:-1], z_train[1:])
+        wm_r2 = max(r2_score(z_test[1:], predictor.predict(z_test[:-1])), 0.0)
+    contrastive = 0.0
+    if z_test.shape[0] >= _MIN_CONTRASTIVE_BATCH:
+        contrastive = info_nce_loss(z_test, augment_windows(z_test, rng=generator), temperature=0.1)
+    emb_rows: list[dict[str, float | int]] = []
+    for i, ts in enumerate(test_times):
+        row: dict[str, float | int] = {AVAILABILITY_TS: int(ts)}
+        for j, val in enumerate(z_test[i]):
+            row[f"z{j}"] = float(val)
+        emb_rows.append(row)
+    return _FoldMetrics(fold_idx, mse, wm_r2, contrastive, emb_rows)
+
+
+def run_ssl_tick_pipeline(
+    nq: pl.DataFrame,
+    mnq: pl.DataFrame,
+    *,
+    window: int = _DEFAULT_WINDOW,
+    n_components: int = 4,
+    n_splits: int = 3,
+    embargo: int | None = None,
+    purge_samples: int | None = None,
+    alpha: float = 0.05,
+    rng: np.random.Generator | None = None,
+    assistant: ResearchAssistant | None = None,
+) -> SSLPipelineResult:
+    """SSL على tick/event: دفتر حي + ميزات inline + إخفاء هيكلي (الأبعاد 1–6).
+
+    يُكمّل ``run_ssl_pipeline`` (bucket) ولا يستبدله.
+    """
+
+    generator = rng if rng is not None else np.random.default_rng(0)
+    research = assistant if assistant is not None else ResearchAssistant(alpha=alpha)
+
+    stream = build_tick_stream(nq, mnq)
+    if stream.height < window:
+        return _empty_ssl_result(research)
+
+    sequences: TickSequenceDataset = build_tick_sequences(
+        stream.frame,
+        feature_columns=list(TICK_FEATURE_NAMES),
+        window=window,
+    )
+    if len(sequences) < _MIN_SSL_SAMPLES:
+        return _empty_ssl_result(research)
+
+    policy = TemporalPolicy.for_run(interval_ns=1, window=window)
+    embargo_val = (
+        embargo
+        if embargo is not None
+        else policy.embargo_time_units(interval_ns=1, times=sequences.times)
+    )
+    purge_val = purge_samples if purge_samples is not None else policy.purge_samples()
+
+    flat = sequences.flatten()
+    folds = _walk_forward_folds(
+        sequences.times,
+        n_splits=n_splits,
+        embargo=embargo_val,
+        purge_samples=purge_val,
+    )
+    fold_rows: list[dict[str, float | int]] = []
+    embedding_rows: list[dict[str, float | int]] = []
+
+    for fold_idx, fold in enumerate(folds):
+        result = _evaluate_ssl_tick_fold(
+            fold_idx,
+            flat[fold.train_idx],
+            flat[fold.test_idx],
+            sequences.times[fold.test_idx],
+            sequences.mask_paths[fold.test_idx],
+            sequences.market_phases[fold.test_idx],
+            window=window,
+            n_components=n_components,
+            generator=generator,
+        )
+        if result is None:
+            continue
+        fold_rows.append(
+            {
+                "fold": result.fold,
+                "masked_mse": result.masked_mse,
+                "world_model_r2": result.world_model_r2,
+                "contrastive_loss": result.contrastive_loss,
+            }
+        )
+        embedding_rows.extend(result.embeddings)
+
+    metrics = pl.DataFrame(fold_rows) if fold_rows else pl.DataFrame(schema=_METRICS_SCHEMA)
+    embeddings = (
+        pl.DataFrame(embedding_rows)
+        if embedding_rows
+        else pl.DataFrame({AVAILABILITY_TS: pl.Series([], dtype=pl.Int64())})
+    )
+    findings = _ssl_findings(metrics, research)
+    report = research.write_report(
+        findings, title="SSL Tick/Event Foundation Model — Research Report"
+    )
     return SSLPipelineResult(metrics=metrics, embeddings=embeddings, report=report)

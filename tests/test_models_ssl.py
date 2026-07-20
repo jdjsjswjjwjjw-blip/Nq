@@ -9,7 +9,9 @@ from nq.core.determinism import make_generator
 from nq.models.contrastive import augment_windows, info_nce_loss
 from nq.models.encoder import Encoder, PCAEncoder
 from nq.models.masking import mask_matrix, masked_reconstruction_error
+from nq.models.ssl_pipeline import run_ssl_tick_pipeline
 from nq.models.world_model import NextStatePredictor, r2_score
+from tests.test_tick_stream import _paired_mbo
 
 
 def _low_rank_data(n: int, d: int, rank: int, rng: np.random.Generator) -> np.ndarray:
@@ -85,3 +87,16 @@ def test_augment_is_deterministic_and_shaped() -> None:
 def test_info_nce_needs_batch() -> None:
     with pytest.raises(ValueError, match="at least 2"):
         info_nce_loss(np.zeros((1, 3)), np.zeros((1, 3)))
+
+
+def test_run_ssl_tick_pipeline_produces_report() -> None:
+    nq, mnq = _paired_mbo(30)
+    result = run_ssl_tick_pipeline(
+        nq,
+        mnq,
+        window=3,
+        n_components=3,
+        n_splits=2,
+        rng=make_generator(0),
+    )
+    assert "SSL Tick/Event" in result.report.to_markdown()

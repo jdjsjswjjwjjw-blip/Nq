@@ -20,6 +20,7 @@ tick_size = 0.25
 commission_bps = 0.0
 
 [ssl]
+mode = "tick"                    # tick | bucket
 window = 5
 n_components = 4
 n_splits = 3

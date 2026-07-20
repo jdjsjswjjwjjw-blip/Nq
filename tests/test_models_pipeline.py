@@ -7,7 +7,7 @@ import polars as pl
 import pytest
 
 from nq.models.preprocessing import CausalStandardScaler
-from nq.models.windowing import build_sequences
+from nq.models.windowing import build_sequences, build_tick_sequences
 
 
 def _frame(n: int) -> pl.DataFrame:
@@ -32,6 +32,21 @@ def test_build_sequences_shapes_and_causality() -> None:
 def test_build_sequences_stride() -> None:
     ds = build_sequences(_frame(10), feature_columns=["a"], window=2, stride=2)
     assert ds.times.tolist() == [1, 3, 5, 7, 9]
+
+
+def test_build_tick_sequences_carries_mask_metadata() -> None:
+    frame = pl.DataFrame(
+        {
+            "availability_ts": list(range(8)),
+            "mask_path": [0, 0, 1, 0, 1, 0, 0, 1],
+            "market_phase": [0, 1, 0, 2, 1, 0, 1, 0],
+            "a": [float(i) for i in range(8)],
+            "b": [float(2 * i) for i in range(8)],
+        }
+    )
+    ds = build_tick_sequences(frame, feature_columns=["a", "b"], window=3)
+    assert ds.mask_paths.tolist() == [1, 0, 1, 0, 0, 1]
+    assert ds.market_phases.tolist() == [0, 2, 1, 0, 1, 0]
 
 
 def test_build_sequences_requires_sorted_time() -> None:

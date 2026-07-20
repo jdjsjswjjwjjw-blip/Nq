@@ -20,9 +20,16 @@ from __future__ import annotations
 from nq.models.contrastive import augment_windows, info_nce_loss
 from nq.models.encoder import Encoder, PCAEncoder
 from nq.models.masking import mask_matrix, masked_reconstruction_error
+from nq.models.masking_structural import structural_mask_sample
 from nq.models.preprocessing import CausalStandardScaler
 from nq.models.splitting import WalkForwardFold, purged_walk_forward_split
-from nq.models.windowing import SequenceDataset, build_sequences
+from nq.models.tick_stream import TickStream, build_tick_stream
+from nq.models.windowing import (
+    SequenceDataset,
+    TickSequenceDataset,
+    build_sequences,
+    build_tick_sequences,
+)
 from nq.models.world_model import NextStatePredictor, r2_score
 
 __all__ = [
@@ -31,12 +38,17 @@ __all__ = [
     "NextStatePredictor",
     "PCAEncoder",
     "SequenceDataset",
+    "TickSequenceDataset",
+    "TickStream",
     "WalkForwardFold",
     "augment_windows",
     "build_sequences",
+    "build_tick_sequences",
+    "build_tick_stream",
     "info_nce_loss",
     "mask_matrix",
     "masked_reconstruction_error",
     "purged_walk_forward_split",
     "r2_score",
+    "structural_mask_sample",
 ]

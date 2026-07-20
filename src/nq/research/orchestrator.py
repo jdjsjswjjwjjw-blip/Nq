@@ -15,26 +15,27 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import polars as pl
 
 from nq.alpha.signals import ExecutionMode
-
-if TYPE_CHECKING:
-    from nq.alpha.discovery import AlphaDiscovery
-
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.determinism import seed_everything
 from nq.core.temporal_policy import TemporalPolicy
 from nq.coverage.monitor import run_coverage_on_features
 from nq.coverage.types import CoverageReport
 from nq.ingestion.reader import load_mbo_frame
-from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_pipeline
+from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_pipeline, run_ssl_tick_pipeline
 from nq.research.assistant import LanguageModel, ResearchAssistant
 from nq.research.unified import UnifiedResearchReport, build_unified_report
 from nq.simulation.cross_market import cross_market_features
+
+if TYPE_CHECKING:
+    from nq.alpha.discovery import AlphaDiscovery
+
+SslMode = Literal["bucket", "tick"]
 
 _DEFAULT_SIGNAL_COLUMNS = (
     "nq_delta",
@@ -77,6 +78,7 @@ class PipelineConfig:
     n_permutations: int = 2000
     global_seed: int = 0
     parallel_coverage: bool = True
+    ssl_mode: SslMode = "tick"
 
     @classmethod
     def from_toml(cls, path: Path | str) -> PipelineConfig:
@@ -103,6 +105,7 @@ class PipelineConfig:
             alpha=float(raw.get("statistics", {}).get("alpha", 0.05)),
             n_permutations=int(raw.get("statistics", {}).get("n_permutations", 2000)),
             global_seed=int(det.get("global_seed", 0)),
+            ssl_mode=str(ssl.get("mode", "tick")),  # type: ignore[arg-type]
         )
 
 
@@ -162,6 +165,7 @@ def run_ssl_research_pipeline(
     tick_size: float = 0.25,
     commission_bps: float = 0.0,
     parallel_coverage: bool = True,
+    ssl_mode: SslMode = "tick",
     language_model: LanguageModel | None = None,
     rng: np.random.Generator | None = None,
 ) -> tuple[SSLPipelineResult, CoverageReport, AlphaDiscovery, UnifiedResearchReport]:
@@ -183,7 +187,34 @@ def run_ssl_research_pipeline(
     ssl_assistant = ResearchAssistant(alpha=alpha, language_model=language_model)
     alpha_assistant = ResearchAssistant(alpha=alpha, language_model=language_model)
 
-    if parallel_coverage and features.height > 0:
+    def _run_ssl() -> SSLPipelineResult:
+        if ssl_mode == "tick":
+            return run_ssl_tick_pipeline(
+                nq,
+                mnq,
+                window=ssl_window,
+                n_components=ssl_components,
+                n_splits=coverage_splits,
+                embargo=embargo_val,
+                purge_samples=purge_val,
+                alpha=alpha,
+                rng=generator,
+                assistant=ssl_assistant,
+            )
+        return run_ssl_pipeline(
+            features,
+            window=ssl_window,
+            n_components=ssl_components,
+            n_splits=coverage_splits,
+            embargo=embargo_val,
+            purge_samples=purge_val,
+            interval_ns=interval_ns,
+            alpha=alpha,
+            rng=generator,
+            assistant=ssl_assistant,
+        )
+
+    if parallel_coverage and (features.height > 0 or ssl_mode == "tick"):
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="coverage-m9") as executor:
             coverage_future = executor.submit(
                 _run_coverage_task,
@@ -198,18 +229,7 @@ def run_ssl_research_pipeline(
                 n_permutations=n_permutations,
                 seed=seed,
             )
-            ssl_result = run_ssl_pipeline(
-                features,
-                window=ssl_window,
-                n_components=ssl_components,
-                n_splits=coverage_splits,
-                embargo=embargo_val,
-                purge_samples=purge_val,
-                interval_ns=interval_ns,
-                alpha=alpha,
-                rng=generator,
-                assistant=ssl_assistant,
-            )
+            ssl_result = _run_ssl()
             alpha_result = discover_alpha_from_features(
                 features,
                 signal_columns=columns,
@@ -227,18 +247,7 @@ def run_ssl_research_pipeline(
             )
             coverage_result = coverage_future.result()
     else:
-        ssl_result = run_ssl_pipeline(
-            features,
-            window=ssl_window,
-            n_components=ssl_components,
-            n_splits=coverage_splits,
-            embargo=embargo_val,
-            purge_samples=purge_val,
-            interval_ns=interval_ns,
-            alpha=alpha,
-            rng=generator,
-            assistant=ssl_assistant,
-        )
+        ssl_result = _run_ssl()
         alpha_result = discover_alpha_from_features(
             features,
             signal_columns=columns,
@@ -369,6 +378,7 @@ def run_research_pipeline(
         coverage_splits=cfg.coverage_splits,
         coverage_embargo=cfg.coverage_embargo,
         execution_mode=cfg.execution_mode,
+        ssl_mode=cfg.ssl_mode,
         slippage_ticks=cfg.slippage_ticks,
         tick_size=cfg.tick_size,
         commission_bps=cfg.commission_bps,
