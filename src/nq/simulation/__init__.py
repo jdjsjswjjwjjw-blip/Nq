@@ -12,6 +12,7 @@
 * ``liquidity``       — السيولة (إضافة/سحب، أوامر قائمة، كشف الآيسبرغ).
 * ``auction``         — نظرية المزاد (توازن/اختلال، تمدّد، دفاع الارتداد).
 * ``cross_market``    — عبر السوقين (NQ↔MNQ، Lead/Lag، تباعد، مصيدة المتداولين).
+* ``fvg``             — Fair Value Gap + Failed FVG / Effort-Without-Result (سببي).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from nq.simulation.execution import (
     execution_forward_returns,
 )
 from nq.simulation.footprint import footprint_cells, footprint_summary
+from nq.simulation.fvg import build_ohlcv_bars, detect_h1_fvgs, failed_fvg_features
 from nq.simulation.liquidity import detect_icebergs, liquidity_summary
 from nq.simulation.order_flow import ofi_by_bucket, order_flow_imbalance, order_flow_summary
 from nq.simulation.volume_profile import (
@@ -42,14 +44,17 @@ __all__ = [
     "ValueArea",
     "add_time_bucket",
     "auction_states",
+    "build_ohlcv_bars",
     "build_volume_profile",
     "classify_nodes",
     "cross_market_features",
+    "detect_h1_fvgs",
     "detect_icebergs",
     "developing_value_area",
     "directional_execution_returns",
     "execution_forward_returns",
     "extract_trades",
+    "failed_fvg_features",
     "footprint_cells",
     "footprint_summary",
     "liquidity_summary",

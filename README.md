@@ -153,6 +153,7 @@ Nq/
 │   ├── statistics/              # المحطة 6: الاختبار الإحصائي
 │   ├── research/                # المحطة 7: مساعد LLM المؤسَّس على الأدلّة
 │   ├── alpha/                   # المحطة 8: إشارات الألفا والمخرجات
+│   ├── strategies/              # استراتيجيات بحثية منفصلة (Failed FVG…)
 │   └── coverage/                # المحطة 9: مراقب التغطية البنيوية
 ├── tests/                       # اختبارات وحدة + خصائص + منع تسريب
 └── benchmarks/                  # قياسات الأداء
@@ -204,6 +205,7 @@ pytest --cov                 # اختبارات الوحدة + التسريب
   * `liquidity_summary` / `detect_icebergs` — السيولة وكشف الآيسبرغ.
   * `auction_states` — حالات المزاد (توازن/تمدّد/دفاع ارتداد).
   * `cross_market_features` — **NQ↔MNQ** (Lead/Lag، تباعد، فشل تأكيد، مصيدة المتداولين).
+  * `failed_fvg_features` / `detect_h1_fvgs` / `build_ohlcv_bars` — FVG سببي + Failed FVG.
 * `nq.features` — **مخزن الميزات point-in-time** (`FeatureStore`): توحيد مخرجات المحاكيات، استرجاع `as_of`، دمج `point_in_time_join`، إصدارات، وحفظ/قراءة Parquet.
 * `nq.models` — **النموذج التأسيسي ذاتي الإشراف** (مساران: bucket + tick/event):
   * `run_ssl_pipeline` — SSL على ميزات مجمّعة (bucket) مع `mask_matrix` عشوائي.
@@ -221,6 +223,7 @@ pytest --cov                 # اختبارات الوحدة + التسريب
 * `nq.states` — **حالات السوق / الأنظمة (Regimes)**: `KMeansRegimes` (تجميع حتمي fit-on-train)، `CausalRegimeTracker` (تتبّع سببي لمرحلة السوق في tick stream)، `infer_market_phase_map` / `heuristic_market_phase`، `transition_matrix` و `dwell_times` (ديناميكية سببية)، `silhouette_score` (استقرار)، و `regime_summary` (تفسير) — بطوابع زمنية سليمة.
 * `nq.statistics` — **الاختبار الإحصائي**: `permutation_test` / `bootstrap_ci` / `moving_block_bootstrap_ci` (دلالة ومتانة)، `benjamini_hochberg` / `holm` / `bonferroni` (تصحيح التعدّد)، `sharpe_ratio` / `information_coefficient` / `t_statistic`، `regime_difference_test`، و `verify_hypotheses` (تقرير موحّد مصحّح).
 * `nq.alpha` — **المخرجات النهائية / إشارات الألفا**: `align_forward_returns` / `evaluate_signal` (IC + دلالة + Sharpe)، `screen_signals` (فرز مع تصحيح التعدّد)، `run_research_pipeline` (خط كامل من MBO الخام إلى إشارات ألفا)، و `run_full_research_pipeline` (تغطية + ألفا).
+* `nq.strategies` — **مسارات استراتيجيات منفصلة فوق البنية الموحّدة**: `run_fail_fvg_research` (Failed FVG / Effort-Without-Result من MBO سببيًا، تقييم ألفا، فرضيات بأدلّة، وبوابة SSL latent اختيارية عبر asof-join خلفي).
 * `nq.coverage` — **مراقب التغطية البنيوية (المحطة 9)**: `mbo_window_descriptors` (واصفات MBO كافية)، `distance_correlation` / `max_axis_dependence`، مقاييس `measure_mfig` / `measure_cer` / `measure_psg` / `measure_crs` / `measure_lori` / `measure_qduf`، `run_coverage_pipeline` (من MBO خام إلى تقرير عمى بنيوي موثّق)، و `CoverageAlert`/`CoverageReport`.
 
 ## قواعد المساهمة (Contribution Rules)
