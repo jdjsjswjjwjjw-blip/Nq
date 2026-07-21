@@ -36,24 +36,31 @@ def _read_zst_bytes(path: Path) -> bytes:
         return zstd.ZstdDecompressor().decompress(handle.read())
 
 
-def _read_columnar(path: Path) -> pl.DataFrame:
+def _read_columnar(path: Path, *, max_rows: int | None = None) -> pl.DataFrame:
     suffix = path.suffix.lower()
     name = path.name.lower()
 
     if suffix == ".parquet" or name.endswith(".parquet.zst"):
+        if max_rows is not None:
+            return pl.read_parquet(path, n_rows=max_rows)
         return pl.read_parquet(path)
 
     if suffix in {".arrow", ".ipc", ".feather"}:
-        return pl.read_ipc(path)
+        frame = pl.read_ipc(path)
+        return frame.head(max_rows) if max_rows is not None else frame
 
     if suffix == ".csv":
+        if max_rows is not None:
+            return pl.read_csv(path, n_rows=max_rows)
         return pl.read_csv(path)
 
     if suffix == ".zst":
         raw = _read_zst_bytes(path)
         if raw[:4] == b"PAR1":
-            return pl.read_parquet(io.BytesIO(raw))
-        return pl.read_csv(io.BytesIO(raw))
+            frame = pl.read_parquet(io.BytesIO(raw))
+        else:
+            frame = pl.read_csv(io.BytesIO(raw))
+        return frame.head(max_rows) if max_rows is not None else frame
 
     raise ValueError(
         f"unsupported MBO file format {suffix!r}; "
@@ -102,21 +109,22 @@ def load_mbo_frame(
         if log is not None:
             log.op(f"MBO من DataFrame جاهز: {source.height:,} صف")  # type: ignore[union-attr]
         frame = source
+        if max_rows is not None:
+            if log is not None:
+                log.op(f"قص DataFrame إلى max_rows={max_rows:,}")  # type: ignore[union-attr]
+            frame = frame.head(max_rows)
     else:
         path = Path(source)
         if log is not None:
-            log.op(f"قراءة ملف MBO: {path.resolve()}")  # type: ignore[union-attr]
-        frame = _read_columnar(path)
+            detail = f" (n_rows={max_rows:,})" if max_rows is not None else ""
+            log.op(f"قراءة ملف MBO: {path.resolve()}{detail}")  # type: ignore[union-attr]
+        frame = _read_columnar(path, max_rows=max_rows)
         if log is not None:
             log.op(f"قُرئ الخام: {frame.height:,} صف × {frame.width} عمود")  # type: ignore[union-attr]
 
     if log is not None:
         log.op("تطبيع Databento / التحقق من MBO_SCHEMA / ترتيب سببي")  # type: ignore[union-attr]
     frame = _prepare_frame(frame)
-    if max_rows is not None:
-        if log is not None:
-            log.op(f"قص max_rows={max_rows:,} (من {frame.height:,})")  # type: ignore[union-attr]
-        return frame.head(max_rows)
     if log is not None:
         log.op(f"جاهز بعد التحضير: {frame.height:,} صف")  # type: ignore[union-attr]
     return frame
