@@ -87,16 +87,18 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 
 ### اختيار المسار — مهم
 
-**ما فيش حذف لأي طبقة.** المسارات أدناه كلها فوق نفس المحرك (`run_research_pipeline`). الفرق فقط في **أي إشارات تُفرَز** في قناة الألفا:
+**ما فيش حذف لأي طبقة.** أوامر التشغيل المنفصلة (`run_fail_fvg` / `run_vp_auction`) **ليست خروجًا من المنظومة**: كلها تستدعي نفس المحرك (`run_research_pipeline`) وتمرّ بنفس المرّات (تحميل → ميزات → SSL ‖ M9 ‖ ألفا) وتكتب **نفس شكل المخرجات** (`report.md`, `features.parquet`, مقاييس SSL/M9/ألفا).
 
-| المسار | ماذا يفعل | ماذا **لا** يفعل |
-|--------|-----------|-------------------|
-| `run_week` + `configs/research.toml` | يشغّل **الكل مع بعض**: `trap_setup` / `lead_lag` / `fail_fvg` / `vp_balance` / … | لا يلغي Failed FVG ولا الـ VP |
-| `run_fail_fvg` | يضيّق الفرز على Failed FVG (+ cross-market) | لا يمسح المحرك؛ باقي الإشارات تبقى قابلة في الخط العام |
-| `run_vp_auction` + `configs/vp_auction.toml` | يضيّق الفرز على Volume Profile + توازن/اختلال (NQ فقط) | **لا يلغي** باقي الطبقات من المشروع؛ مجرد تركيز فرز |
+الفرق فقط: **أي إشارات تُفرَز** في قناة الألفا لهذه الجولة.
+
+| الأمر | التركيز | داخل المنظومة؟ | المخرجات |
+|--------|---------|----------------|----------|
+| `run_week` + `configs/research.toml` | **الكل مع بعض** | نعم | كاملة |
+| `run_fail_fvg` + `configs/fail_fvg.toml` | Failed FVG | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
+| `run_vp_auction` + `configs/vp_auction.toml` | VP + توازن/اختلال | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
 
 > لو عايز الكل شغّال → `run_week`.  
-> لو عايز فرضية واحدة فقط للفرز → سكربت التركيز المناسب.
+> لو عايز فرضية واحدة للفرز → الأمر المنفصل المناسب (نفس المعالجة والمخرجات).
 
 ---
 
@@ -121,7 +123,7 @@ python scripts/run_week.py \
   --output data/runs/w29
 ```
 
-**المخرجات** في `--output`:
+**المخرجات** في `--output` (نفس الشكل لكل الأوامر):
 
 | ملف | المحتوى |
 |-----|---------|
@@ -143,26 +145,35 @@ python scripts/run_week.py \
 
 ---
 
-### 2) تركيز فرز Failed FVG (`run_fail_fvg`)
+### 2) أمر منفصل: Failed FVG (`run_fail_fvg`)
 
-نفس الخط الموحّد مع **تضييق** أعمدة الفرز على `fail_fvg` (+ إشارات cross-market) — ليس بديلاً عن الخط العام.
+أمر تشغيل **منفصل** لفرز Failed FVG — **بدون** الخروج من المنظومة:  
+نفس خط المعالجة الكامل ونفس المخرجات (`report.md` + parquet). يضيّق فقط أعمدة الفرز على `fail_fvg` (+ سياق cross-market).
 
 ```bash
+# أمر منفصل — مخرجات كاملة في data/runs/fail_fvg
 python scripts/run_fail_fvg.py \
   --nq /path/to/nq.parquet \
   --max-rows 500000 \
   --output data/runs/fail_fvg
+
+# أو عبر run_week + إعداد مركّز
+python scripts/run_week.py \
+  --config configs/fail_fvg.toml \
+  --nq /path/to/nq.parquet \
+  --nq-only \
+  --max-rows 500000
 ```
 
-> `run_week` يُفرز `fail_fvg` تلقائيًا إن `include_failed_fvg = true`.  
-> استخدم `run_fail_fvg` فقط عند الحاجة لتقرير أضيق على الاستراتيجية.
+> في الخط العام: `include_failed_fvg = true` يُلحق `fail_fvg` **مع** باقي الإشارات.  
+> `run_fail_fvg` = جولة فرز مركّزة، مش مشروع موازي.
 
 ---
 
-### 3) تركيز Volume Profile + التوازن/الاختلال (`run_vp_auction`)
+### 3) أمر منفصل: Volume Profile + التوازن/الاختلال (`run_vp_auction`)
 
-نفس الخط الموحّد مع **تضييق** الفرز على فرضيات الملف الحجمي والسوق المتوازن/غير المتوازن (NQ فقط).  
-هذا **تركيز فرز**، وليس إلغاء لـ Failed FVG أو باقي الطبقات من المشروع.
+أمر تشغيل **منفصل** لفرضيات الملف الحجمي والسوق المتوازن/غير المتوازن (NQ فقط).  
+نفس المنطق: داخل المنظومة، معالجة كاملة، مخرجات كاملة — مع تضييق الفرز على إشارات VP.
 
 | إشارة | المعنى |
 |--------|--------|
@@ -173,7 +184,7 @@ python scripts/run_fail_fvg.py \
 | `vp_flip_to_imbalance` | انتقال توازن → اختلال |
 
 ```bash
-# سكربت مركّز (فرز VP فقط)
+# أمر منفصل — مخرجات كاملة في data/runs/vp_auction
 python scripts/run_vp_auction.py \
   --nq /path/to/nq.parquet \
   --max-rows 500000 \

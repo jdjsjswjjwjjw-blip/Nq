@@ -1,8 +1,8 @@
 """Failed FVG كطبقة بحث داخل الخط الموحّد.
 
-المسار الأساسي هو ``run_research_pipeline`` (إشارة ``fail_fvg`` بجانب
-``trap_setup`` / ``lead_lag``). هذا الملف واجهة مريحة تُركّز الفرز على
-إشارات Failed FVG دون fork معماري.
+أمر تشغيل منفصل (``run_fail_fvg`` / ``run_fail_fvg_research``) يمرّ بنفس
+محرك المشروع كاملًا: ميزات + SSL ‖ M9 ‖ ألفا + مخرجات. يضيّق فقط أعمدة
+الفرز على ``fail_fvg`` — ليس fork خارج المنظومة.
 """
 
 from __future__ import annotations
@@ -75,14 +75,15 @@ def run_fail_fvg_research(
     rng: np.random.Generator | None = None,
     output_dir: Path | str | None = None,
 ) -> FailFvgResearchResult:
-    """يشغّل Failed FVG عبر الخط الموحّد (نفس طبقات trap_setup / lead_lag).
+    """يشغّل Failed FVG عبر الخط الموحّد (أمر تشغيل منفصل — داخل المنظومة).
 
-    ``use_ssl_gate`` يُبقي اسم التوافق؛ الفرز يبقى على ``fail_fvg`` داخل
-    ``run_research_pipeline`` مع SSL tick/bucket حسب الإعداد.
+    نفس المرّات الكاملة: ميزات + SSL + M9 + ألفا + مخرجات ``output_dir``.
+    ``use_ssl_gate`` اسم توافق؛ البوابة عبر ``ssl_mode`` داخل الخط الموحّد.
     """
     _ = use_ssl_gate  # التوافق مع الواجهة السابقة؛ البوابة عبر ssl_mode في الخط الموحّد
     cfg = PipelineConfig(
         include_failed_fvg=True,
+        include_auction_vp=False,  # تركيز فرز FVG؛ الخط العام ما زال يجمع الكل
         cross_market_mode="nq_only" if mnq is None else "dual",
         max_rows=max_rows,
         horizon=horizon,

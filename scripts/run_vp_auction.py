@@ -48,6 +48,17 @@ def main() -> None:
     print(result.unified.to_markdown())
     print(f"\nsignals: {result.signal_columns}")
     print(f"features: {result.features.height} rows")
+    print(f"outputs: {args.output.resolve()}/")
+    for name in (
+        "report.md",
+        "features.parquet",
+        "ssl_metrics.parquet",
+        "coverage_metrics.parquet",
+        "alpha_evaluations.parquet",
+    ):
+        path = args.output / name
+        if path.is_file():
+            print(f"  - {name}")
     for col in (
         "vp_balance",
         "vp_imbalance",

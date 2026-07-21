@@ -1,0 +1,50 @@
+# فرضيات Failed FVG — أمر تشغيل منفصل فوق الخط الموحّد (NQ فقط)
+# Failed FVG focused runner — same engine, full SSL‖M9‖alpha outputs
+
+[determinism]
+global_seed = 20260719
+
+[temporal]
+interval_ns = 1_000_000_000
+horizon = 1
+embargo_ns = 1_000_000_000
+
+[cross_market]
+latency_ns = 0
+lead_lag_window = 2
+
+[execution]
+mode = "intraday"
+slippage_ticks = 0.5
+tick_size = 0.25
+commission_bps = 0.0
+
+[ssl]
+mode = "tick"
+window = 5
+n_components = 4
+n_splits = 3
+
+# فرز مركّز على fail_fvg (+ سياق cross-market) — ليس خروجًا من المنظومة
+[signals]
+include_failed_fvg = true
+include_auction_vp = false
+columns = [
+  "fail_fvg",
+  "lead_lag",
+  "trap_setup",
+  "divergence",
+  "nq_delta",
+  "mnq_delta",
+]
+
+[statistics]
+alpha = 0.05
+n_permutations = 2000
+
+[data]
+nq_path = "data/raw/nq.parquet"
+mnq_path = "data/raw/nq.parquet"
+output_dir = "data/runs/fail_fvg"
+cross_market_mode = "nq_only"
+max_rows = 0
