@@ -42,18 +42,24 @@ def streaming_event_features(
     *,
     nq_instrument_id: int = 1,
     mnq_instrument_id: int = 2,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """إطار حدث-بحدث من آلة الحالة (متاح عند ``event_ts``)."""
+    if progress is not None:
+        progress.op("streaming: استدعاء build_tick_stream")  # type: ignore[union-attr]
     tick = build_tick_stream(
         nq,
         mnq,
         nq_instrument_id=nq_instrument_id,
         mnq_instrument_id=mnq_instrument_id,
+        progress=progress,
     )
     raw = tick.frame
     if raw.height == 0:
         return raw
 
+    if progress is not None:
+        progress.op(f"streaming: تحويل أسعار/عوائد من {raw.height:,} حدث")  # type: ignore[union-attr]
     ref = _REF_PRICE
     return raw.with_columns(
         (pl.col("nq_mid_norm") * ref).alias("nq_close"),
@@ -108,6 +114,7 @@ def build_streaming_research_features(
     interval_ns: int,
     nq_instrument_id: int = 1,
     mnq_instrument_id: int = 2,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """يبني إطار البحث من آلة حالة MBO لحظية (بديل الـ batch العريض)."""
     events = streaming_event_features(
@@ -115,10 +122,15 @@ def build_streaming_research_features(
         mnq,
         nq_instrument_id=nq_instrument_id,
         mnq_instrument_id=mnq_instrument_id,
+        progress=progress,
     )
     if events.height == 0:
         return events
 
+    if progress is not None:
+        progress.op(  # type: ignore[union-attr]
+            f"عيّنة بحثية على interval_ns={interval_ns} من {events.height:,} حدث"
+        )
     sampled = sample_streaming_to_interval(events, interval_ns=interval_ns)
     preferred = (
         AVAILABILITY_TS,
@@ -155,6 +167,8 @@ def build_streaming_research_features(
             seen.add(col)
             ordered.append(col)
     frame = sampled.select(ordered)
+    if progress is not None:
+        progress.op(f"إضافة أعمدة الجلسة — عيّنة={frame.height:,} صف")  # type: ignore[union-attr]
     return add_session_columns(frame, time_col=AVAILABILITY_TS)
 
 

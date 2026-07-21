@@ -74,8 +74,55 @@ def test_progress_helper_duration_and_notes() -> None:
     p.begin("demo", total_steps=1)
     p.step("عمل", "تفاصيل")
     p.note("ملاحظة داخلية")
+    p.op("عملية دقيقة")
+    p.heartbeat(50, 100, label="demo_loop", force=True)
     p.done("ok")
     text = buf.getvalue()
     assert "[1/1] عمل — تفاصيل" in text
     assert "ملاحظة داخلية" in text
+    assert "عملية دقيقة" in text
+    assert "demo_loop" in text
+    assert "50/100" in text
     assert "انتهى بنجاح: demo" in text
+
+
+def test_pipeline_progress_writes_progress_log(tmp_path) -> None:
+    nq, mnq = _paired_streams(1200, seed=93)
+    buf = io.StringIO()
+    progress = PipelineProgress(enabled=True, stream=buf)
+    out = tmp_path / "run"
+    run_research_pipeline(
+        nq,
+        mnq,
+        interval_ns=10_000,
+        n_permutations=50,
+        parallel_coverage=False,
+        rng=make_generator(13),
+        progress=progress,
+        output_dir=out,
+    )
+    log_file = out / "progress.log"
+    assert log_file.is_file()
+    text = log_file.read_text(encoding="utf-8")
+    assert "tick_stream" in text or "بناء الميزات" in text
+    assert "انتهى بنجاح" in text
+
+
+def test_tick_stream_emits_heartbeats() -> None:
+    nq, mnq = _paired_streams(800, seed=94)
+    buf = io.StringIO()
+    progress = PipelineProgress(enabled=True, stream=buf)
+    progress.begin("tick", total_steps=1)
+    progress.step("stream")
+    run_research_pipeline(
+        nq,
+        mnq,
+        interval_ns=10_000,
+        n_permutations=40,
+        parallel_coverage=False,
+        rng=make_generator(14),
+        progress=progress,
+    )
+    text = buf.getvalue()
+    assert "tick_stream" in text
+    assert "آلة الحالة" in text or "بدء آلة الحالة" in text

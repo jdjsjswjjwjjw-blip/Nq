@@ -87,6 +87,7 @@ def load_mbo_frame(
     source: pl.DataFrame | str | Path,
     *,
     max_rows: int | None = None,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """يُحمّل بيانات MBO ويتحقق من العقد ويرتّبها سبقيًا.
 
@@ -96,10 +97,28 @@ def load_mbo_frame(
     if max_rows is not None and max_rows < 1:
         raise ValueError(f"max_rows must be >= 1, got {max_rows}")
 
-    frame = source if isinstance(source, pl.DataFrame) else _read_columnar(Path(source))
+    log = progress
+    if isinstance(source, pl.DataFrame):
+        if log is not None:
+            log.op(f"MBO من DataFrame جاهز: {source.height:,} صف")  # type: ignore[union-attr]
+        frame = source
+    else:
+        path = Path(source)
+        if log is not None:
+            log.op(f"قراءة ملف MBO: {path.resolve()}")  # type: ignore[union-attr]
+        frame = _read_columnar(path)
+        if log is not None:
+            log.op(f"قُرئ الخام: {frame.height:,} صف × {frame.width} عمود")  # type: ignore[union-attr]
+
+    if log is not None:
+        log.op("تطبيع Databento / التحقق من MBO_SCHEMA / ترتيب سببي")  # type: ignore[union-attr]
     frame = _prepare_frame(frame)
     if max_rows is not None:
+        if log is not None:
+            log.op(f"قص max_rows={max_rows:,} (من {frame.height:,})")  # type: ignore[union-attr]
         return frame.head(max_rows)
+    if log is not None:
+        log.op(f"جاهز بعد التحضير: {frame.height:,} صف")  # type: ignore[union-attr]
     return frame
 
 

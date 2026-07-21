@@ -291,12 +291,14 @@ def _build_research_features(
             nq,
             mnq,
             interval_ns=cfg.interval_ns,
+            progress=log,
         )
     else:
         log.step(
             "بناء الميزات (batch cross-market)",
             f"NQ={nq.height:,} · MNQ={mnq.height:,} · interval_ns={cfg.interval_ns}",
         )
+        log.op("حساب cross_market_features (batch)")
         features = cross_market_features(
             nq,
             mnq,
@@ -307,10 +309,14 @@ def _build_research_features(
     log.note(f"إطار الميزات الأساسي: {features.height:,} صف × {features.width} عمود")
     if cfg.include_failed_fvg:
         log.step("إلحاق Failed FVG (asof خلفي)")
+        log.op("failed_fvg_features + join_asof backward")
         features = _attach_failed_fvg(features, nq)
+        log.op(f"بعد FVG: {features.height:,} صف")
     if cfg.include_auction_vp:
         log.step("إلحاق Volume Profile / Auction (asof خلفي)")
+        log.op("auction_signal_frame + join_asof backward")
         features = _attach_auction_vp(features, nq, interval_ns=cfg.interval_ns)
+        log.op(f"بعد Auction/VP: {features.height:,} صف")
     return features
 
 
@@ -364,6 +370,7 @@ def run_ssl_research_pipeline(
 
     def _run_ssl() -> SSLPipelineResult:
         if ssl_mode == "tick":
+            log.op("استدعاء run_ssl_tick_pipeline")
             return run_ssl_tick_pipeline(
                 nq,
                 mnq,
@@ -375,7 +382,9 @@ def run_ssl_research_pipeline(
                 alpha=alpha,
                 rng=generator,
                 assistant=ssl_assistant,
+                progress=log,
             )
+        log.op("استدعاء run_ssl_pipeline (bucket)")
         return run_ssl_pipeline(
             features,
             feature_columns=columns or None,
@@ -411,6 +420,7 @@ def run_ssl_research_pipeline(
             ssl_result = _run_ssl()
             log.note(f"SSL انتهى — metrics={ssl_result.metrics.height}")
             log.step("اكتشاف الألفا (intraday)", f"signals={len(columns)}")
+            log.op(f"تقييم إشارات: {columns}")
             alpha_result = discover_alpha_from_features(
                 features,
                 signal_columns=columns,
@@ -426,6 +436,10 @@ def run_ssl_research_pipeline(
                 rng=generator,
                 assistant=alpha_assistant,
             )
+            log.op(
+                f"ألفا انتهى — evals={alpha_result.evaluations.height} · "
+                f"selected={alpha_result.selected!r}"
+            )
             log.step("انتظار نتيجة M9")
             coverage_result = coverage_future.result()
             log.note(f"M9 انتهى — metrics={coverage_result.metrics.height}")
@@ -434,6 +448,7 @@ def run_ssl_research_pipeline(
         ssl_result = _run_ssl()
         log.note(f"SSL انتهى — metrics={ssl_result.metrics.height}")
         log.step("اكتشاف الألفا (intraday)", f"signals={len(columns)}")
+        log.op(f"تقييم إشارات: {columns}")
         alpha_result = discover_alpha_from_features(
             features,
             signal_columns=columns,
@@ -449,7 +464,12 @@ def run_ssl_research_pipeline(
             rng=generator,
             assistant=alpha_assistant,
         )
+        log.op(
+            f"ألفا انتهى — evals={alpha_result.evaluations.height} · "
+            f"selected={alpha_result.selected!r}"
+        )
         log.step("تشغيل المراقب M9 (تسلسلي)")
+        log.op("run_coverage_on_features")
         coverage_result = run_coverage_on_features(
             nq,
             mnq,
@@ -528,12 +548,31 @@ def _load_pipeline_frames(
     nq: pl.DataFrame | str | Path,
     mnq: pl.DataFrame | str | Path,
     cfg: PipelineConfig,
+    *,
+    progress: PipelineProgress | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """يُحمّل NQ/MNQ مع دعم nq_only و max_rows."""
-    nq_frame = nq if isinstance(nq, pl.DataFrame) else load_mbo_frame(nq, max_rows=cfg.max_rows)
+    log = progress if progress is not None else PipelineProgress(enabled=False)
+    log.op("تحميل NQ")
+    nq_frame = (
+        nq
+        if isinstance(nq, pl.DataFrame)
+        else load_mbo_frame(nq, max_rows=cfg.max_rows, progress=log)
+    )
+    if isinstance(nq, pl.DataFrame) and cfg.max_rows is not None:
+        log.op(f"قص NQ DataFrame إلى max_rows={cfg.max_rows:,}")
+        nq_frame = nq_frame.head(cfg.max_rows)
     if cfg.cross_market_mode == "nq_only":
+        log.op("وضع nq_only — تكرار NQ كـ MNQ")
         return nq_frame, nq_frame
-    mnq_frame = mnq if isinstance(mnq, pl.DataFrame) else load_mbo_frame(mnq, max_rows=cfg.max_rows)
+    log.op("تحميل MNQ")
+    mnq_frame = (
+        mnq
+        if isinstance(mnq, pl.DataFrame)
+        else load_mbo_frame(mnq, max_rows=cfg.max_rows, progress=log)
+    )
+    if isinstance(mnq, pl.DataFrame) and cfg.max_rows is not None:
+        mnq_frame = mnq_frame.head(cfg.max_rows)
     return nq_frame, mnq_frame
 
 
@@ -590,7 +629,12 @@ def run_research_pipeline(
     llm_step = 1 if language_model is not None else 0
     # load + feature_base + extras + ssl/m9/alpha path (~4) + unify + optional save/llm
     total_steps = 2 + feature_extra + 4 + llm_step + save_step
+    if output_dir is not None:
+        out_early = Path(output_dir)
+        out_early.mkdir(parents=True, exist_ok=True)
+        log.attach_log(out_early / "progress.log")
     log.begin("الخط الموحّد MBO → تقرير", total_steps=total_steps)
+    log.line("كل عملية تُطبع سطرًا بسطر — راقب progress.log أو stderr")
 
     try:
         log.step(
@@ -600,9 +644,10 @@ def run_research_pipeline(
                 f"ssl={cfg.ssl_mode} · max_rows={cfg.max_rows}"
             ),
         )
+        log.op(f"seed_everything({cfg.global_seed})")
         seed_everything(cfg.global_seed)
         generator = rng if rng is not None else np.random.default_rng(cfg.global_seed)
-        nq_frame, mnq_frame = _load_pipeline_frames(nq, mnq, cfg)
+        nq_frame, mnq_frame = _load_pipeline_frames(nq, mnq, cfg, progress=log)
         log.note(
             f"NQ={nq_frame.height:,} صف · MNQ={mnq_frame.height:,} صف"
             + (" (nq_only)" if cfg.cross_market_mode == "nq_only" else "")
@@ -648,13 +693,18 @@ def run_research_pipeline(
             out = Path(output_dir)
             log.step("حفظ المخرجات", str(out.resolve()))
             out.mkdir(parents=True, exist_ok=True)
+            log.op("كتابة report.md")
             (out / "report.md").write_text(unified.to_markdown(), encoding="utf-8")
             if ssl_result.metrics.height > 0:
+                log.op("كتابة ssl_metrics.parquet")
                 ssl_result.metrics.write_parquet(out / "ssl_metrics.parquet")
             if coverage_result.metrics.height > 0:
+                log.op("كتابة coverage_metrics.parquet")
                 coverage_result.metrics.write_parquet(out / "coverage_metrics.parquet")
             if alpha_result.evaluations.height > 0:
+                log.op("كتابة alpha_evaluations.parquet")
                 alpha_result.evaluations.write_parquet(out / "alpha_evaluations.parquet")
+            log.op("كتابة features.parquet")
             features.write_parquet(out / "features.parquet")
             log.note(f"كُتبت الملفات في {out.resolve()}")
 
