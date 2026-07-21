@@ -1,233 +1,293 @@
 # Nq — نظام بحثي كمّي لبنية السوق الدقيقة (Market Microstructure Research Engine)
 
 نظام بحثي كمّي متكامل مبني بالكامل على بيانات **MBO (Market By Order)** لعقود **NQ / MNQ**،
-يمتد من إعادة بناء دفتر الأوامر (Order Book Reconstruction) وصولًا إلى نموذج تأسيسي
-ذاتي الإشراف (Self-Supervised Foundation Model) ومساعد بحثي قائم على LLM لاكتشاف
-هياكل السوق وإشارات الألفا الجديدة.
+يمتد من إعادة بناء دفتر الأوامر إلى نموذج تأسيسي ذاتي الإشراف (SSL) ومساعد بحثي
+مؤسَّس على الأدلّة لاكتشاف هياكل السوق وإشارات الألفا.
 
-> الهدف النهائي: تحويل التدفق الخام للأوامر إلى **تمثيلات كامنة لحالات السوق** قابلة
-> للاختبار الإحصائي وللتفسير البحثي، بدقّة علمية صارمة وأداء عالٍ على بيانات ضخمة.
+> الهدف: تحويل تدفّق الأوامر الخام إلى **تمثيلات كامنة لحالات السوق** قابلة
+> للاختبار الإحصائي وللتفسير البحثي — بلا تسريب زمني، وبصرامة كمية.
+
+**متطلبات التشغيل:** Python **≥ 3.11**
 
 ---
 
 ## المبادئ الحاكمة (Non‑Negotiable Principles)
 
-هذه المبادئ الأربعة **ملزِمة في كل سطر كود وكل محطة**، ولا يُقبل أي عمل يخالفها:
+هذه المبادئ الأربعة **ملزِمة في كل سطر كود وكل محطة**:
 
 ### 1) منع التسريب الزمني نهائيًا (Zero Temporal Leakage)
-- كل حساب يعتمد **فقط** على المعلومات المتاحة حتى اللحظة `t` (Point‑in‑Time / Causal Only).
-- ممنوع أي استخدام لبيانات مستقبلية بشكل مباشر أو غير مباشر (No look‑ahead, no future peeking).
-- كل ميزة (Feature) تحمل **طابعًا زمنيًا صريحًا** (`event_ts`, `ingest_ts`, `valid_from`).
-- التقسيم للتدريب/التحقق يكون زمنيًا صارمًا (Walk‑Forward / Purged + Embargo) لا عشوائيًا.
-- أي تطبيع/تسوية (Normalization, Scaling) يُحسب من الماضي فقط ويُطبّق للأمام (Fit‑on‑past).
-- **قاعدة**: كل PR يجب أن يثبت خلوّه من التسريب عبر اختبار زمني (Leakage Test) قبل الدمج.
+- كل حساب يعتمد فقط على المعلومات المتاحة حتى اللحظة `t` (Point‑in‑Time / Causal Only).
+- ممنوع look‑ahead بأي شكل مباشر أو غير مباشر.
+- كل ميزة تحمل طابعًا زمنيًا صريحًا (`event_ts`, `ingest_ts`, `availability_ts`).
+- التقسيم Walk‑Forward / Purged + Embargo — لا عشوائي.
+- التطبيع fit‑on‑past ثم تطبيق للأمام فقط.
+- **قاعدة PR:** إثبات خلوّ من التسريب (Leakage Test) قبل الدمج.
 
-### 2) صرامة كمية وعلمية بلا أخطاء (Quantitative & Scientific Rigor)
-- كل مؤشر/محاكاة معرَّف **رياضيًا** بصيغة واضحة قبل كتابة الكود.
-- كل مخرج مصحوب بـ **اختبارات وحدة (Unit Tests)** واختبارات خصائص (Property Tests).
-- كل نتيجة بحثية تمرّ عبر **اختبار دلالة إحصائية + متانة + تحقق خارج العينة**.
-- قابلية إعادة الإنتاج الكاملة (Deterministic seeds, versioned data, pinned deps).
+### 2) صرامة كمية وعلمية بلا أخطاء
+- تعريف رياضي موثّق قبل الكود.
+- اختبارات وحدة + خصائص لكل مخرج.
+- دلالة إحصائية + متانة + تحقّق خارج العينة.
+- حتمية كاملة (seeds، بيانات مُصدَّرة، deps مثبتة).
 
-### 3) أداء عالٍ لمعالجة بيانات ضخمة (High‑Performance / Big Data)
-- أسلوب برمجي متجهي (Vectorized / Columnar) لا حلقات بايثون على المسارات الساخنة.
-- الاعتماد على أعمدة بصيغة Arrow/Parquet ومعالجة تدفّقية (Streaming) لا تحميل كامل بالذاكرة.
-- استخدام Polars / DuckDB / Numba / Rust‑bindings عند الحاجة للأداء الحرج.
-- كل مكوّن يُقاس بـ **Benchmark** (Throughput, Latency, Memory) قبل الاعتماد.
+### 3) أداء عالٍ لبيانات ضخمة
+- متجهي/عمودي؛ بلا حلقات بايثون على المسارات الساخنة.
+- Parquet/Arrow + تدفّق؛ استخدم `--max-rows` أو شرائح يومية للملفات الضخمة.
+- Benchmark قبل اعتماد المكوّنات الحرجة.
 
-### 4) MBO فقط (MBO‑Only Data Source)
-- المصدر الوحيد للحقيقة هو تدفّق **MBO** الخام؛ لا يُسمح بمصادر مجمّعة (OHLC/Aggregated) كمدخل أساسي.
-- كل الطبقات الأعلى (Footprint, Volume Profile, Order Flow...) تُشتق **حصريًا** من إعادة بناء دفتر الأوامر من MBO.
+### 4) MBO فقط
+- المصدر الوحيد للحقيقة هو تدفّق **MBO** الخام.
+- كل الطبقات الأعلى تُشتق حصريًا من إعادة بناء الدفتر.
 
 ---
 
-## المخطط المعماري العام (Architecture Overview)
+## المخطط المعماري (Architecture)
 
 ```
-MBO Raw Data
-   → Order Book Reconstruction
-   → Simulation Layer (Footprint | Volume Profile | Order Flow | Liquidity | Auction | Cross-Market)
-   → Feature Store
-   → Self-Supervised Foundation Model
-   → Latent Market Representations / Market States
-   → **Coverage Monitor** (Structural Blind-Spot Detection)
-   → Statistical Testing
-   → LLM Research Assistant
-   → Research Reports | Trading Hypotheses | Novel Alpha Signals
+MBO Raw (Parquet / Arrow / CSV / .zst / Databento)
+   → Ingestion + Order Book Reconstruction
+   → Simulation Layer
+        Footprint | Volume Profile | Order Flow | Liquidity
+        Auction | Cross-Market | Failed FVG
+   → Unified Feature Frame (availability_ts)
+   → ┌─ SSL (tick/event أو bucket)
+      ├─ M9 Coverage Monitor
+      └─ Alpha Screen (trap_setup, lead_lag, fail_fvg, …)
+   → ResearchAssistant (فرضيات بأدلّة قابلة للتتبع)
+   → Unified Report (Markdown + Parquet metrics)
 ```
 
-راجع المخطط التفصيلي في `docs/architecture.md`.
+التفاصيل: `docs/architecture.md` · عقود البيانات: `docs/data_contracts.md`
 
 ---
 
-## تقسيم العمل إلى محطات (Roadmap / Milestones)
+## خطوط التشغيل (Runbooks)
 
-كل محطة لها: **هدف**، **مخرجات (Deliverables)**، و**معايير قبول (Definition of Done)**.
-لا يُبدأ بأي محطة قبل استيفاء معايير قبول المحطة التي تسبقها.
+### 0) التثبيت
 
-### المحطة 0 — الأساسات والحوكمة (Foundations & Governance)
-- **الهدف**: بنية مستودع نظيفة، عقود بيانات، معايير كود، وبوابات جودة.
-- **المخرجات**:
-  - هيكل المجلدات (`data/`, `src/`, `tests/`, `docs/`, `benchmarks/`, `configs/`).
-  - عقود البيانات (Data Contracts / Schemas) لتدفّق MBO والحقول الزمنية.
-  - إعداد الأدوات: إدارة الحزم، linting، type‑checking، CI، اختبارات، تثبيت البذور.
-  - أداة **Leakage Test** عامة تُستخدم في كل المحطات.
-- **DoD**: CI أخضر، فحص أنواع صارم، قالب PR يفرض إثبات منع التسريب.
+```bash
+git clone <repo-url> Nq && cd Nq
 
-### المحطة 1 — استيعاب MBO وإعادة بناء دفتر الأوامر (Ingestion & Order Book Reconstruction)
-- **الهدف**: قارئ MBO عالي الأداء يعيد بناء دفتر أوامر دقيق حدثًا بحدث (event‑by‑event).
-- **المخرجات**:
-  - مُحلِّل (Parser) تدفّقي لأحداث MBO (Add / Modify / Cancel / Trade / Fill).
-  - محرك إعادة بناء دفتر الأوامر بترتيب سببي صارم مع طوابير الأسعار (Price‑level Queues).
-  - تحقق من السلامة (Sequence gaps, out‑of‑order, integrity checks).
-- **DoD**: تطابق حالة الدفتر مع لقطات مرجعية، Benchmark للـ throughput، صفر تسريب زمني.
+# يفضَّل بيئة معزولة
+python3.12 -m venv .venv && source .venv/bin/activate   # أو 3.11+
 
-### المحطة 2 — طبقة المحاكاة (Simulation Layer)
-تُشتق كلها من دفتر الأوامر المُعاد بناؤه، بترتيب زمني سببي:
-- **Footprint Simulator**: Bid/Ask Volume، Delta، Imbalance، Absorption.
-- **Volume Profile Simulator**: POC، VAH/VAL، HVN/LVN، Value Migration.
-- **Order Flow Simulator**: Aggressive Buying/Selling، Trade Initiation، Liquidity Consumption.
-- **Liquidity Simulator**: Resting Orders، Pulling/Adding Liquidity، Iceberg Detection.
-- **Auction Market Simulator**: Balance، Imbalance، Expansion، Pullback Defense.
-- **Cross-Market Simulator**: NQ↔MNQ Lead/Lag، Confirmation Failure، Divergence، Trader Trap.
-- **DoD**: تعريف رياضي موثّق لكل مؤشر + اختبارات وحدة + تحقق من عدم التسريب لكل مُحاكٍ.
+pip install -e ".[dev]"          # تطوير + اختبارات
+pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
+```
 
-### المحطة 3 — مخزن الميزات (Feature Store)
-- **الهدف**: تخزين ميزات point‑in‑time قابلة لإعادة الإنتاج مع أطر زمنية صريحة.
-- **المخرجات**: مخطط ميزات موحّد، إصدارات (Versioning)، واسترجاع زمني دقيق (Time‑travel).
-- **DoD**: استرجاع أي ميزة كما كانت في زمن `t` تمامًا، بدون أي قيمة مستقبلية.
+ضع ملفات MBO تحت `data/raw/` أو مرّر المسار من CLI.
 
-### المحطة 4 — النموذج التأسيسي ذاتي الإشراف (Self‑Supervised Foundation Model)
-مكوّنات التعلّم التمثيلي:
-- Temporal / Hierarchical / Multi‑Scale Representation Learning.
-- Contrastive Learning، Masked Modeling، World Model (Predictive).
-- Memory Mechanism، Latent State Learning، Cross‑Market، Causal Representation Learning.
-- **DoD**: مسارات تدريب/تقييم زمنية (Walk‑Forward)، منع تسريب في بناء الأزواج/الأقنعة، مقاييس تمثيل موثّقة.
-
-### المحطة 5 — التمثيلات الكامنة / حالات السوق (Latent Representations / Market States)
-- **الهدف**: استخراج تمثيلات كامنة وحالات/أنظمة سوقية (Regimes) قابلة للاستخدام البحثي.
-- **DoD**: تمثيلات مستقرة، قابلة للتفسير، ومُرفقة بطوابع زمنية سليمة.
-
-### المحطة 6 — الاختبار الإحصائي (Statistical Testing)
-- Significance Testing، Robustness Testing، Out‑of‑Sample Validation، Regime Validation، Hypothesis Verification.
-- **DoD**: كل فرضية تمرّ ببروتوكول إحصائي موثّق مع تصحيح التعدد (Multiple‑testing correction).
-
-### المحطة 7 — مساعد البحث LLM (LLM Research Assistant)
-- Pattern Discovery، Representation Interpretation، Microstructure Reasoning، Hypothesis Generation،
-  Explain Hidden Behaviors، Compare Regimes، Research Planning، Automatic Report Writing.
-- **DoD**: كل ادعاء من المساعد مرتبط بأدلة كمية قابلة للتتبع (No hallucinated evidence).
-
-### المحطة 8 — المخرجات النهائية (Outputs)
-- Research Reports، Trading Hypotheses، Discovered Market Structures، Novel Alpha Signals.
-- **DoD**: كل مخرج مدعوم بنتائج إحصائية وقابل لإعادة الإنتاج من البيانات الخام.
-
-### المحطة 9 — مراقب التغطية البنيوية (Structural Coverage Monitor)
-- **الهدف**: كشف أنماط في MBO لا تلتقطها بنية المحاكيات/الميزات الحالية (عمى بنيوي).
-- **المقاييس** (walk-forward + embargo + p-value لكل منها):
-  - **MFIG** — فجوة المعلومات الشرطية (MBO vs Features → Price).
-  - **CER** — بقايا التعرّض السببي لكل كتلة محاكاة.
-  - **PSG** — فجوة الكفاية التنبؤية (World Model surprise).
-  - **CRS** — كفاية إعادة البناء المُقنّعة لكل كتلة.
-  - **LORI** — الأنظمة اليتيمة + Transition Surprise.
-  - **QDUF** — نسبة ديناميكية الطابور غير المفسَّرة.
-- **المخرجات**: `CoverageAlert` + `Evidence` + تقرير موثّق عبر `ResearchAssistant`.
-- **DoD**: كل تنبيه يمرّ `verify_hypotheses` مع تصحيح التعدّد؛ تكامل مع `run_full_research_pipeline`.
+| الصيغة المدعومة | ملاحظات |
+|-----------------|----------|
+| `.parquet` / `.arrow` / `.ipc` | افتراضي |
+| `.csv` | مدعوم |
+| `.zst` | يحتاج `pip install -e ".[data]"` |
+| Databento columns | تُطبَّع تلقائيًا عبر `normalize_databento_frame` |
 
 ---
 
-## هيكل المستودع المقترح (Proposed Repository Layout)
+### 1) الخط الموحّد — من MBO إلى التقرير (`run_week`)
+
+نقطة الدخول الأساسية: **SSL ‖ M9 ‖ ألفا** في تقرير واحد، مع `fail_fvg` بجانب `trap_setup` / `lead_lag`.
+
+```bash
+# NQ فقط (بدون ملف MNQ منفصل) + حد ذاكرة
+python scripts/run_week.py \
+  --nq /path/to/nq.parquet \
+  --nq-only \
+  --max-rows 500000 \
+  --output data/runs/latest
+
+# NQ + MNQ
+python scripts/run_week.py \
+  --nq data/raw/nq.parquet \
+  --mnq data/raw/mnq.parquet \
+  --config configs/research.toml \
+  --output data/runs/w29
+```
+
+**المخرجات** في `--output`:
+
+| ملف | المحتوى |
+|-----|---------|
+| `report.md` | التقرير الموحّد (SSL + M9 + ألفا) |
+| `features.parquet` | إطار الميزات |
+| `ssl_metrics.parquet` | مقاييس SSL |
+| `coverage_metrics.parquet` | مقاييس M9 |
+| `alpha_evaluations.parquet` | فرز الإشارات |
+
+**الإعدادات:** `configs/research.toml`
+
+| قسم | أهم المفاتيح |
+|-----|----------------|
+| `[data]` | `nq_path`, `mnq_path`, `cross_market_mode` (`nq_only` / `dual`), `max_rows` |
+| `[ssl]` | `mode` = `tick` \| `bucket`, `window`, `n_components` |
+| `[signals]` | `include_failed_fvg`, قائمة `columns` للفرز |
+| `[execution]` | `mode` = `intraday` \| `mid`, slippage |
+| `[temporal]` | `interval_ns`, `horizon` |
+
+---
+
+### 2) تركيز فرز Failed FVG (`run_fail_fvg`)
+
+نفس الخط الموحّد مع تركيز أعمدة الفرز على `fail_fvg` (+ إشارات cross-market).
+
+```bash
+python scripts/run_fail_fvg.py \
+  --nq /path/to/nq.parquet \
+  --max-rows 500000 \
+  --output data/runs/fail_fvg
+```
+
+> ملاحظة: `run_week` يُفرز `fail_fvg` تلقائيًا إن `include_failed_fvg = true`.  
+> استخدم `run_fail_fvg` عند الحاجة لتقرير/فرز أضيق على الاستراتيجية.
+
+---
+
+### 3) من بايثون (API)
+
+```python
+from pathlib import Path
+from nq.research.orchestrator import PipelineConfig, run_research_pipeline
+from nq.strategies.fail_fvg import run_fail_fvg_research
+
+# الخط الكامل
+cfg = PipelineConfig.from_toml("configs/research.toml")
+result = run_research_pipeline(
+    "data/raw/nq.parquet",
+    "data/raw/nq.parquet",          # أو mnq؛ مع nq_only يُكرَّر NQ
+    config=cfg,
+    output_dir=Path("data/runs/api"),
+)
+print(result.report.to_markdown())
+assert "fail_fvg" in result.features.columns
+
+# تركيز Failed FVG
+fvg = run_fail_fvg_research(
+    "data/raw/nq.parquet",
+    max_rows=500_000,
+    output_dir="data/runs/fail_fvg",
+)
+print(fvg.unified.to_markdown())
+```
+
+---
+
+### 4) تدفق البيانات داخل الخط الموحّد
+
+```
+load_mbo_frame (Databento normalize + null-price sanitize + max_rows)
+  → cross_market_features          # lead_lag, trap_setup, divergence, …
+  → asof-join failed_fvg_features  # fail_fvg, effort_*  (خلفي فقط)
+  → ┌ run_ssl_tick_pipeline  أو  run_ssl_pipeline
+    ├ run_coverage_on_features     # كتل: order_flow | cross_market | failed_fvg | price
+    └ discover_alpha_from_features # IC + BH على columns من [signals]
+  → build_unified_report
+```
+
+**SSL**
+
+| `ssl.mode` | المدخل | الإخفاء |
+|------------|--------|---------|
+| `tick` (افتراضي) | MBO event + دفتر حي + VP + عمق VAH/VAL | هيكلي (`masking_structural`) |
+| `bucket` | أعمدة الإشارة المجمّعة | عشوائي (`mask_matrix`) |
+
+---
+
+### 5) بوابات الجودة (محلي + CI)
+
+```bash
+ruff check src tests
+ruff format --check src tests
+mypy                          # strict على src + tests
+pytest --cov                  # وحدة + تسريب + خصائص
+```
+
+CI: `.github/workflows/ci.yml` على كل push/PR إلى `main`.
+
+---
+
+### 6) نصائح تشغيل على بيانات حقيقية
+
+1. **Python ≥ 3.11** — المشروع يرفض أقل من ذلك في السكربتات.
+2. **الذاكرة:** ملف شهر كامل (~300M صف) — استخدم `--max-rows` أو شريحة يومية؛ لا تحمّل الشهر دفعة واحدة.
+3. **NQ فقط:** `--nq-only` أو `cross_market_mode = "nq_only"` في TOML.
+4. **أسعار Databento float:** تُحوَّل تلقائيًا إلى fixed-point عبر `PRICE_SCALE`.
+5. **أسعار null (Clear):** تُعالَج في `sanitize_mbo_frame` قبل إعادة بناء الدفتر.
+
+---
+
+## هيكل المستودع
 
 ```
 Nq/
 ├── README.md
+├── configs/
+│   ├── default.toml
+│   └── research.toml          # إعدادات الخط الموحّد + signals + ssl
+├── scripts/
+│   ├── run_week.py            # الخط الموحّد MBO → تقرير
+│   └── run_fail_fvg.py        # تركيز فرز Failed FVG
 ├── docs/
-│   └── architecture.md          # المخطط المعماري الكامل
-├── configs/                     # إعدادات التشغيل والتجارب (versioned)
-├── data/                        # عقود البيانات + بيانات معالجة (Parquet/Arrow)
-├── src/
-│   ├── ingestion/               # المحطة 1: قراءة MBO
-│   ├── orderbook/               # المحطة 1: إعادة بناء الدفتر
-│   ├── simulation/              # المحطة 2: المحاكيات
-│   ├── features/                # المحطة 3: Feature Store
-│   ├── models/                  # المحطة 4: النموذج التأسيسي
-│   ├── representations/         # المحطة 5: الحالات الكامنة
-│   ├── statistics/              # المحطة 6: الاختبار الإحصائي
-│   ├── research/                # المحطة 7: مساعد LLM المؤسَّس على الأدلّة
-│   ├── alpha/                   # المحطة 8: إشارات الألفا والمخرجات
-│   ├── strategies/              # استراتيجيات بحثية منفصلة (Failed FVG…)
-│   └── coverage/                # المحطة 9: مراقب التغطية البنيوية
-├── tests/                       # اختبارات وحدة + خصائص + منع تسريب
-└── benchmarks/                  # قياسات الأداء
+│   ├── architecture.md
+│   └── data_contracts.md
+├── data/                      # raw / runs (محلي)
+├── src/nq/
+│   ├── contracts/             # MBO schema + زمني
+│   ├── core/                  # حتمية، جلسة، سياسة زمنية
+│   ├── ingestion/             # قارئ + Databento
+│   ├── orderbook/             # إعادة بناء الدفتر
+│   ├── simulation/            # محاكيات + fvg
+│   ├── features/              # Feature Store
+│   ├── models/                # SSL tick/bucket + masking
+│   ├── states/                # Regimes / CausalRegimeTracker
+│   ├── statistics/            # اختبارات + تصحيح تعدّد
+│   ├── research/              # orchestrator + assistant
+│   ├── alpha/                 # اكتشاف/فرز الإشارات
+│   ├── strategies/            # أغلفة فوق الخط الموحّد
+│   ├── coverage/              # مراقب M9
+│   └── validation/            # leakage tests
+├── tests/
+└── benchmarks/
 ```
 
 ---
 
-## حالة التقدّم (Progress)
+## حالة التقدّم
 
 | المحطة | الوصف | الحالة |
 |--------|-------|--------|
-| 0 | الأساسات والحوكمة | ✅ مكتملة |
-| 1 | استيعاب MBO + إعادة بناء الدفتر | ✅ مكتملة |
-| 2 | طبقة المحاكاة | ✅ مكتملة |
-| 3 | Feature Store | ✅ مكتملة |
-| 4 | النموذج التأسيسي | ✅ مكتملة (bucket + tick/event SSL) |
-| 5 | التمثيلات الكامنة | ✅ مكتملة |
-| 6 | الاختبار الإحصائي | ✅ مكتملة |
-| 7 | مساعد البحث LLM | ✅ مكتملة (مؤسَّس على الأدلّة) |
-| 8 | المخرجات النهائية | ✅ مكتملة |
-| 9 | مراقب التغطية البنيوية | ✅ مكتملة |
+| 0 | الأساسات والحوكمة | ✅ |
+| 1 | استيعاب MBO + دفتر الأوامر | ✅ |
+| 2 | طبقة المحاكاة (+ Failed FVG) | ✅ |
+| 3 | Feature Store | ✅ |
+| 4 | SSL تأسيسي (bucket + tick/event) | ✅ |
+| 5 | الحالات الكامنة / Regimes | ✅ |
+| 6 | الاختبار الإحصائي | ✅ |
+| 7 | مساعد البحث LLM | ✅ |
+| 8 | ألفا + الخط الموحّد | ✅ |
+| 9 | مراقب التغطية M9 | ✅ |
 
 ---
 
-## التطوير المحلي وبوابات الجودة (Local Dev & Quality Gates)
+## المكوّنات (API مختصر)
 
-```bash
-pip install -e ".[dev]"     # التثبيت مع أدوات التطوير
+* `nq.contracts` — `MBO_SCHEMA`, `PRICE_SCALE`, `validate_mbo_frame`
+* `nq.ingestion` — `load_mbo_frame`, `iter_mbo_batches`, `normalize_databento_frame`
+* `nq.orderbook` — `OrderBook`, `reconstruct`, `check_integrity`
+* `nq.simulation` — footprint, volume profile (`DevelopingVolumeProfile`), order flow, liquidity, auction, `cross_market_features`, **`failed_fvg_features`**
+* `nq.models` — `run_ssl_pipeline`, `run_ssl_tick_pipeline`, `build_tick_stream`, `structural_mask_*`, PCA / world model / contrastive
+* `nq.research` — **`run_research_pipeline`** (نقطة الدخول)، `ResearchAssistant`, `Evidence`
+* `nq.alpha` — `evaluate_signal` / `evaluate_signal_intraday`, `screen_signals`, `discover_alpha_from_features`
+* `nq.strategies` — `run_fail_fvg_research` (غلاف يركّز الفرز على `fail_fvg` عبر نفس الخط)
+* `nq.coverage` — مقاييس MFIG/CER/PSG/CRS/LORI/QDUF؛ كتل تشمل `failed_fvg`
+* `nq.states` — `KMeansRegimes`, `CausalRegimeTracker`
+* `nq.validation` — `detect_leakage_by_perturbation`, `assert_availability_not_before_event`
 
-ruff check src tests         # فحص الأسلوب
-ruff format --check src tests
-mypy                         # فحص أنواع صارم (strict)
-pytest --cov                 # اختبارات الوحدة + التسريب
-```
+---
 
-بوابات الجودة نفسها تُنفَّذ آليًا في CI (`.github/workflows/ci.yml`) على كل PR.
+## قواعد المساهمة
 
-المكوّنات المتاحة بعد المحطة 0:
-
-* `nq.contracts` — عقد MBO والحقول الزمنية (`MBO_SCHEMA`, `validate_mbo_frame`).
-* `nq.core` — الحتمية (`seed_everything`) والترتيب السببي (`sort_causal`).
-* `nq.validation` — **أداة اختبار التسريب الزمني** (`detect_leakage_by_perturbation`, ...).
-* `nq.ingestion` — قارئ MBO تدفّقي (`load_mbo_frame`, `iter_mbo_batches`).
-* `nq.orderbook` — إعادة بناء الدفتر (`OrderBook`, `reconstruct`) وفحوص السلامة (`check_integrity`).
-* `nq.simulation` — طبقة المحاكاة الكاملة:
-  * `footprint_cells` / `footprint_summary` — البصمة السعرية (Delta، Imbalance، Absorption).
-  * `build_volume_profile` / `value_area` / `classify_nodes` / `developing_value_area` / `DevelopingVolumeProfile` — ملف الحجم (POC، VAH/VAL، HVN/LVN، هجرة القيمة، VP متطوّر event-by-event).
-  * `order_flow_summary` / `order_flow_imbalance` / `ofi_by_bucket` — تدفّق الأوامر و OFI.
-  * `liquidity_summary` / `detect_icebergs` — السيولة وكشف الآيسبرغ.
-  * `auction_states` — حالات المزاد (توازن/تمدّد/دفاع ارتداد).
-  * `cross_market_features` — **NQ↔MNQ** (Lead/Lag، تباعد، فشل تأكيد، مصيدة المتداولين).
-  * `failed_fvg_features` / `detect_h1_fvgs` / `build_ohlcv_bars` — FVG سببي + Failed FVG (تُدمَج في إطار البحث الموحّد عبر asof خلفي كإشارة `fail_fvg` بجانب `trap_setup`).
-* `nq.features` — **مخزن الميزات point-in-time** (`FeatureStore`): توحيد مخرجات المحاكيات، استرجاع `as_of`، دمج `point_in_time_join`، إصدارات، وحفظ/قراءة Parquet.
-* `nq.models` — **النموذج التأسيسي ذاتي الإشراف** (مساران: bucket + tick/event):
-  * `run_ssl_pipeline` — SSL على ميزات مجمّعة (bucket) مع `mask_matrix` عشوائي.
-  * `run_ssl_tick_pipeline` — SSL على tick/event: دفتر حي + ميزات inline + إخفاء هيكلي.
-  * `build_tick_stream` — تدفّق MBO موحّد (NQ/MNQ): `OrderBook` حي، VP متطوّر، عمق الدفتر عند VAH/VAL، إشارات cross.
-  * `build_tick_sequences` / `TickSequenceDataset` — تقطيع سببي مع `mask_path` و `market_phase`.
-  * `structural_mask_sample` / `structural_mask_batch` — إخفاء هيكلي (balance/expansion/cross-trap على مستويات الدفتر الفعلية).
-  * `purged_walk_forward_split` — تقسيم زمني مع purge/embargo.
-  * `build_sequences` / `CausalStandardScaler` — تقطيع سببي وتطبيع fit-on-train.
-  * `PCAEncoder` (خلف `Encoder` Protocol) — تعلّم تمثيلي كامن.
-  * `mask_matrix` / `masked_reconstruction_error` — النمذجة المُقنّعة العشوائية (مسار bucket).
-  * `NextStatePredictor` — نموذج العالم التنبّئي (next-state).
-  * `augment_windows` / `info_nce_loss` — التعلّم التبايني (contrastive).
-* `nq.research` — **مساعد البحث + المنسّق الموحّد**: `run_research_pipeline` / `run_ssl_research_pipeline` (من `nq.research.orchestrator` — خط واحد MBO→تقرير؛ `ssl_mode`: `tick` أو `bucket`، SSL + M9 + ألفا)، `Evidence`/`EvidenceStore`، `ResearchAssistant`، و `LanguageModel`.
-* `nq.states` — **حالات السوق / الأنظمة (Regimes)**: `KMeansRegimes` (تجميع حتمي fit-on-train)، `CausalRegimeTracker` (تتبّع سببي لمرحلة السوق في tick stream)، `infer_market_phase_map` / `heuristic_market_phase`، `transition_matrix` و `dwell_times` (ديناميكية سببية)، `silhouette_score` (استقرار)، و `regime_summary` (تفسير) — بطوابع زمنية سليمة.
-* `nq.statistics` — **الاختبار الإحصائي**: `permutation_test` / `bootstrap_ci` / `moving_block_bootstrap_ci` (دلالة ومتانة)، `benjamini_hochberg` / `holm` / `bonferroni` (تصحيح التعدّد)، `sharpe_ratio` / `information_coefficient` / `t_statistic`، `regime_difference_test`، و `verify_hypotheses` (تقرير موحّد مصحّح).
-* `nq.alpha` — **المخرجات النهائية / إشارات الألفا**: `align_forward_returns` / `evaluate_signal` (IC + دلالة + Sharpe)، `screen_signals` (فرز مع تصحيح التعدّد)، `run_research_pipeline` (خط كامل من MBO الخام إلى إشارات ألفا)، و `run_full_research_pipeline` (تغطية + ألفا).
-* `nq.strategies` — واجهات مريحة فوق الخط الموحّد: `run_fail_fvg_research` يُشغّل نفس `run_research_pipeline` مع تركيز فرز على `fail_fvg` (بجانب `trap_setup` / `lead_lag`).
-* `nq.coverage` — **مراقب التغطية البنيوية (المحطة 9)**: `mbo_window_descriptors` (واصفات MBO كافية)، `distance_correlation` / `max_axis_dependence`، مقاييس `measure_mfig` / `measure_cer` / `measure_psg` / `measure_crs` / `measure_lori` / `measure_qduf`، `run_coverage_pipeline` (من MBO خام إلى تقرير عمى بنيوي موثّق)، و `CoverageAlert`/`CoverageReport`.
-
-## قواعد المساهمة (Contribution Rules)
-
-1. لا يُدمج أي PR يخالف أحد المبادئ الحاكمة الأربعة.
-2. كل PR يتضمّن: تعريفًا رياضيًا، اختبارات، إثبات منع تسريب، وقياس أداء عند الحاجة.
-3. الالتزام بالتقسيم إلى محطات؛ لا قفز لمحطة قبل استيفاء معايير قبول سابقتها.
+1. لا يُدمج أي PR يخالف المبادئ الحاكمة الأربعة.
+2. كل PR: تعريف رياضي عند الحاجة، اختبارات، إثبات منع تسريب، وقياس أداء عند اللزوم.
+3. توسيع متداخل في الطبقات الحالية — **لا fork معماري موازٍ**.
+4. الإشارات الجديدة تُدمَج في إطار البحث الموحّد (`availability_ts`) وتُفرَز عبر `discover_alpha_from_features`.
