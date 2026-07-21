@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import polars as pl
 
-from nq.core.time import sort_causal
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.core.time import sort_causal
 from nq.simulation.common import BUCKET_START, add_time_bucket, extract_trades
 from nq.simulation.volume_profile import developing_value_area
 
@@ -168,13 +168,12 @@ def auction_signal_frame(
             pl.when(pl.col("is_expansion")).then(1.0).otherwise(0.0).alias("vp_expansion"),
             pl.when(pl.col("close_in_value")).then(1.0).otherwise(0.0).alias("vp_close_in_value"),
             pl.col("in_value_fraction").cast(pl.Float64).alias("vp_in_value_frac"),
-            pl.when(pl.col("pullback_defended")).then(1.0).otherwise(0.0).alias(
-                "vp_pullback_defense"
-            ),
+            pl.when(pl.col("pullback_defended"))
+            .then(1.0)
+            .otherwise(0.0)
+            .alias("vp_pullback_defense"),
             pl.col("poc_migration").cast(pl.Float64).alias("vp_poc_migration"),
-            (
-                pl.col("is_balanced").shift(1).fill_null(value=False) & ~pl.col("is_balanced")
-            )
+            (pl.col("is_balanced").shift(1).fill_null(value=False) & ~pl.col("is_balanced"))
             .cast(pl.Float64)
             .alias("vp_flip_to_imbalance"),
         )
@@ -192,4 +191,4 @@ def auction_signal_frame(
     )
 
 
-__all__ = ["auction_states", "auction_signal_frame"]
+__all__ = ["auction_signal_frame", "auction_states"]
