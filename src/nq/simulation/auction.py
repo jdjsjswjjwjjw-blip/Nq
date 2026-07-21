@@ -21,6 +21,7 @@ from __future__ import annotations
 import polars as pl
 
 from nq.core.time import sort_causal
+from nq.contracts.temporal import AVAILABILITY_TS
 from nq.simulation.common import BUCKET_START, add_time_bucket, extract_trades
 from nq.simulation.volume_profile import developing_value_area
 
@@ -116,4 +117,79 @@ def auction_states(
     )
 
 
-__all__ = ["auction_states"]
+def auction_signal_frame(
+    frame: pl.DataFrame,
+    *,
+    interval_ns: int,
+    fraction: float = 0.7,
+    balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
+    expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
+) -> pl.DataFrame:
+    """إشارات بحثية من Volume Profile + المزاد (توازن/اختلال/تمدّد).
+
+    جاهزة للدمج asof في إطار البحث الموحّد:
+
+    * ``vp_balance`` — ``+1`` متوازن، ``-1`` مختلّ.
+    * ``vp_imbalance`` — ``1`` عند الاختلال، ``0`` وإلا.
+    * ``vp_expansion`` — ``1`` عند تمدّد المدى، ``0`` وإلا.
+    * ``vp_close_in_value`` — قبول الإغلاق داخل منطقة القيمة.
+    * ``vp_in_value_frac`` — حصّة الحجم داخل [VAL, VAH].
+    * ``vp_pullback_defense`` — دفاع ارتداد إلى القيمة.
+    * ``vp_poc_migration`` — إزاحة POC عن النافذة السابقة (سببي).
+    * ``vp_flip_to_imbalance`` — انتقال من توازن → اختلال.
+    """
+    states = auction_states(
+        frame,
+        interval_ns=interval_ns,
+        fraction=fraction,
+        balance_threshold=balance_threshold,
+        expansion_threshold=expansion_threshold,
+    )
+    if states.height == 0:
+        return pl.DataFrame(
+            schema={
+                AVAILABILITY_TS: pl.Int64(),
+                "vp_balance": pl.Float64(),
+                "vp_imbalance": pl.Float64(),
+                "vp_expansion": pl.Float64(),
+                "vp_close_in_value": pl.Float64(),
+                "vp_in_value_frac": pl.Float64(),
+                "vp_pullback_defense": pl.Float64(),
+                "vp_poc_migration": pl.Float64(),
+                "vp_flip_to_imbalance": pl.Float64(),
+            }
+        )
+
+    return (
+        states.sort(BUCKET_START)
+        .with_columns(
+            pl.when(pl.col("is_balanced")).then(1.0).otherwise(-1.0).alias("vp_balance"),
+            pl.when(~pl.col("is_balanced")).then(1.0).otherwise(0.0).alias("vp_imbalance"),
+            pl.when(pl.col("is_expansion")).then(1.0).otherwise(0.0).alias("vp_expansion"),
+            pl.when(pl.col("close_in_value")).then(1.0).otherwise(0.0).alias("vp_close_in_value"),
+            pl.col("in_value_fraction").cast(pl.Float64).alias("vp_in_value_frac"),
+            pl.when(pl.col("pullback_defended")).then(1.0).otherwise(0.0).alias(
+                "vp_pullback_defense"
+            ),
+            pl.col("poc_migration").cast(pl.Float64).alias("vp_poc_migration"),
+            (
+                pl.col("is_balanced").shift(1).fill_null(value=False) & ~pl.col("is_balanced")
+            )
+            .cast(pl.Float64)
+            .alias("vp_flip_to_imbalance"),
+        )
+        .select(
+            AVAILABILITY_TS,
+            "vp_balance",
+            "vp_imbalance",
+            "vp_expansion",
+            "vp_close_in_value",
+            "vp_in_value_frac",
+            "vp_pullback_defense",
+            "vp_poc_migration",
+            "vp_flip_to_imbalance",
+        )
+    )
+
+
+__all__ = ["auction_states", "auction_signal_frame"]
