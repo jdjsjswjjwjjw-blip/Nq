@@ -233,18 +233,16 @@ def _pick_failed_fvg(
     return 0.0, None
 
 
-def failed_fvg_features(
-    frame: pl.DataFrame,
+def failed_fvg_from_bars(
+    h1: pl.DataFrame,
+    signal_bars: pl.DataFrame,
     *,
-    h1_interval_ns: int = NS_1H,
-    signal_interval_ns: int = NS_30M,
     fvg_window_ns: int = _DEFAULT_FVG_WINDOW_NS,
     vol_price_mult: float = _DEFAULT_VOL_PRICE_MULT,
     vol_volume_mult: float = _DEFAULT_VOL_VOLUME_MULT,
 ) -> pl.DataFrame:
-    """إطار إشارة Failed FVG سببي من MBO خام."""
-    h1 = build_ohlcv_bars(frame, interval_ns=h1_interval_ns)
-    m30 = _with_effort_features(build_ohlcv_bars(frame, interval_ns=signal_interval_ns))
+    """إشارة Failed FVG من شموع مكتملة مسبقًا (سببي — لإعادة استخدام الكاش)."""
+    m30 = _with_effort_features(signal_bars)
     fvgs = detect_h1_fvgs(h1)
     if m30.height == 0:
         return _empty_signal_frame()
@@ -303,10 +301,33 @@ def failed_fvg_features(
     return pl.DataFrame(out)
 
 
+def failed_fvg_features(
+    frame: pl.DataFrame,
+    *,
+    h1_interval_ns: int = NS_1H,
+    signal_interval_ns: int = NS_30M,
+    fvg_window_ns: int = _DEFAULT_FVG_WINDOW_NS,
+    vol_price_mult: float = _DEFAULT_VOL_PRICE_MULT,
+    vol_volume_mult: float = _DEFAULT_VOL_VOLUME_MULT,
+) -> pl.DataFrame:
+    """إطار إشارة Failed FVG سببي من MBO خام."""
+    h1 = build_ohlcv_bars(frame, interval_ns=h1_interval_ns)
+    signal_bars = build_ohlcv_bars(frame, interval_ns=signal_interval_ns)
+    return failed_fvg_from_bars(
+        h1,
+        signal_bars,
+        fvg_window_ns=fvg_window_ns,
+        vol_price_mult=vol_price_mult,
+        vol_volume_mult=vol_volume_mult,
+    )
+
+
 __all__ = [
     "NS_1H",
     "NS_30M",
+    "NS_PER_MIN",
     "build_ohlcv_bars",
     "detect_h1_fvgs",
     "failed_fvg_features",
+    "failed_fvg_from_bars",
 ]
