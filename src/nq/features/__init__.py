@@ -16,5 +16,19 @@ from nq.features.store import (
     FeatureStore,
     wide_to_features,
 )
+from nq.features.streaming import (
+    STREAMING_SIGNAL_COLUMNS,
+    build_streaming_research_features,
+    sample_streaming_to_interval,
+    streaming_event_features,
+)
 
-__all__ = ["FEATURE_STORE_SCHEMA", "FeatureStore", "wide_to_features"]
+__all__ = [
+    "FEATURE_STORE_SCHEMA",
+    "STREAMING_SIGNAL_COLUMNS",
+    "FeatureStore",
+    "build_streaming_research_features",
+    "sample_streaming_to_interval",
+    "streaming_event_features",
+    "wide_to_features",
+]

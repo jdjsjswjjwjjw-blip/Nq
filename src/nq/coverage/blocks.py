@@ -33,6 +33,17 @@ DEFAULT_FEATURE_BLOCKS: dict[str, tuple[str, ...]] = {
         "vp_poc_migration",
         "vp_flip_to_imbalance",
     ),
+    "streaming_microstructure": (
+        "phase_balance",
+        "phase_expansion",
+        "in_value_area",
+        "near_vah",
+        "near_val",
+        "poc_dist_norm",
+        "nq_spread_norm",
+        "stream_vah_bid_liq",
+        "stream_val_ask_liq",
+    ),
     "price": ("nq_return", "mnq_return"),
 }
 

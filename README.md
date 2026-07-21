@@ -47,13 +47,12 @@
 ```
 MBO Raw (Parquet / Arrow / CSV / .zst / Databento)
    → Ingestion + Order Book Reconstruction
-   → Simulation Layer
-        Footprint | Volume Profile | Order Flow | Liquidity
-        Auction | Cross-Market | Failed FVG
-   → Unified Feature Frame (availability_ts)
+   → Streaming State Machine (افتراضي) — دفتر حي · VP · Regimes · trap
+        أو Simulation batch (اختياري: features.mode = "batch")
+   → Unified Feature Frame (availability_ts = event_ts للبث)
    → ┌─ SSL (tick/event أو bucket)
       ├─ M9 Coverage Monitor
-      └─ Alpha Screen (trap_setup, lead_lag, fail_fvg, vp_balance, …)
+      └─ Alpha Screen (trap_setup, phase_*, fail_fvg, vp_*, …)
    → ResearchAssistant (فرضيات بأدلّة قابلة للتتبع)
    → Unified Report (Markdown + Parquet metrics)
 ```
@@ -143,6 +142,7 @@ python scripts/run_week.py \
 |-----|----------------|
 | `[data]` | `nq_path`, `mnq_path`, `cross_market_mode` (`nq_only` / `dual`), `max_rows` |
 | `[ssl]` | `mode` = `tick` \| `bucket`, `window`, `n_components` |
+| `[features]` | `mode` = `streaming` (افتراضي) \| `batch` |
 | `[signals]` | `include_failed_fvg`, `include_auction_vp`, قائمة `columns` للفرز |
 | `[execution]` | `mode` = `intraday` \| `mid`, slippage |
 | `[temporal]` | `interval_ns`, `horizon` |
@@ -288,11 +288,14 @@ print(vp.unified.to_markdown())
 
 ```
 load_mbo_frame (Databento normalize + null-price sanitize + max_rows)
-  → cross_market_features          # lead_lag, trap_setup, divergence, …
+  → [features.mode=streaming] build_streaming_research_features
+       # آلة حالة: OrderBook + DevelopingVolumeProfile + CausalRegimeTracker
+       # availability_ts = event_ts؛ عيّنة = آخر حالة في كل interval
+  → [features.mode=batch] cross_market_features   # نوافذ مجمّعة (اختياري)
   → asof-join failed_fvg_features  # fail_fvg, effort_*  (خلفي فقط)
   → asof-join auction_signal_frame # vp_balance, vp_imbalance, … (خلفي فقط)
   → ┌ run_ssl_tick_pipeline  أو  run_ssl_pipeline
-    ├ run_coverage_on_features     # + كتلة volume_profile_auction
+    ├ run_coverage_on_features     # + كتلة streaming_microstructure
     └ discover_alpha_from_features # IC + BH على columns من [signals]
   → build_unified_report
 ```
@@ -401,7 +404,7 @@ Nq/
 * `nq.contracts` — `MBO_SCHEMA`, `PRICE_SCALE`, `validate_mbo_frame`
 * `nq.ingestion` — `load_mbo_frame`, `iter_mbo_batches`, `normalize_databento_frame`
 * `nq.orderbook` — `OrderBook`, `reconstruct`, `check_integrity`
-* `nq.simulation` — footprint, volume profile (`DevelopingVolumeProfile`), order flow, liquidity, auction (`auction_signal_frame`), `cross_market_features`, **`failed_fvg_features`**
+* `nq.features` — Feature Store PIT + **`build_streaming_research_features`** (آلة حالة MBO)
 * `nq.models` — `run_ssl_pipeline`, `run_ssl_tick_pipeline`, `build_tick_stream`, `structural_mask_*`, PCA / world model / contrastive
 * `nq.research` — **`run_research_pipeline`** (نقطة الدخول)، `ResearchAssistant`, `Evidence`
 * `nq.alpha` — `evaluate_signal` / `evaluate_signal_intraday`, `screen_signals`, `discover_alpha_from_features`
