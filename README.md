@@ -136,6 +136,9 @@ python scripts/run_week.py \
 | `coverage_metrics.parquet` | مقاييس M9 |
 | `alpha_evaluations.parquet` | فرز الإشارات |
 
+**تقدّم التشغيل (stderr):** الخط يطبع كل خطوة من البداية للنهاية (`[nq] → ...`) مع الزمن،
+ولو فشل يعرض اسم الخطوة والخطأ. عطّل بـ `--quiet` أو `[run] quiet = true` في TOML.
+
 **الإعدادات:** `configs/research.toml`
 
 | قسم | أهم المفاتيح |
@@ -144,6 +147,7 @@ python scripts/run_week.py \
 | `[ssl]` | `mode` = `tick` \| `bucket`, `window`, `n_components` |
 | `[features]` | `mode` = `streaming` (افتراضي) \| `batch` |
 | `[signals]` | `include_failed_fvg`, `include_auction_vp`, قائمة `columns` للفرز |
+| `[run]` | `quiet` = تعطيل طباعة التقدّم |
 | `[execution]` | `mode` = `intraday` \| `mid`, slippage |
 | `[temporal]` | `interval_ns`, `horizon` |
 

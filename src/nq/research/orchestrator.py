@@ -33,6 +33,7 @@ from nq.features.streaming import (
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_pipeline, run_ssl_tick_pipeline
 from nq.research.assistant import LanguageModel, ResearchAssistant
+from nq.research.progress import PipelineProgress, resolve_progress
 from nq.research.unified import UnifiedResearchReport, build_unified_report
 from nq.simulation.auction import auction_signal_frame
 from nq.simulation.cross_market import cross_market_features
@@ -128,6 +129,7 @@ class PipelineConfig:
     include_auction_vp: bool = True
     feature_mode: FeatureMode = "streaming"
     signal_columns: tuple[str, ...] | None = None
+    quiet: bool = False
 
     @classmethod
     def from_toml(cls, path: Path | str) -> PipelineConfig:
@@ -142,6 +144,7 @@ class PipelineConfig:
         signals = raw.get("signals", {})
         features_cfg = raw.get("features", {})
         det = raw.get("determinism", {})
+        run_cfg = raw.get("run", {})
         max_rows_raw = data.get("max_rows")
         max_rows = None if max_rows_raw in (None, 0) else int(max_rows_raw)
         signal_cols = signals.get("columns")
@@ -167,6 +170,7 @@ class PipelineConfig:
             include_auction_vp=bool(signals.get("include_auction_vp", True)),
             feature_mode=str(features_cfg.get("mode", signals.get("feature_mode", "streaming"))),  # type: ignore[arg-type]
             signal_columns=tuple(signal_cols) if signal_cols else None,
+            quiet=bool(run_cfg.get("quiet", False)),
         )
 
 
@@ -273,15 +277,26 @@ def _build_research_features(
     nq: pl.DataFrame,
     mnq: pl.DataFrame,
     cfg: PipelineConfig,
+    *,
+    progress: PipelineProgress | None = None,
 ) -> pl.DataFrame:
     """يبني إطار البحث: streaming (افتراضي) أو batch، ثم FVG/Auction asof."""
+    log = progress if progress is not None else PipelineProgress(enabled=False)
     if cfg.feature_mode == "streaming":
+        log.step(
+            "بناء الميزات (streaming state-machine)",
+            f"NQ={nq.height:,} · MNQ={mnq.height:,} · interval_ns={cfg.interval_ns}",
+        )
         features = build_streaming_research_features(
             nq,
             mnq,
             interval_ns=cfg.interval_ns,
         )
     else:
+        log.step(
+            "بناء الميزات (batch cross-market)",
+            f"NQ={nq.height:,} · MNQ={mnq.height:,} · interval_ns={cfg.interval_ns}",
+        )
         features = cross_market_features(
             nq,
             mnq,
@@ -289,9 +304,12 @@ def _build_research_features(
             lead_lag_window=cfg.lead_lag_window,
             latency_ns=cfg.latency_ns,
         )
+    log.note(f"إطار الميزات الأساسي: {features.height:,} صف × {features.width} عمود")
     if cfg.include_failed_fvg:
+        log.step("إلحاق Failed FVG (asof خلفي)")
         features = _attach_failed_fvg(features, nq)
     if cfg.include_auction_vp:
+        log.step("إلحاق Volume Profile / Auction (asof خلفي)")
         features = _attach_auction_vp(features, nq, interval_ns=cfg.interval_ns)
     return features
 
@@ -319,10 +337,12 @@ def run_ssl_research_pipeline(
     ssl_mode: SslMode = "tick",
     language_model: LanguageModel | None = None,
     rng: np.random.Generator | None = None,
+    progress: PipelineProgress | None = None,
 ) -> tuple[SSLPipelineResult, CoverageReport, AlphaDiscovery, UnifiedResearchReport]:
     """يشغّل SSL + M9 (خلفية) + ألفا → تقرير شامل (الميزات مُبنية مسبقًا)."""
     from nq.alpha.discovery import discover_alpha_from_features  # noqa: PLC0415
 
+    log = progress if progress is not None else PipelineProgress(enabled=False)
     generator = rng if rng is not None else np.random.default_rng(0)
     seed = int(generator.integers(0, 2**31))
 
@@ -334,6 +354,10 @@ def run_ssl_research_pipeline(
     )
     purge_val = policy.purge_samples()
     columns = _resolve_signal_columns(features, signal_columns)
+    log.note(
+        f"إشارات الفرز: {len(columns)} · ssl_mode={ssl_mode} · "
+        f"parallel_m9={parallel_coverage}"
+    )
 
     ssl_assistant = ResearchAssistant(alpha=alpha, language_model=language_model)
     alpha_assistant = ResearchAssistant(alpha=alpha, language_model=language_model)
@@ -367,6 +391,7 @@ def run_ssl_research_pipeline(
         )
 
     if parallel_coverage and (features.height > 0 or ssl_mode == "tick"):
+        log.step("تشغيل SSL ‖ M9 بالتوازي", f"mode={ssl_mode}")
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="coverage-m9") as executor:
             coverage_future = executor.submit(
                 _run_coverage_task,
@@ -381,7 +406,11 @@ def run_ssl_research_pipeline(
                 n_permutations=n_permutations,
                 seed=seed,
             )
+            log.note("M9 يعمل في الخلفية")
+            log.note(f"SSL يبدأ الآن (mode={ssl_mode})")
             ssl_result = _run_ssl()
+            log.note(f"SSL انتهى — metrics={ssl_result.metrics.height}")
+            log.step("اكتشاف الألفا (intraday)", f"signals={len(columns)}")
             alpha_result = discover_alpha_from_features(
                 features,
                 signal_columns=columns,
@@ -397,9 +426,14 @@ def run_ssl_research_pipeline(
                 rng=generator,
                 assistant=alpha_assistant,
             )
+            log.step("انتظار نتيجة M9")
             coverage_result = coverage_future.result()
+            log.note(f"M9 انتهى — metrics={coverage_result.metrics.height}")
     else:
+        log.step("تشغيل SSL (تسلسلي)", f"mode={ssl_mode}")
         ssl_result = _run_ssl()
+        log.note(f"SSL انتهى — metrics={ssl_result.metrics.height}")
+        log.step("اكتشاف الألفا (intraday)", f"signals={len(columns)}")
         alpha_result = discover_alpha_from_features(
             features,
             signal_columns=columns,
@@ -415,6 +449,7 @@ def run_ssl_research_pipeline(
             rng=generator,
             assistant=alpha_assistant,
         )
+        log.step("تشغيل المراقب M9 (تسلسلي)")
         coverage_result = run_coverage_on_features(
             nq,
             mnq,
@@ -427,9 +462,11 @@ def run_ssl_research_pipeline(
             n_permutations=n_permutations,
             rng=np.random.default_rng(seed),
         )
+        log.note(f"M9 انتهى — metrics={coverage_result.metrics.height}")
 
     narrative = ""
     if language_model is not None:
+        log.step("تلخيص الأدلة عبر LanguageModel")
         all_claims = " ".join(
             o.finding.claim
             for report in (
@@ -444,7 +481,10 @@ def run_ssl_research_pipeline(
                 "لخّص الاستنتاجات الموثّقة التالية من قنوات SSL والمراقب M9 والألفا "
                 "دون إضافة أي ادعاء جديد:\n" + all_claims
             )
+        else:
+            log.note("لا توجد ادعاءات موثّقة للتلخيص")
 
+    log.step("دمج التقرير الموحّد (SSL ‖ M9 ‖ ألفا)")
     unified = build_unified_report(
         ssl_report=ssl_result.report,
         coverage_report=coverage_result.report,
@@ -514,6 +554,8 @@ def run_research_pipeline(
     n_permutations: int | None = None,
     language_model: LanguageModel | None = None,
     rng: np.random.Generator | None = None,
+    progress: PipelineProgress | bool | None = None,
+    quiet: bool | None = None,
 ) -> UnifiedResearchResult:
     """الخط الموحّد: تحميل MBO → ميزات → SSL‖M9 → ألفا → تقرير.
 
@@ -525,6 +567,9 @@ def run_research_pipeline(
         إعدادات من ``configs/research.toml`` أو كائن ``PipelineConfig``.
     output_dir:
         عند التحديد يُحفظ ``report.md`` والمقاييس في هذا المجلد.
+    progress / quiet:
+        طباعة تقدّم الخطوات على stderr. الافتراضي: مفعّل.
+        ``quiet=True`` أو ``progress=False`` يعطّل الطباعة.
     """
     cfg = _resolve_pipeline_config(
         config,
@@ -536,65 +581,98 @@ def run_research_pipeline(
         parallel_coverage=parallel_coverage,
         n_permutations=n_permutations,
     )
+    if quiet is not None:
+        cfg = replace(cfg, quiet=quiet)
 
-    seed_everything(cfg.global_seed)
-    generator = rng if rng is not None else np.random.default_rng(cfg.global_seed)
+    log = resolve_progress(progress, quiet=cfg.quiet)
+    feature_extra = int(cfg.include_failed_fvg) + int(cfg.include_auction_vp)
+    save_step = 1 if output_dir is not None else 0
+    llm_step = 1 if language_model is not None else 0
+    # load + feature_base + extras + ssl/m9/alpha path (~4) + unify + optional save/llm
+    total_steps = 2 + feature_extra + 4 + llm_step + save_step
+    log.begin("الخط الموحّد MBO → تقرير", total_steps=total_steps)
 
-    nq_frame, mnq_frame = _load_pipeline_frames(nq, mnq, cfg)
+    try:
+        log.step(
+            "تهيئة الحتمية + تحميل MBO",
+            (
+                f"mode={cfg.cross_market_mode} · features={cfg.feature_mode} · "
+                f"ssl={cfg.ssl_mode} · max_rows={cfg.max_rows}"
+            ),
+        )
+        seed_everything(cfg.global_seed)
+        generator = rng if rng is not None else np.random.default_rng(cfg.global_seed)
+        nq_frame, mnq_frame = _load_pipeline_frames(nq, mnq, cfg)
+        log.note(
+            f"NQ={nq_frame.height:,} صف · MNQ={mnq_frame.height:,} صف"
+            + (" (nq_only)" if cfg.cross_market_mode == "nq_only" else "")
+        )
 
-    features = _build_research_features(nq_frame, mnq_frame, cfg)
+        features = _build_research_features(nq_frame, mnq_frame, cfg, progress=log)
+        resolved_signals = signal_columns if signal_columns is not None else cfg.signal_columns
 
-    resolved_signals = signal_columns if signal_columns is not None else cfg.signal_columns
+        ssl_result, coverage_result, alpha_result, unified = run_ssl_research_pipeline(
+            nq_frame,
+            mnq_frame,
+            features,
+            interval_ns=cfg.interval_ns,
+            horizon=cfg.horizon,
+            signal_columns=resolved_signals,
+            price_col=price_col,
+            alpha=cfg.alpha,
+            n_permutations=cfg.n_permutations,
+            ssl_window=cfg.ssl_window,
+            ssl_components=cfg.ssl_components,
+            coverage_splits=cfg.coverage_splits,
+            coverage_embargo=cfg.coverage_embargo,
+            execution_mode=cfg.execution_mode,
+            ssl_mode=cfg.ssl_mode,
+            slippage_ticks=cfg.slippage_ticks,
+            tick_size=cfg.tick_size,
+            commission_bps=cfg.commission_bps,
+            parallel_coverage=cfg.parallel_coverage,
+            language_model=language_model,
+            rng=generator,
+            progress=log,
+        )
 
-    ssl_result, coverage_result, alpha_result, unified = run_ssl_research_pipeline(
-        nq_frame,
-        mnq_frame,
-        features,
-        interval_ns=cfg.interval_ns,
-        horizon=cfg.horizon,
-        signal_columns=resolved_signals,
-        price_col=price_col,
-        alpha=cfg.alpha,
-        n_permutations=cfg.n_permutations,
-        ssl_window=cfg.ssl_window,
-        ssl_components=cfg.ssl_components,
-        coverage_splits=cfg.coverage_splits,
-        coverage_embargo=cfg.coverage_embargo,
-        execution_mode=cfg.execution_mode,
-        ssl_mode=cfg.ssl_mode,
-        slippage_ticks=cfg.slippage_ticks,
-        tick_size=cfg.tick_size,
-        commission_bps=cfg.commission_bps,
-        parallel_coverage=cfg.parallel_coverage,
-        language_model=language_model,
-        rng=generator,
-    )
+        result = UnifiedResearchResult(
+            features=features,
+            ssl=ssl_result,
+            coverage=coverage_result,
+            alpha=alpha_result,
+            report=unified,
+        )
 
-    result = UnifiedResearchResult(
-        features=features,
-        ssl=ssl_result,
-        coverage=coverage_result,
-        alpha=alpha_result,
-        report=unified,
-    )
+        if output_dir is not None:
+            out = Path(output_dir)
+            log.step("حفظ المخرجات", str(out.resolve()))
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "report.md").write_text(unified.to_markdown(), encoding="utf-8")
+            if ssl_result.metrics.height > 0:
+                ssl_result.metrics.write_parquet(out / "ssl_metrics.parquet")
+            if coverage_result.metrics.height > 0:
+                coverage_result.metrics.write_parquet(out / "coverage_metrics.parquet")
+            if alpha_result.evaluations.height > 0:
+                alpha_result.evaluations.write_parquet(out / "alpha_evaluations.parquet")
+            features.write_parquet(out / "features.parquet")
+            log.note(f"كُتبت الملفات في {out.resolve()}")
 
-    if output_dir is not None:
-        out = Path(output_dir)
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "report.md").write_text(unified.to_markdown(), encoding="utf-8")
-        if ssl_result.metrics.height > 0:
-            ssl_result.metrics.write_parquet(out / "ssl_metrics.parquet")
-        if coverage_result.metrics.height > 0:
-            coverage_result.metrics.write_parquet(out / "coverage_metrics.parquet")
-        if alpha_result.evaluations.height > 0:
-            alpha_result.evaluations.write_parquet(out / "alpha_evaluations.parquet")
-        features.write_parquet(out / "features.parquet")
-
-    return result
+        log.done(
+            f"features={features.height:,} · "
+            f"ssl_metrics={ssl_result.metrics.height} · "
+            f"m9_metrics={coverage_result.metrics.height} · "
+            f"alpha_evals={alpha_result.evaluations.height}"
+        )
+        return result
+    except Exception as exc:
+        log.fail(exc)
+        raise
 
 
 __all__ = [
     "PipelineConfig",
+    "PipelineProgress",
     "UnifiedResearchResult",
     "run_research_pipeline",
     "run_ssl_research_pipeline",

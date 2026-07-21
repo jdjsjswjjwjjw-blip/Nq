@@ -52,6 +52,11 @@ def main() -> None:
         help="مع --search: تعطيل بوابة SSL (الإشارات الخام فقط)",
     )
     parser.add_argument("--n-splits", type=int, default=3)
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="تعطيل طباعة تقدّم الخطوات على stderr",
+    )
     args = parser.parse_args()
 
     if not args.nq.is_file():
@@ -68,6 +73,7 @@ def main() -> None:
             n_splits=args.n_splits,
             max_rows=args.max_rows,
             output_dir=args.output,
+            quiet=args.quiet,
         )
         print(result.report.to_markdown())
         print(f"\nbest_oos_spec: {result.best_oos_spec}")
@@ -87,6 +93,7 @@ def main() -> None:
         horizon=args.horizon,
         max_rows=args.max_rows,
         output_dir=args.output,
+        quiet=args.quiet,
     )
     print(result.unified.to_markdown())
     print(f"\nsignals: {result.signal_columns}")
