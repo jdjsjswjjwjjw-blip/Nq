@@ -107,10 +107,22 @@ def test_pipeline_reproducible_from_raw_mbo() -> None:
     mnq = _market(prices, symbol="MNQ", instrument_id=2)
 
     a = run_research_pipeline(
-        nq, mnq, interval_ns=100, horizon=1, n_permutations=300, rng=make_generator(9)
+        nq,
+        mnq,
+        interval_ns=100,
+        horizon=1,
+        n_permutations=300,
+        rng=make_generator(9),
+        quiet=True,
     )
     b = run_research_pipeline(
-        nq, mnq, interval_ns=100, horizon=1, n_permutations=300, rng=make_generator(9)
+        nq,
+        mnq,
+        interval_ns=100,
+        horizon=1,
+        n_permutations=300,
+        rng=make_generator(9),
+        quiet=True,
     )
     # نفس البيانات الخام + نفس البذرة -> نفس المخرجات بالضبط (قابلية إعادة الإنتاج)
     assert a.evaluations.equals(b.evaluations)

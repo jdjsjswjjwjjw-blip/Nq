@@ -64,3 +64,7 @@ output_dir = "data/runs/latest"
 cross_market_mode = "nq_only"
 # حد صفوف للتجارب (0 = بدون حد) — أو --max-rows من CLI
 max_rows = 0
+
+# طباعة تقدّم الخطوات على stderr أثناء التشغيل
+[run]
+quiet = false

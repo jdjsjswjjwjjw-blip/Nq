@@ -49,6 +49,7 @@ def test_run_research_pipeline_unified_report() -> None:
         n_permutations=200,
         parallel_coverage=True,
         rng=make_generator(1),
+        quiet=True,
     )
     md = result.report.to_markdown()
     assert "قناة 1 — SSL" in md
@@ -69,6 +70,7 @@ def test_run_research_pipeline_includes_failed_fvg_signal() -> None:
         n_permutations=200,
         parallel_coverage=False,
         rng=make_generator(3),
+        quiet=True,
     )
     assert "fail_fvg" in result.features.columns
     assert "effort_range_ratio" in result.features.columns
@@ -85,6 +87,7 @@ def test_run_research_pipeline_includes_auction_vp_signals() -> None:
         n_permutations=200,
         parallel_coverage=False,
         rng=make_generator(4),
+        quiet=True,
     )
     for col in (
         "vp_balance",
@@ -107,6 +110,7 @@ def test_run_research_pipeline_sequential_coverage() -> None:
         n_permutations=200,
         parallel_coverage=True,
         rng=make_generator(2),
+        quiet=True,
     )
     sequential = run_research_pipeline(
         nq,
@@ -115,6 +119,7 @@ def test_run_research_pipeline_sequential_coverage() -> None:
         n_permutations=200,
         parallel_coverage=False,
         rng=make_generator(2),
+        quiet=True,
     )
     assert parallel.ssl.metrics.equals(sequential.ssl.metrics)
     assert parallel.alpha.selected == sequential.alpha.selected

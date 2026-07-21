@@ -68,6 +68,7 @@ def test_orchestrator_uses_streaming_features_by_default() -> None:
         config=cfg,
         interval_ns=10_000,
         rng=make_generator(0),
+        quiet=True,
     )
     assert "phase_balance" in result.features.columns or "trap_setup" in result.features.columns
     assert "nq_close" in result.features.columns
@@ -87,6 +88,7 @@ def test_orchestrator_batch_mode_still_works() -> None:
         config=cfg,
         interval_ns=10_000,
         rng=make_generator(1),
+        quiet=True,
     )
     assert "lead_lag" in result.features.columns
     assert "nq_close" in result.features.columns

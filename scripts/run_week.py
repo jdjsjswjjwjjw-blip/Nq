@@ -55,6 +55,11 @@ def main() -> None:
         default=None,
         help="حد أقصى لصفوف MBO (للتجارب أو الذاكرة المحدودة)",
     )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="تعطيل طباعة تقدّم الخطوات على stderr",
+    )
     args = parser.parse_args()
 
     cfg = PipelineConfig.from_toml(args.config) if args.config.is_file() else PipelineConfig()
@@ -77,9 +82,9 @@ def main() -> None:
         _require_path(mnq_path, "MNQ MBO")
 
     if nq_only:
-        cfg = replace(cfg, cross_market_mode="nq_only", max_rows=max_rows)
-    elif max_rows is not None:
-        cfg = replace(cfg, max_rows=max_rows)
+        cfg = replace(cfg, cross_market_mode="nq_only", max_rows=max_rows, quiet=args.quiet)
+    else:
+        cfg = replace(cfg, max_rows=max_rows, quiet=args.quiet)
 
     result = run_research_pipeline(
         nq_path,

@@ -74,6 +74,7 @@ def run_vp_auction_research(
     max_rows: int | None = None,
     rng: np.random.Generator | None = None,
     output_dir: Path | str | None = None,
+    quiet: bool = False,
 ) -> VpAuctionResearchResult:
     """يشغّل فرضيات VP + التوازن/الاختلال عبر الخط الموحّد (NQ-only افتراضيًا)."""
     cfg = PipelineConfig(
@@ -87,6 +88,7 @@ def run_vp_auction_research(
         ssl_window=ssl_window,
         ssl_components=ssl_components,
         signal_columns=_VP_AUCTION_FOCUS,
+        quiet=quiet,
     )
     partner = mnq if mnq is not None else nq
     result = run_research_pipeline(

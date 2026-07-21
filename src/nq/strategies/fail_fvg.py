@@ -74,6 +74,7 @@ def run_fail_fvg_research(
     max_rows: int | None = None,
     rng: np.random.Generator | None = None,
     output_dir: Path | str | None = None,
+    quiet: bool = False,
 ) -> FailFvgResearchResult:
     """يشغّل Failed FVG عبر الخط الموحّد (أمر تشغيل منفصل — داخل المنظومة).
 
@@ -92,6 +93,7 @@ def run_fail_fvg_research(
         ssl_window=ssl_window,
         ssl_components=ssl_components,
         signal_columns=_FAIL_FVG_FOCUS,
+        quiet=quiet,
     )
     partner = mnq if mnq is not None else nq
     result = run_research_pipeline(

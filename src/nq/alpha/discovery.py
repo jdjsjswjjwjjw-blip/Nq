@@ -187,18 +187,29 @@ def run_research_pipeline(
     tick_size: float = 0.25,
     commission_bps: float = 0.0,
     rng: np.random.Generator | None = None,
+    quiet: bool = True,
 ) -> AlphaDiscovery:
     """اختصار للخط الموحّد — يُعيد قناة الألفا فقط (للتوافق مع الاختبارات)."""
-    from nq.research.orchestrator import run_research_pipeline  # noqa: PLC0415
+    from nq.research.orchestrator import PipelineConfig, run_research_pipeline  # noqa: PLC0415
 
+    cfg = PipelineConfig(
+        interval_ns=interval_ns,
+        horizon=horizon,
+        latency_ns=latency_ns,
+        lead_lag_window=lead_lag_window,
+        execution_mode=execution_mode,
+        alpha=alpha,
+        n_permutations=n_permutations,
+        slippage_ticks=slippage_ticks,
+        tick_size=tick_size,
+        commission_bps=commission_bps,
+        quiet=quiet,
+    )
     return run_research_pipeline(
         nq,
         mnq,
-        interval_ns=interval_ns,
-        latency_ns=latency_ns,
-        horizon=horizon,
+        config=cfg,
         signal_columns=signal_columns,
         price_col=price_col,
-        execution_mode=execution_mode,
         rng=rng,
     ).alpha

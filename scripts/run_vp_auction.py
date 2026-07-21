@@ -34,6 +34,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("data/runs/vp_auction"))
     parser.add_argument("--max-rows", type=int, default=None)
     parser.add_argument("--horizon", type=int, default=1)
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="تعطيل طباعة تقدّم الخطوات على stderr",
+    )
     args = parser.parse_args()
 
     if not args.nq.is_file():
@@ -44,6 +49,7 @@ def main() -> None:
         horizon=args.horizon,
         max_rows=args.max_rows,
         output_dir=args.output,
+        quiet=args.quiet,
     )
     print(result.unified.to_markdown())
     print(f"\nsignals: {result.signal_columns}")

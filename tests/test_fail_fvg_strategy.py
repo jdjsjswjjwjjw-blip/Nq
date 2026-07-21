@@ -14,6 +14,7 @@ def test_run_fail_fvg_research_uses_unified_features() -> None:
         mnq,
         n_permutations=100,
         rng=make_generator(0),
+        quiet=True,
     )
     assert "fail_fvg" in result.features.columns
     assert "trap_setup" in result.features.columns or "lead_lag" in result.features.columns
@@ -30,6 +31,7 @@ def test_run_fail_fvg_research_produces_report() -> None:
         mnq,
         n_permutations=200,
         rng=make_generator(1),
+        quiet=True,
     )
     assert result.features.height > 0
     assert result.report is not None

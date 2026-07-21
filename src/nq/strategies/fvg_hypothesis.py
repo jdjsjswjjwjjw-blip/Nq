@@ -29,6 +29,7 @@ from nq.models.splitting import purged_walk_forward_split
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
+from nq.research.progress import PipelineProgress, resolve_progress
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import (
     NS_PER_MIN,
@@ -362,134 +363,168 @@ def search_fail_fvg_hypotheses(
     global_seed: int = 0,
     output_dir: Path | str | None = None,
     rng: np.random.Generator | None = None,
+    progress: PipelineProgress | bool | None = None,
+    quiet: bool = False,
 ) -> FvgHypothesisSearchResult:
     """يبحث أفضل إعداد/تايم فريم Failed FVG بـ walk-forward + بوابة SSL اختيارية."""
-    seed_everything(global_seed)
-    generator = rng if rng is not None else np.random.default_rng(global_seed)
-
-    nq_frame = nq if isinstance(nq, pl.DataFrame) else load_mbo_frame(nq, max_rows=max_rows)
-    if mnq is None:
-        mnq_frame = nq_frame
-    else:
-        mnq_frame = mnq if isinstance(mnq, pl.DataFrame) else load_mbo_frame(mnq, max_rows=max_rows)
-
-    grid = tuple(specs) if specs is not None else default_fvg_grid()
-    clock = cross_market_features(
-        nq_frame,
-        mnq_frame,
-        interval_ns=interval_ns,
-        lead_lag_window=2,
-        latency_ns=0,
+    log = resolve_progress(progress, quiet=quiet)
+    save_step = 1 if output_dir is not None else 0
+    gate_step = 1 if use_ssl_gate else 0
+    log.begin(
+        "بحث فرضيات Failed FVG (walk-forward)",
+        total_steps=6 + gate_step + save_step,
     )
-    hyp = materialize_fvg_hypotheses(nq_frame, grid, clock=clock)
-    base = clock.sort(AVAILABILITY_TS)
-    hyp_cols = [s.column() for s in grid]
-    drop = [c for c in hyp_cols if c in base.columns]
-    if drop:
-        base = base.drop(drop)
-    features = base.join_asof(
-        hyp.sort(AVAILABILITY_TS),
-        on=AVAILABILITY_TS,
-        strategy="backward",
-    )
-    for col in hyp_cols:
-        if col in features.columns:
-            features = features.with_columns(pl.col(col).fill_null(0.0))
+    try:
+        log.step("تهيئة الحتمية + تحميل MBO", f"max_rows={max_rows}")
+        seed_everything(global_seed)
+        generator = rng if rng is not None else np.random.default_rng(global_seed)
 
-    ssl_result: SSLPipelineResult | None = None
-    candidates: tuple[str, ...] = tuple(hyp_cols)
-    if use_ssl_gate:
-        ssl_result = run_ssl_tick_pipeline(
+        nq_frame = nq if isinstance(nq, pl.DataFrame) else load_mbo_frame(nq, max_rows=max_rows)
+        if mnq is None:
+            mnq_frame = nq_frame
+            log.note(f"NQ={nq_frame.height:,} صف (nq_only)")
+        else:
+            mnq_frame = (
+                mnq if isinstance(mnq, pl.DataFrame) else load_mbo_frame(mnq, max_rows=max_rows)
+            )
+            log.note(f"NQ={nq_frame.height:,} · MNQ={mnq_frame.height:,}")
+
+        grid = tuple(specs) if specs is not None else default_fvg_grid()
+        log.step("بناء ساعة البحث cross-market", f"interval_ns={interval_ns}")
+        clock = cross_market_features(
             nq_frame,
             mnq_frame,
-            window=ssl_window,
-            n_components=ssl_components,
-            n_splits=max(2, n_splits),
-            alpha=alpha,
+            interval_ns=interval_ns,
+            lead_lag_window=2,
+            latency_ns=0,
+        )
+        log.step("تجسيد شبكة فرضيات FVG", f"candidates={len(grid)}")
+        hyp = materialize_fvg_hypotheses(nq_frame, grid, clock=clock)
+        base = clock.sort(AVAILABILITY_TS)
+        hyp_cols = [s.column() for s in grid]
+        drop = [c for c in hyp_cols if c in base.columns]
+        if drop:
+            base = base.drop(drop)
+        features = base.join_asof(
+            hyp.sort(AVAILABILITY_TS),
+            on=AVAILABILITY_TS,
+            strategy="backward",
+        )
+        for col in hyp_cols:
+            if col in features.columns:
+                features = features.with_columns(pl.col(col).fill_null(0.0))
+        log.note(f"features={features.height:,} صف × {features.width} عمود")
+
+        ssl_result: SSLPipelineResult | None = None
+        candidates: tuple[str, ...] = tuple(hyp_cols)
+        if use_ssl_gate:
+            log.step("تشغيل SSL tick + بوابة سببية", f"window={ssl_window}")
+            ssl_result = run_ssl_tick_pipeline(
+                nq_frame,
+                mnq_frame,
+                window=ssl_window,
+                n_components=ssl_components,
+                n_splits=max(2, n_splits),
+                alpha=alpha,
+                rng=generator,
+            )
+            features, gated = apply_causal_ssl_gate(
+                features,
+                ssl_result.embeddings,
+                hyp_cols,
+                z_col="z0",
+                quantile=_SSL_GATE_QUANTILE,
+            )
+            candidates = gated
+            log.note(f"مرشّحون بعد البوابة: {len(candidates)} / {len(hyp_cols)}")
+
+        policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window)
+        embargo = policy.embargo_time_units(interval_ns=interval_ns)
+        log.step(
+            "اختيار walk-forward (purged)",
+            f"n_splits={n_splits} · candidates={len(candidates)}",
+        )
+        fold_df, oos_ic, oos_p, oos_n, best = walk_forward_select_hypotheses(
+            features,
+            candidates,
+            price_col="nq_close",
+            horizon=horizon,
+            n_splits=n_splits,
+            embargo=embargo,
+            purge_samples=policy.purge_samples(),
+            n_permutations=n_permutations,
             rng=generator,
         )
-        features, gated = apply_causal_ssl_gate(
+        log.note(f"best_oos={best!r} · oos_ic={oos_ic:.4g} · p={oos_p:.4g} · n={oos_n}")
+
+        log.step("شاشة استكشافية للمرشّحين")
+        explor = exploratory_screen_candidates(
             features,
-            ssl_result.embeddings,
-            hyp_cols,
-            z_col="z0",
-            quantile=_SSL_GATE_QUANTILE,
+            candidates,
+            price_col="nq_close",
+            horizon=horizon,
+            alpha=alpha,
+            n_permutations=n_permutations,
+            rng=generator,
         )
-        candidates = gated
 
-    policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window)
-    embargo = policy.embargo_time_units(interval_ns=interval_ns)
-    fold_df, oos_ic, oos_p, oos_n, best = walk_forward_select_hypotheses(
-        features,
-        candidates,
-        price_col="nq_close",
-        horizon=horizon,
-        n_splits=n_splits,
-        embargo=embargo,
-        purge_samples=policy.purge_samples(),
-        n_permutations=n_permutations,
-        rng=generator,
-    )
-    explor = exploratory_screen_candidates(
-        features,
-        candidates,
-        price_col="nq_close",
-        horizon=horizon,
-        alpha=alpha,
-        n_permutations=n_permutations,
-        rng=generator,
-    )
-
-    assistant = ResearchAssistant(alpha=alpha)
-    evidence = Evidence(
-        id="fvg_search:oos_ic",
-        source="fvg_hypothesis_search",
-        metric="IC",
-        value=oos_ic,
-        pvalue=oos_p,
-        sample_size=oos_n,
-        detail=f"best_oos_spec={best!r}; walk-forward nested selection",
-    )
-    claim = (
-        f"فرضية Failed FVG المختارة بـ walk-forward "
-        f"(best={best!r}) تحقق IC خارج العينة = {oos_ic:.4g} (p={oos_p:.4g})."
-    )
-    findings = [
-        assistant.generate_hypothesis(
-            claim,
-            evidence,
-            requires_significance=True,
-            category="fvg_search",
+        log.step("كتابة تقرير البحث الموثّق")
+        assistant = ResearchAssistant(alpha=alpha)
+        evidence = Evidence(
+            id="fvg_search:oos_ic",
+            source="fvg_hypothesis_search",
+            metric="IC",
+            value=oos_ic,
+            pvalue=oos_p,
+            sample_size=oos_n,
+            detail=f"best_oos_spec={best!r}; walk-forward nested selection",
         )
-    ]
-    report = assistant.write_report(
-        findings,
-        title="Failed FVG Hypothesis Search — Walk-Forward + SSL Gate",
-    )
+        claim = (
+            f"فرضية Failed FVG المختارة بـ walk-forward "
+            f"(best={best!r}) تحقق IC خارج العينة = {oos_ic:.4g} (p={oos_p:.4g})."
+        )
+        findings = [
+            assistant.generate_hypothesis(
+                claim,
+                evidence,
+                requires_significance=True,
+                category="fvg_search",
+            )
+        ]
+        report = assistant.write_report(
+            findings,
+            title="Failed FVG Hypothesis Search — Walk-Forward + SSL Gate",
+        )
 
-    result = FvgHypothesisSearchResult(
-        features=features,
-        specs=grid,
-        candidate_columns=candidates,
-        fold_selections=fold_df,
-        exploratory_screen=explor,
-        oos_selected_ic=oos_ic,
-        best_oos_spec=best,
-        ssl=ssl_result,
-        report=report,
-    )
+        result = FvgHypothesisSearchResult(
+            features=features,
+            specs=grid,
+            candidate_columns=candidates,
+            fold_selections=fold_df,
+            exploratory_screen=explor,
+            oos_selected_ic=oos_ic,
+            best_oos_spec=best,
+            ssl=ssl_result,
+            report=report,
+        )
 
-    if output_dir is not None:
-        out = Path(output_dir)
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "report.md").write_text(report.to_markdown(), encoding="utf-8")
-        features.write_parquet(out / "features.parquet")
-        fold_df.write_parquet(out / "fold_selections.parquet")
-        explor.write_parquet(out / "exploratory_screen.parquet")
-        if ssl_result is not None and ssl_result.metrics.height > 0:
-            ssl_result.metrics.write_parquet(out / "ssl_metrics.parquet")
+        if output_dir is not None:
+            out = Path(output_dir)
+            log.step("حفظ المخرجات", str(out.resolve()))
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "report.md").write_text(report.to_markdown(), encoding="utf-8")
+            features.write_parquet(out / "features.parquet")
+            fold_df.write_parquet(out / "fold_selections.parquet")
+            explor.write_parquet(out / "exploratory_screen.parquet")
+            if ssl_result is not None and ssl_result.metrics.height > 0:
+                ssl_result.metrics.write_parquet(out / "ssl_metrics.parquet")
+            log.note(f"كُتبت الملفات في {out.resolve()}")
 
-    return result
+        log.done(f"best={best!r} · oos_ic={oos_ic:.4g}")
+        return result
+    except Exception as exc:
+        log.fail(exc)
+        raise
 
 
 __all__ = [

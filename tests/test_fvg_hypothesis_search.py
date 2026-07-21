@@ -106,6 +106,7 @@ def test_search_fail_fvg_hypotheses_smoke() -> None:
         n_splits=2,
         n_permutations=50,
         rng=make_generator(7),
+        quiet=True,
     )
     assert result.features.height > 0
     assert len(result.candidate_columns) == 2
