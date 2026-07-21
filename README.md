@@ -157,7 +157,14 @@ python scripts/run_fail_fvg.py \
   --max-rows 500000 \
   --output data/runs/fail_fvg
 
-# أو عبر run_week + إعداد مركّز
+# بحث تايم فريم + إعدادات + بوابة SSL سببية (walk-forward / بلا تسريب)
+python scripts/run_fail_fvg.py \
+  --nq /path/to/nq.parquet \
+  --search \
+  --max-rows 500000 \
+  --output data/runs/fail_fvg_search
+
+# أو عبر run_week + إعداد مركّز (الفرضية الافتراضية فقط)
 python scripts/run_week.py \
   --config configs/fail_fvg.toml \
   --nq /path/to/nq.parquet \
@@ -165,8 +172,19 @@ python scripts/run_week.py \
   --max-rows 500000
 ```
 
+**`--search` ماذا يفعل (داخل المبادئ الأربعة):**
+
+| مبدأ | التطبيق |
+|------|---------|
+| منع التسريب | إشارات asof خلفي؛ اختيار الإعداد على **train فقط**؛ قياس OOS على **test** (purged walk-forward) |
+| صرامة كمية | IC + permutation؛ BH استكشافي على الشبكة؛ الحكم = IC خارج العينة |
+| أداء | كاش شموع OHLCV حسب `interval_ns` |
+| MBO فقط | الفرضيات من شريط صفقات MBO → OHLCV → FVG |
+
+SSL هنا **بوابة ظرف** (`z0` + كمّية ماضية)، مش مولّد قواعد FVG جديدة.
+
 > في الخط العام: `include_failed_fvg = true` يُلحق `fail_fvg` **مع** باقي الإشارات.  
-> `run_fail_fvg` = جولة فرز مركّزة، مش مشروع موازي.
+> `run_fail_fvg` = جولة فرز مركّزة؛ `--search` = بحث إعدادات/تايم فريم فوق نفس المحرك.
 
 ---
 

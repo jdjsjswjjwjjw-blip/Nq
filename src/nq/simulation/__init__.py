@@ -25,7 +25,12 @@ from nq.simulation.execution import (
     execution_forward_returns,
 )
 from nq.simulation.footprint import footprint_cells, footprint_summary
-from nq.simulation.fvg import build_ohlcv_bars, detect_h1_fvgs, failed_fvg_features
+from nq.simulation.fvg import (
+    build_ohlcv_bars,
+    detect_h1_fvgs,
+    failed_fvg_features,
+    failed_fvg_from_bars,
+)
 from nq.simulation.liquidity import detect_icebergs, liquidity_summary
 from nq.simulation.order_flow import ofi_by_bucket, order_flow_imbalance, order_flow_summary
 from nq.simulation.volume_profile import (
@@ -56,6 +61,7 @@ __all__ = [
     "execution_forward_returns",
     "extract_trades",
     "failed_fvg_features",
+    "failed_fvg_from_bars",
     "footprint_cells",
     "footprint_summary",
     "liquidity_summary",
