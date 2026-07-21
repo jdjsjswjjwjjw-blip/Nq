@@ -51,7 +51,7 @@ MBO Raw (Parquet / Arrow / CSV / .zst / Databento)
    → Unified Feature Frame (availability_ts)
    → ┌─ SSL (tick/event أو bucket)
       ├─ M9 Coverage Monitor
-      └─ Alpha Screen (trap_setup, lead_lag, fail_fvg, …)
+      └─ Alpha Screen (trap_setup, lead_lag, fail_fvg, vp_balance, …)
    → ResearchAssistant (فرضيات بأدلّة قابلة للتتبع)
    → Unified Report (Markdown + Parquet metrics)
 ```
@@ -85,9 +85,25 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 
 ---
 
+### اختيار المسار — مهم
+
+**ما فيش حذف لأي طبقة.** المسارات أدناه كلها فوق نفس المحرك (`run_research_pipeline`). الفرق فقط في **أي إشارات تُفرَز** في قناة الألفا:
+
+| المسار | ماذا يفعل | ماذا **لا** يفعل |
+|--------|-----------|-------------------|
+| `run_week` + `configs/research.toml` | يشغّل **الكل مع بعض**: `trap_setup` / `lead_lag` / `fail_fvg` / `vp_balance` / … | لا يلغي Failed FVG ولا الـ VP |
+| `run_fail_fvg` | يضيّق الفرز على Failed FVG (+ cross-market) | لا يمسح المحرك؛ باقي الإشارات تبقى قابلة في الخط العام |
+| `run_vp_auction` + `configs/vp_auction.toml` | يضيّق الفرز على Volume Profile + توازن/اختلال (NQ فقط) | **لا يلغي** باقي الطبقات من المشروع؛ مجرد تركيز فرز |
+
+> لو عايز الكل شغّال → `run_week`.  
+> لو عايز فرضية واحدة فقط للفرز → سكربت التركيز المناسب.
+
+---
+
 ### 1) الخط الموحّد — من MBO إلى التقرير (`run_week`)
 
-نقطة الدخول الأساسية: **SSL ‖ M9 ‖ ألفا** في تقرير واحد، مع `fail_fvg` بجانب `trap_setup` / `lead_lag`.
+نقطة الدخول الأساسية: **SSL ‖ M9 ‖ ألفا** في تقرير واحد.  
+الإشارات الافتراضية معًا: `trap_setup` / `lead_lag` / `fail_fvg` / `vp_balance` / `vp_imbalance` / …
 
 ```bash
 # NQ فقط (بدون ملف MNQ منفصل) + حد ذاكرة
@@ -121,7 +137,7 @@ python scripts/run_week.py \
 |-----|----------------|
 | `[data]` | `nq_path`, `mnq_path`, `cross_market_mode` (`nq_only` / `dual`), `max_rows` |
 | `[ssl]` | `mode` = `tick` \| `bucket`, `window`, `n_components` |
-| `[signals]` | `include_failed_fvg`, قائمة `columns` للفرز |
+| `[signals]` | `include_failed_fvg`, `include_auction_vp`, قائمة `columns` للفرز |
 | `[execution]` | `mode` = `intraday` \| `mid`, slippage |
 | `[temporal]` | `interval_ns`, `horizon` |
 
@@ -129,7 +145,7 @@ python scripts/run_week.py \
 
 ### 2) تركيز فرز Failed FVG (`run_fail_fvg`)
 
-نفس الخط الموحّد مع تركيز أعمدة الفرز على `fail_fvg` (+ إشارات cross-market).
+نفس الخط الموحّد مع **تضييق** أعمدة الفرز على `fail_fvg` (+ إشارات cross-market) — ليس بديلاً عن الخط العام.
 
 ```bash
 python scripts/run_fail_fvg.py \
@@ -138,17 +154,50 @@ python scripts/run_fail_fvg.py \
   --output data/runs/fail_fvg
 ```
 
-> ملاحظة: `run_week` يُفرز `fail_fvg` تلقائيًا إن `include_failed_fvg = true`.  
-> استخدم `run_fail_fvg` عند الحاجة لتقرير/فرز أضيق على الاستراتيجية.
+> `run_week` يُفرز `fail_fvg` تلقائيًا إن `include_failed_fvg = true`.  
+> استخدم `run_fail_fvg` فقط عند الحاجة لتقرير أضيق على الاستراتيجية.
 
 ---
 
-### 3) من بايثون (API)
+### 3) تركيز Volume Profile + التوازن/الاختلال (`run_vp_auction`)
+
+نفس الخط الموحّد مع **تضييق** الفرز على فرضيات الملف الحجمي والسوق المتوازن/غير المتوازن (NQ فقط).  
+هذا **تركيز فرز**، وليس إلغاء لـ Failed FVG أو باقي الطبقات من المشروع.
+
+| إشارة | المعنى |
+|--------|--------|
+| `vp_balance` | `+1` متوازن / `−1` مختلّ |
+| `vp_imbalance` | `1` عند الاختلال |
+| `vp_expansion` | تمدّد المدى |
+| `vp_close_in_value` | إغلاق داخل [VAL, VAH] |
+| `vp_flip_to_imbalance` | انتقال توازن → اختلال |
+
+```bash
+# سكربت مركّز (فرز VP فقط)
+python scripts/run_vp_auction.py \
+  --nq /path/to/nq.parquet \
+  --max-rows 500000 \
+  --output data/runs/vp_auction
+
+# أو عبر run_week + إعداد مركّز
+python scripts/run_week.py \
+  --config configs/vp_auction.toml \
+  --nq /path/to/nq.parquet \
+  --nq-only \
+  --max-rows 500000
+```
+
+> في الخط العام (`configs/research.toml`): `include_auction_vp = true` يُلحق إشارات VP **مع** باقي الإشارات، بدون استبدالها.
+
+---
+
+### 4) من بايثون (API)
 
 ```python
 from pathlib import Path
 from nq.research.orchestrator import PipelineConfig, run_research_pipeline
 from nq.strategies.fail_fvg import run_fail_fvg_research
+from nq.strategies.vp_auction import run_vp_auction_research
 
 # الخط الكامل
 cfg = PipelineConfig.from_toml("configs/research.toml")
@@ -160,6 +209,7 @@ result = run_research_pipeline(
 )
 print(result.report.to_markdown())
 assert "fail_fvg" in result.features.columns
+assert "vp_balance" in result.features.columns
 
 # تركيز Failed FVG
 fvg = run_fail_fvg_research(
@@ -168,18 +218,27 @@ fvg = run_fail_fvg_research(
     output_dir="data/runs/fail_fvg",
 )
 print(fvg.unified.to_markdown())
+
+# تركيز VP / توازن·اختلال (NQ فقط)
+vp = run_vp_auction_research(
+    "data/raw/nq.parquet",
+    max_rows=500_000,
+    output_dir="data/runs/vp_auction",
+)
+print(vp.unified.to_markdown())
 ```
 
 ---
 
-### 4) تدفق البيانات داخل الخط الموحّد
+### 5) تدفق البيانات داخل الخط الموحّد
 
 ```
 load_mbo_frame (Databento normalize + null-price sanitize + max_rows)
   → cross_market_features          # lead_lag, trap_setup, divergence, …
   → asof-join failed_fvg_features  # fail_fvg, effort_*  (خلفي فقط)
+  → asof-join auction_signal_frame # vp_balance, vp_imbalance, … (خلفي فقط)
   → ┌ run_ssl_tick_pipeline  أو  run_ssl_pipeline
-    ├ run_coverage_on_features     # كتل: order_flow | cross_market | failed_fvg | price
+    ├ run_coverage_on_features     # + كتلة volume_profile_auction
     └ discover_alpha_from_features # IC + BH على columns من [signals]
   → build_unified_report
 ```
@@ -193,7 +252,7 @@ load_mbo_frame (Databento normalize + null-price sanitize + max_rows)
 
 ---
 
-### 5) بوابات الجودة (محلي + CI)
+### 6) بوابات الجودة (محلي + CI)
 
 ```bash
 ruff check src tests
@@ -226,7 +285,8 @@ Nq/
 │   └── research.toml          # إعدادات الخط الموحّد + signals + ssl
 ├── scripts/
 │   ├── run_week.py            # الخط الموحّد MBO → تقرير
-│   └── run_fail_fvg.py        # تركيز فرز Failed FVG
+│   ├── run_fail_fvg.py        # تركيز فرز Failed FVG
+│   └── run_vp_auction.py      # تركيز VP / توازن·اختلال (NQ)
 ├── docs/
 │   ├── architecture.md
 │   └── data_contracts.md
@@ -274,12 +334,12 @@ Nq/
 * `nq.contracts` — `MBO_SCHEMA`, `PRICE_SCALE`, `validate_mbo_frame`
 * `nq.ingestion` — `load_mbo_frame`, `iter_mbo_batches`, `normalize_databento_frame`
 * `nq.orderbook` — `OrderBook`, `reconstruct`, `check_integrity`
-* `nq.simulation` — footprint, volume profile (`DevelopingVolumeProfile`), order flow, liquidity, auction, `cross_market_features`, **`failed_fvg_features`**
+* `nq.simulation` — footprint, volume profile (`DevelopingVolumeProfile`), order flow, liquidity, auction (`auction_signal_frame`), `cross_market_features`, **`failed_fvg_features`**
 * `nq.models` — `run_ssl_pipeline`, `run_ssl_tick_pipeline`, `build_tick_stream`, `structural_mask_*`, PCA / world model / contrastive
 * `nq.research` — **`run_research_pipeline`** (نقطة الدخول)، `ResearchAssistant`, `Evidence`
 * `nq.alpha` — `evaluate_signal` / `evaluate_signal_intraday`, `screen_signals`, `discover_alpha_from_features`
-* `nq.strategies` — `run_fail_fvg_research` (غلاف يركّز الفرز على `fail_fvg` عبر نفس الخط)
-* `nq.coverage` — مقاييس MFIG/CER/PSG/CRS/LORI/QDUF؛ كتل تشمل `failed_fvg`
+* `nq.strategies` — `run_fail_fvg_research` / `run_vp_auction_research` (أغلفة تركيز فوق نفس الخط)
+* `nq.coverage` — مقاييس MFIG/CER/PSG/CRS/LORI/QDUF؛ كتل تشمل `failed_fvg` و `volume_profile_auction`
 * `nq.states` — `KMeansRegimes`, `CausalRegimeTracker`
 * `nq.validation` — `detect_leakage_by_perturbation`, `assert_availability_not_before_event`
 

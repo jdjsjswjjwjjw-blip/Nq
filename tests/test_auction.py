@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import polars as pl
 
-from nq.simulation.auction import auction_states
+from nq.contracts.temporal import AVAILABILITY_TS
+from nq.simulation.auction import auction_signal_frame, auction_states
 from tests.mbo_factory import make_stream
 
 
@@ -82,3 +83,36 @@ def test_balance_flips_to_imbalance() -> None:
 def test_empty_stream() -> None:
     states = auction_states(make_stream([]), interval_ns=10)
     assert states.height == 0
+
+
+def test_auction_signal_frame_exports_vp_columns() -> None:
+    balanced = [("T", "B", 100 + d, 2, 0) for d in (0, 0, 1, -1, 0)]
+    trend = [("T", "B", 100 + j, 2, 0) for j in range(10)]
+    events = balanced + trend
+    ts = list(range(len(balanced))) + list(range(100, 100 + len(trend)))
+    seq = list(range(1, len(events) + 1))
+    frame = make_stream(events, event_ts=ts, sequence=seq)
+
+    signals = auction_signal_frame(frame, interval_ns=50).sort(AVAILABILITY_TS)
+    assert signals.height == 2
+    for col in (
+        "vp_balance",
+        "vp_imbalance",
+        "vp_expansion",
+        "vp_close_in_value",
+        "vp_in_value_frac",
+        "vp_pullback_defense",
+        "vp_poc_migration",
+        "vp_flip_to_imbalance",
+    ):
+        assert col in signals.columns
+    assert signals["vp_balance"].to_list()[0] == 1.0
+    assert signals["vp_imbalance"].to_list()[1] == 1.0
+    assert signals["vp_flip_to_imbalance"].to_list()[1] == 1.0
+
+
+def test_auction_signal_frame_empty() -> None:
+    signals = auction_signal_frame(make_stream([]), interval_ns=10)
+    assert signals.height == 0
+    assert AVAILABILITY_TS in signals.columns
+    assert "vp_balance" in signals.columns

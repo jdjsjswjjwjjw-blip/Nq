@@ -23,6 +23,16 @@ DEFAULT_FEATURE_BLOCKS: dict[str, tuple[str, ...]] = {
         "effort_range_ratio",
         "effort_volume_ratio",
     ),
+    "volume_profile_auction": (
+        "vp_balance",
+        "vp_imbalance",
+        "vp_expansion",
+        "vp_close_in_value",
+        "vp_in_value_frac",
+        "vp_pullback_defense",
+        "vp_poc_migration",
+        "vp_flip_to_imbalance",
+    ),
     "price": ("nq_return", "mnq_return"),
 }
 

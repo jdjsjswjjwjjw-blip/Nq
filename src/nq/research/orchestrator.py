@@ -30,6 +30,7 @@ from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_pipeline, run_ssl_tick_pipeline
 from nq.research.assistant import LanguageModel, ResearchAssistant
 from nq.research.unified import UnifiedResearchReport, build_unified_report
+from nq.simulation.auction import auction_signal_frame
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import failed_fvg_features
 
@@ -47,6 +48,22 @@ _DEFAULT_SIGNAL_COLUMNS = (
     "divergence",
     "session_phase",
     "fail_fvg",
+    "vp_balance",
+    "vp_imbalance",
+    "vp_expansion",
+    "vp_close_in_value",
+    "vp_flip_to_imbalance",
+)
+
+_VP_AUCTION_SIGNAL_COLUMNS = (
+    "vp_balance",
+    "vp_imbalance",
+    "vp_expansion",
+    "vp_close_in_value",
+    "vp_in_value_frac",
+    "vp_pullback_defense",
+    "vp_poc_migration",
+    "vp_flip_to_imbalance",
 )
 
 
@@ -85,6 +102,7 @@ class PipelineConfig:
     cross_market_mode: CrossMarketMode = "dual"
     max_rows: int | None = None
     include_failed_fvg: bool = True
+    include_auction_vp: bool = True
     signal_columns: tuple[str, ...] | None = None
 
     @classmethod
@@ -121,6 +139,7 @@ class PipelineConfig:
             cross_market_mode=str(data.get("cross_market_mode", "dual")),  # type: ignore[arg-type]
             max_rows=max_rows,
             include_failed_fvg=bool(signals.get("include_failed_fvg", True)),
+            include_auction_vp=bool(signals.get("include_auction_vp", True)),
             signal_columns=tuple(signal_cols) if signal_cols else None,
         )
 
@@ -198,12 +217,35 @@ def _attach_failed_fvg(features: pl.DataFrame, nq: pl.DataFrame) -> pl.DataFrame
     )
 
 
+def _attach_auction_vp(
+    features: pl.DataFrame,
+    nq: pl.DataFrame,
+    *,
+    interval_ns: int,
+) -> pl.DataFrame:
+    """يلحق إشارات Volume Profile / المزاد (توازن·اختلال·تمدّد) asof خلفي."""
+    signals = auction_signal_frame(nq, interval_ns=interval_ns)
+    zero_exprs = [pl.lit(0.0).alias(c) for c in _VP_AUCTION_SIGNAL_COLUMNS]
+    if signals.height == 0 or features.height == 0:
+        return features.with_columns(zero_exprs)
+
+    keep = [c for c in (AVAILABILITY_TS, *_VP_AUCTION_SIGNAL_COLUMNS) if c in signals.columns]
+    right = signals.select(keep).sort(AVAILABILITY_TS)
+    left = features.sort(AVAILABILITY_TS)
+    drop_existing = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
+    if drop_existing:
+        left = left.drop(drop_existing)
+    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
+    fills = [pl.col(c).fill_null(0.0) for c in _VP_AUCTION_SIGNAL_COLUMNS if c in joined.columns]
+    return joined.with_columns(fills) if fills else joined
+
+
 def _build_research_features(
     nq: pl.DataFrame,
     mnq: pl.DataFrame,
     cfg: PipelineConfig,
 ) -> pl.DataFrame:
-    """يبني إطار البحث الموحّد: cross-market + طبقات محاكاة إضافية (Failed FVG)."""
+    """يبني إطار البحث الموحّد: cross-market + Failed FVG + Auction/VP."""
     features = cross_market_features(
         nq,
         mnq,
@@ -213,6 +255,8 @@ def _build_research_features(
     )
     if cfg.include_failed_fvg:
         features = _attach_failed_fvg(features, nq)
+    if cfg.include_auction_vp:
+        features = _attach_auction_vp(features, nq, interval_ns=cfg.interval_ns)
     return features
 
 

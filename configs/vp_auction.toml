@@ -1,0 +1,51 @@
+# فرضيات Volume Profile + التوازن/الاختلال — NQ فقط
+# Volume Profile / Auction balance–imbalance hypotheses (NQ-only)
+
+[determinism]
+global_seed = 20260719
+
+[temporal]
+interval_ns = 1_000_000_000
+horizon = 1
+embargo_ns = 1_000_000_000
+
+[cross_market]
+latency_ns = 0
+lead_lag_window = 2
+
+[execution]
+mode = "intraday"
+slippage_ticks = 0.5
+tick_size = 0.25
+commission_bps = 0.0
+
+[ssl]
+mode = "tick"
+window = 5
+n_components = 4
+n_splits = 3
+
+# فرز مركّز على VP / المزاد (متوازن · مختلّ · تمدّد · انقلاب)
+[signals]
+include_failed_fvg = false
+include_auction_vp = true
+columns = [
+  "vp_balance",
+  "vp_imbalance",
+  "vp_expansion",
+  "vp_close_in_value",
+  "vp_flip_to_imbalance",
+  "vp_pullback_defense",
+  "nq_delta",
+]
+
+[statistics]
+alpha = 0.05
+n_permutations = 2000
+
+[data]
+nq_path = "data/raw/nq.parquet"
+mnq_path = "data/raw/nq.parquet"
+output_dir = "data/runs/vp_auction"
+cross_market_mode = "nq_only"
+max_rows = 0

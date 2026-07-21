@@ -25,9 +25,10 @@ window = 5
 n_components = 4
 n_splits = 3
 
-# إشارات تُفرَز في قناة الألفا (نفس طبقة trap_setup / lead_lag)
+# إشارات تُفرَز في قناة الألفا (نفس طبقة trap_setup / lead_lag / VP)
 [signals]
 include_failed_fvg = true
+include_auction_vp = true
 columns = [
   "nq_delta",
   "mnq_delta",
@@ -36,6 +37,11 @@ columns = [
   "divergence",
   "session_phase",
   "fail_fvg",
+  "vp_balance",
+  "vp_imbalance",
+  "vp_expansion",
+  "vp_close_in_value",
+  "vp_flip_to_imbalance",
 ]
 
 [statistics]

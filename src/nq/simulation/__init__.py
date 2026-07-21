@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from nq.simulation.auction import auction_states
+from nq.simulation.auction import auction_signal_frame, auction_states
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.execution import (
@@ -43,6 +43,7 @@ __all__ = [
     "DevelopingVolumeProfile",
     "ValueArea",
     "add_time_bucket",
+    "auction_signal_frame",
     "auction_states",
     "build_ohlcv_bars",
     "build_volume_profile",

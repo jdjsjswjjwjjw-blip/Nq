@@ -76,6 +76,28 @@ def test_run_research_pipeline_includes_failed_fvg_signal() -> None:
     assert "fail_fvg" in names or result.alpha.evaluations.height == 0
 
 
+def test_run_research_pipeline_includes_auction_vp_signals() -> None:
+    nq, mnq = _paired_streams(2500, seed=71)
+    result = run_research_pipeline(
+        nq,
+        mnq,
+        interval_ns=10_000,
+        n_permutations=200,
+        parallel_coverage=False,
+        rng=make_generator(4),
+    )
+    for col in (
+        "vp_balance",
+        "vp_imbalance",
+        "vp_expansion",
+        "vp_close_in_value",
+        "vp_flip_to_imbalance",
+    ):
+        assert col in result.features.columns
+    names = result.alpha.evaluations["name"].to_list() if result.alpha.evaluations.height else []
+    assert "vp_balance" in names or result.alpha.evaluations.height == 0
+
+
 def test_run_research_pipeline_sequential_coverage() -> None:
     nq, mnq = _paired_streams(2000, seed=60)
     parallel = run_research_pipeline(
