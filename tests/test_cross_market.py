@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 
+from nq.core.session import SESSION_DATE
 from nq.simulation.cross_market import cross_market_features
 from tests.mbo_factory import Event, make_stream
 
@@ -55,3 +56,27 @@ def test_trader_trap_setup_when_mnq_new_high_unconfirmed() -> None:
     assert 1 in traps  # على الأقل نافذة بها إعداد مصيدة صعودية
     conf = feat.filter(feat["trap_setup"] == 1)["mnq_new_high"].to_list()
     assert all(conf)
+
+
+def test_session_partitioned_new_high_math() -> None:
+    """إثبات رياضي: cum_max.over(session) يُصفَّر يوميًا؛ العالمي لا يفعل."""
+    closes = [100.0, 101.0, 102.0, 100.0, 100.5, 101.0]
+    dates = ["2024-06-03", "2024-06-03", "2024-06-03", "2024-06-04", "2024-06-04", "2024-06-04"]
+    df = pl.DataFrame({SESSION_DATE: dates, "nq_close": closes})
+    session_prev = pl.col("nq_close").cum_max().over(SESSION_DATE).shift(1).over(SESSION_DATE)
+    global_prev = pl.col("nq_close").cum_max().shift(1)
+    out = df.with_columns(
+        (pl.col("nq_close") > session_prev).fill_null(value=False).alias("session_high"),
+        (pl.col("nq_close") > global_prev).fill_null(value=False).alias("global_high"),
+    )
+    day1 = out.filter(pl.col(SESSION_DATE) == "2024-06-04")
+    assert day1["session_high"].to_list() == [False, True, True]
+    assert day1["global_high"].to_list() == [False, False, False]
+
+
+def test_cross_market_features_include_session_date() -> None:
+    nq = _market([100_000_000, 101_000_000, 102_000_000], symbol="NQ", instrument_id=1)
+    mnq = _market([100_000_000, 101_000_000, 102_000_000], symbol="MNQ", instrument_id=2)
+    feat = cross_market_features(nq, mnq, interval_ns=100, lead_lag_window=2)
+    assert SESSION_DATE in feat.columns
+    assert feat[SESSION_DATE].null_count() == 0

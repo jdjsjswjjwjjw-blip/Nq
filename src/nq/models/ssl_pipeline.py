@@ -94,8 +94,17 @@ def _evaluate_ssl_fold(
     z_test = encoder.transform(x_test)
     wm_r2 = 0.0
     if z_train.shape[0] >= _MIN_WM_SAMPLES and z_test.shape[0] >= _MIN_WM_SAMPLES:
-        predictor = NextStatePredictor().fit(z_train[:-1], z_train[1:])
-        wm_r2 = max(r2_score(z_test[1:], predictor.predict(z_test[:-1])), 0.0)
+        y_train = z_train[1:]
+        predictor = NextStatePredictor().fit(z_train[:-1], y_train)
+        # OOS R²: خط الأساس = متوسط أهداف التدريب (ليس متوسط الاختبار)
+        wm_r2 = max(
+            r2_score(
+                z_test[1:],
+                predictor.predict(z_test[:-1]),
+                baseline_mean=y_train.mean(axis=0),
+            ),
+            0.0,
+        )
     contrastive = 0.0
     if z_test.shape[0] >= _MIN_CONTRASTIVE_BATCH:
         contrastive = info_nce_loss(z_test, augment_windows(z_test, rng=generator), temperature=0.1)
@@ -315,8 +324,17 @@ def _evaluate_ssl_tick_fold(
     z_test = encoder.transform(x_test)
     wm_r2 = 0.0
     if z_train.shape[0] >= _MIN_WM_SAMPLES and z_test.shape[0] >= _MIN_WM_SAMPLES:
-        predictor = NextStatePredictor().fit(z_train[:-1], z_train[1:])
-        wm_r2 = max(r2_score(z_test[1:], predictor.predict(z_test[:-1])), 0.0)
+        y_train = z_train[1:]
+        predictor = NextStatePredictor().fit(z_train[:-1], y_train)
+        # OOS R²: خط الأساس = متوسط أهداف التدريب (ليس متوسط الاختبار)
+        wm_r2 = max(
+            r2_score(
+                z_test[1:],
+                predictor.predict(z_test[:-1]),
+                baseline_mean=y_train.mean(axis=0),
+            ),
+            0.0,
+        )
     contrastive = 0.0
     if z_test.shape[0] >= _MIN_CONTRASTIVE_BATCH:
         contrastive = info_nce_loss(z_test, augment_windows(z_test, rng=generator), temperature=0.1)

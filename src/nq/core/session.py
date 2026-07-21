@@ -24,6 +24,7 @@ _AFTERNOON_END: Final = dt.time(15, 30)
 
 SESSION_PHASE: Final = "session_phase"
 MINUTES_SINCE_RTH_OPEN: Final = "minutes_since_rth_open"
+SESSION_DATE: Final = "session_date"  # تاريخ الجلسة بتوقيت ET (YYYY-MM-DD) — سببي من ts
 
 
 class SessionPhase(IntEnum):
@@ -70,25 +71,35 @@ def minutes_since_rth_open_from_ns(ts_ns: int) -> int | None:
     return _minutes_since_rth_open(local)
 
 
+def session_date_from_ns(ts_ns: int) -> str:
+    """تاريخ الجلسة (America/New_York) من طابع نانوثانية — سببي point-in-time."""
+    local = dt.datetime.fromtimestamp(ts_ns / 1e9, tz=_ET)
+    return local.date().isoformat()
+
+
 def add_session_columns(frame: pl.DataFrame, *, time_col: str) -> pl.DataFrame:
-    """يضيف ``session_phase`` و ``minutes_since_rth_open`` من عمود زمني (ns)."""
+    """يضيف ``session_phase`` و ``minutes_since_rth_open`` و ``session_date``."""
     if time_col not in frame.columns:
         raise ValueError(f"time column {time_col!r} not found")
 
     times = frame[time_col].to_list()
     phases = [session_phase_from_ns(int(t)) for t in times]
     minutes = [minutes_since_rth_open_from_ns(int(t)) for t in times]
+    dates = [session_date_from_ns(int(t)) for t in times]
     return frame.with_columns(
         pl.Series(SESSION_PHASE, phases, dtype=pl.Int8()),
         pl.Series(MINUTES_SINCE_RTH_OPEN, minutes, dtype=pl.Int64()),
+        pl.Series(SESSION_DATE, dates, dtype=pl.Utf8()),
     )
 
 
 __all__ = [
     "MINUTES_SINCE_RTH_OPEN",
+    "SESSION_DATE",
     "SESSION_PHASE",
     "SessionPhase",
     "add_session_columns",
     "minutes_since_rth_open_from_ns",
+    "session_date_from_ns",
     "session_phase_from_ns",
 ]

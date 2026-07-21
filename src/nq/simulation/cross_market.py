@@ -6,12 +6,12 @@
 * القيادة/التأخّر (Lead/Lag): ارتباطات متدحرجة بين عوائد السوقين مع إزاحة زمنية
   لتحديد أيّهما يقود (``nq_leads_corr`` مقابل ``mnq_leads_corr``، وإشارة ``lead_lag``).
 * التباعد (Divergence): اختلاف إشارة العائد بين السوقين.
-* فشل التأكيد (Confirmation Failure): سوق يصنع نهايةً جديدة (قمة/قاع) دون أن
-  يؤكّدها الآخر.
+* فشل التأكيد (Confirmation Failure): سوق يصنع نهايةً جديدة (قمة/قاع **داخل
+  جلسة ET الحالية**) دون أن يؤكّدها الآخر.
 * مصيدة المتداولين (Trader Trap): إشارة سببية لاحتمال إيقاع المتداولين العدوانيين
   في MNQ — حين يصنع MNQ نهايةً جديدة بدلتا عدوانية قويّة أحادية الاتجاه بينما
   يفشل NQ في التأكيد (تباعد قيادي).
-* ``session_phase`` / ``minutes_since_rth_open`` — سياق جلسة intraday سببي.
+* ``session_phase`` / ``minutes_since_rth_open`` / ``session_date`` — سياق جلسة.
 * محاذاة MNQ مع تأخير ``latency_ns`` (NQ يقود MNQ).
 
 منع التسريب: كل الميزات مُجمّعة على نوافذ ومتاحة عند ``bucket_end``، وكل
@@ -24,7 +24,7 @@ from __future__ import annotations
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
-from nq.core.session import add_session_columns
+from nq.core.session import SESSION_DATE, add_session_columns, session_date_from_ns
 from nq.orderbook import reconstruct
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket
 from nq.simulation.order_flow import order_flow_summary
@@ -136,12 +136,23 @@ def cross_market_features(
 
     nq_ret = pl.col("nq_close").diff()
     mnq_ret = pl.col("mnq_close").diff()
-    aligned = aligned.with_columns(nq_ret.alias("nq_return"), mnq_ret.alias("mnq_return"))
+    # قمم/قيعان الجلسة الحالية فقط (إعادة تصفير يومية ET) — لا cum_max عالمي
+    session_dates = [session_date_from_ns(int(t)) for t in aligned[BUCKET_END].to_list()]
+    aligned = aligned.with_columns(
+        nq_ret.alias("nq_return"),
+        mnq_ret.alias("mnq_return"),
+        pl.Series(SESSION_DATE, session_dates, dtype=pl.Utf8()),
+    )
 
-    nq_new_high = pl.col("nq_close") > pl.col("nq_close").cum_max().shift(1)
-    nq_new_low = pl.col("nq_close") < pl.col("nq_close").cum_min().shift(1)
-    mnq_new_high = pl.col("mnq_close") > pl.col("mnq_close").cum_max().shift(1)
-    mnq_new_low = pl.col("mnq_close") < pl.col("mnq_close").cum_min().shift(1)
+    nq_prev_max = pl.col("nq_close").cum_max().over(SESSION_DATE).shift(1).over(SESSION_DATE)
+    nq_prev_min = pl.col("nq_close").cum_min().over(SESSION_DATE).shift(1).over(SESSION_DATE)
+    mnq_prev_max = pl.col("mnq_close").cum_max().over(SESSION_DATE).shift(1).over(SESSION_DATE)
+    mnq_prev_min = pl.col("mnq_close").cum_min().over(SESSION_DATE).shift(1).over(SESSION_DATE)
+
+    nq_new_high = pl.col("nq_close") > nq_prev_max
+    nq_new_low = pl.col("nq_close") < nq_prev_min
+    mnq_new_high = pl.col("mnq_close") > mnq_prev_max
+    mnq_new_low = pl.col("mnq_close") < mnq_prev_min
 
     aligned = aligned.with_columns(
         nq_new_high.fill_null(value=False).alias("nq_new_high"),
