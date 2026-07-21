@@ -94,11 +94,13 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 | الأمر | التركيز | داخل المنظومة؟ | المخرجات |
 |--------|---------|----------------|----------|
 | `run_week` + `configs/research.toml` | **الكل مع بعض** | نعم | كاملة |
-| `run_fail_fvg` + `configs/fail_fvg.toml` | Failed FVG | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
+| `run_fail_fvg` | Failed FVG (فرضية افتراضية) | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
+| `run_fail_fvg --search` | شبكة تايم فريم/إعدادات FVG + بوابة SSL | نعم — walk-forward بلا تسريب | تقرير بحث + folds + screen |
 | `run_vp_auction` + `configs/vp_auction.toml` | VP + توازن/اختلال | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
 
 > لو عايز الكل شغّال → `run_week`.  
-> لو عايز فرضية واحدة للفرز → الأمر المنفصل المناسب (نفس المعالجة والمخرجات).
+> لو عايز فرضية واحدة للفرز → الأمر المنفصل المناسب (نفس المعالجة والمخرجات).  
+> لو عايز **أفضل تايم فريم/إعدادات** لـ FVG → `run_fail_fvg --search`.
 
 ---
 
@@ -183,6 +185,16 @@ python scripts/run_week.py \
 
 SSL هنا **بوابة ظرف** (`z0` + كمّية ماضية)، مش مولّد قواعد FVG جديدة.
 
+**مخرجات `--search`** في `--output`:
+
+| ملف | المحتوى |
+|-----|---------|
+| `report.md` | تقرير البحث (IC خارج العينة + أدلّة) |
+| `features.parquet` | ساعة التقييم + أعمدة الفرضيات (و`__ssl` إن وُجدت) |
+| `fold_selections.parquet` | الفرضية المختارة لكل طيّة train→test |
+| `exploratory_screen.parquet` | فرز BH استكشافي (ليس أساس الاختيار) |
+| `ssl_metrics.parquet` | مقاييس SSL عند تفعيل البوابة |
+
 > في الخط العام: `include_failed_fvg = true` يُلحق `fail_fvg` **مع** باقي الإشارات.  
 > `run_fail_fvg` = جولة فرز مركّزة؛ `--search` = بحث إعدادات/تايم فريم فوق نفس المحرك.
 
@@ -226,6 +238,7 @@ python scripts/run_week.py \
 from pathlib import Path
 from nq.research.orchestrator import PipelineConfig, run_research_pipeline
 from nq.strategies.fail_fvg import run_fail_fvg_research
+from nq.strategies.fvg_hypothesis import search_fail_fvg_hypotheses
 from nq.strategies.vp_auction import run_vp_auction_research
 
 # الخط الكامل
@@ -240,13 +253,23 @@ print(result.report.to_markdown())
 assert "fail_fvg" in result.features.columns
 assert "vp_balance" in result.features.columns
 
-# تركيز Failed FVG
+# تركيز Failed FVG (فرضية افتراضية)
 fvg = run_fail_fvg_research(
     "data/raw/nq.parquet",
     max_rows=500_000,
     output_dir="data/runs/fail_fvg",
 )
 print(fvg.unified.to_markdown())
+
+# بحث تايم فريم/إعدادات FVG + بوابة SSL سببية
+search = search_fail_fvg_hypotheses(
+    "data/raw/nq.parquet",
+    use_ssl_gate=True,
+    max_rows=500_000,
+    output_dir="data/runs/fail_fvg_search",
+)
+print(search.report.to_markdown())
+print(search.best_oos_spec, search.oos_selected_ic)
 
 # تركيز VP / توازن·اختلال (NQ فقط)
 vp = run_vp_auction_research(
@@ -272,6 +295,17 @@ load_mbo_frame (Databento normalize + null-price sanitize + max_rows)
   → build_unified_report
 ```
 
+**تدفق `--search` (FVG hypothesis search):**
+
+```
+MBO
+  → شبكة فرضيات (تايم فريم + عتبات)  # failed_fvg_from_bars + كاش OHLCV
+  → asof على ساعة التقييم            # خلفي فقط
+  → بوابة SSL اختيارية               # z0 asof + كمّية ماضية
+  → walk-forward purged              # اختيار على train → IC على test
+  → تقرير + fold_selections + screen
+```
+
 **SSL**
 
 | `ssl.mode` | المدخل | الإخفاء |
@@ -294,7 +328,7 @@ CI: `.github/workflows/ci.yml` على كل push/PR إلى `main`.
 
 ---
 
-### 6) نصائح تشغيل على بيانات حقيقية
+### 7) نصائح تشغيل على بيانات حقيقية
 
 1. **Python ≥ 3.11** — المشروع يرفض أقل من ذلك في السكربتات.
 2. **الذاكرة:** ملف شهر كامل (~300M صف) — استخدم `--max-rows` أو شريحة يومية؛ لا تحمّل الشهر دفعة واحدة.
@@ -316,7 +350,7 @@ Nq/
 │   └── vp_auction.toml        # أمر VP منفصل (فرز مركّز، مخرجات كاملة)
 ├── scripts/
 │   ├── run_week.py            # الخط الموحّد MBO → تقرير
-│   ├── run_fail_fvg.py        # أمر منفصل Failed FVG (داخل المنظومة)
+│   ├── run_fail_fvg.py        # FVG منفصل (+ --search للشبكة/SSL gate)
 │   └── run_vp_auction.py      # أمر منفصل VP / توازن·اختلال (داخل المنظومة)
 ├── docs/
 │   ├── architecture.md
@@ -334,7 +368,7 @@ Nq/
 │   ├── statistics/            # اختبارات + تصحيح تعدّد
 │   ├── research/              # orchestrator + assistant
 │   ├── alpha/                 # اكتشاف/فرز الإشارات
-│   ├── strategies/            # أغلفة فوق الخط الموحّد
+│   ├── strategies/            # fail_fvg + fvg_hypothesis search + vp_auction
 │   ├── coverage/              # مراقب M9
 │   └── validation/            # leakage tests
 ├── tests/
@@ -355,7 +389,7 @@ Nq/
 | 5 | الحالات الكامنة / Regimes | ✅ |
 | 6 | الاختبار الإحصائي | ✅ |
 | 7 | مساعد البحث LLM | ✅ |
-| 8 | ألفا + الخط الموحّد | ✅ |
+| 8 | ألفا + الخط الموحّد + بحث فرضيات FVG (WF) | ✅ |
 | 9 | مراقب التغطية M9 | ✅ |
 
 ---
@@ -369,7 +403,7 @@ Nq/
 * `nq.models` — `run_ssl_pipeline`, `run_ssl_tick_pipeline`, `build_tick_stream`, `structural_mask_*`, PCA / world model / contrastive
 * `nq.research` — **`run_research_pipeline`** (نقطة الدخول)، `ResearchAssistant`, `Evidence`
 * `nq.alpha` — `evaluate_signal` / `evaluate_signal_intraday`, `screen_signals`, `discover_alpha_from_features`
-* `nq.strategies` — `run_fail_fvg_research` / `run_vp_auction_research` (أغلفة تركيز فوق نفس الخط)
+* `nq.strategies` — `run_fail_fvg_research` / `search_fail_fvg_hypotheses` / `run_vp_auction_research`
 * `nq.coverage` — مقاييس MFIG/CER/PSG/CRS/LORI/QDUF؛ كتل تشمل `failed_fvg` و `volume_profile_auction`
 * `nq.states` — `KMeansRegimes`, `CausalRegimeTracker`
 * `nq.validation` — `detect_leakage_by_perturbation`, `assert_availability_not_before_event`
