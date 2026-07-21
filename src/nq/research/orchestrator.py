@@ -26,6 +26,10 @@ from nq.core.determinism import seed_everything
 from nq.core.temporal_policy import TemporalPolicy
 from nq.coverage.monitor import run_coverage_on_features
 from nq.coverage.types import CoverageReport
+from nq.features.streaming import (
+    STREAMING_SIGNAL_COLUMNS,
+    build_streaming_research_features,
+)
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_pipeline, run_ssl_tick_pipeline
 from nq.research.assistant import LanguageModel, ResearchAssistant
@@ -39,8 +43,27 @@ if TYPE_CHECKING:
 
 SslMode = Literal["bucket", "tick"]
 CrossMarketMode = Literal["dual", "nq_only"]
+FeatureMode = Literal["streaming", "batch"]
 
 _DEFAULT_SIGNAL_COLUMNS = (
+    "nq_delta",
+    "mnq_delta",
+    "trap_setup",
+    "phase_balance",
+    "phase_expansion",
+    "in_value_area",
+    "near_vah",
+    "poc_dist_norm",
+    "session_phase",
+    "fail_fvg",
+    "vp_balance",
+    "vp_imbalance",
+    "vp_expansion",
+    "vp_close_in_value",
+    "vp_flip_to_imbalance",
+)
+
+_BATCH_SIGNAL_COLUMNS = (
     "nq_delta",
     "mnq_delta",
     "lead_lag",
@@ -103,6 +126,7 @@ class PipelineConfig:
     max_rows: int | None = None
     include_failed_fvg: bool = True
     include_auction_vp: bool = True
+    feature_mode: FeatureMode = "streaming"
     signal_columns: tuple[str, ...] | None = None
 
     @classmethod
@@ -116,6 +140,7 @@ class PipelineConfig:
         ssl = raw.get("ssl", {})
         data = raw.get("data", {})
         signals = raw.get("signals", {})
+        features_cfg = raw.get("features", {})
         det = raw.get("determinism", {})
         max_rows_raw = data.get("max_rows")
         max_rows = None if max_rows_raw in (None, 0) else int(max_rows_raw)
@@ -140,6 +165,7 @@ class PipelineConfig:
             max_rows=max_rows,
             include_failed_fvg=bool(signals.get("include_failed_fvg", True)),
             include_auction_vp=bool(signals.get("include_auction_vp", True)),
+            feature_mode=str(features_cfg.get("mode", signals.get("feature_mode", "streaming"))),  # type: ignore[arg-type]
             signal_columns=tuple(signal_cols) if signal_cols else None,
         )
 
@@ -181,7 +207,10 @@ def _resolve_signal_columns(
         return [c for c in signal_columns if c in features.columns]
     if config_columns is not None:
         return [c for c in config_columns if c in features.columns]
-    return [c for c in _DEFAULT_SIGNAL_COLUMNS if c in features.columns]
+    ordered = list(
+        dict.fromkeys([*_DEFAULT_SIGNAL_COLUMNS, *_BATCH_SIGNAL_COLUMNS, *STREAMING_SIGNAL_COLUMNS])
+    )
+    return [c for c in ordered if c in features.columns]
 
 
 def _attach_failed_fvg(features: pl.DataFrame, nq: pl.DataFrame) -> pl.DataFrame:
@@ -245,14 +274,21 @@ def _build_research_features(
     mnq: pl.DataFrame,
     cfg: PipelineConfig,
 ) -> pl.DataFrame:
-    """يبني إطار البحث الموحّد: cross-market + Failed FVG + Auction/VP."""
-    features = cross_market_features(
-        nq,
-        mnq,
-        interval_ns=cfg.interval_ns,
-        lead_lag_window=cfg.lead_lag_window,
-        latency_ns=cfg.latency_ns,
-    )
+    """يبني إطار البحث: streaming (افتراضي) أو batch، ثم FVG/Auction asof."""
+    if cfg.feature_mode == "streaming":
+        features = build_streaming_research_features(
+            nq,
+            mnq,
+            interval_ns=cfg.interval_ns,
+        )
+    else:
+        features = cross_market_features(
+            nq,
+            mnq,
+            interval_ns=cfg.interval_ns,
+            lead_lag_window=cfg.lead_lag_window,
+            latency_ns=cfg.latency_ns,
+        )
     if cfg.include_failed_fvg:
         features = _attach_failed_fvg(features, nq)
     if cfg.include_auction_vp:

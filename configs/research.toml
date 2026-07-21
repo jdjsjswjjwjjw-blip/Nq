@@ -25,6 +25,10 @@ window = 5
 n_components = 4
 n_splits = 3
 
+# بناء الميزات: streaming = آلة حالة حدث-بحدث (افتراضي) | batch = نوافذ مجمّعة
+[features]
+mode = "streaming"
+
 # إشارات تُفرَز في قناة الألفا (نفس طبقة trap_setup / lead_lag / VP)
 [signals]
 include_failed_fvg = true
@@ -32,9 +36,12 @@ include_auction_vp = true
 columns = [
   "nq_delta",
   "mnq_delta",
-  "lead_lag",
   "trap_setup",
-  "divergence",
+  "phase_balance",
+  "phase_expansion",
+  "in_value_area",
+  "near_vah",
+  "poc_dist_norm",
   "session_phase",
   "fail_fvg",
   "vp_balance",

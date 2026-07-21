@@ -356,7 +356,7 @@ def measure_crs(
     """CRS — كفاية إعادة البناء المُقنّعة لكل كتلة محاكاة."""
     generator = rng if rng is not None else np.random.default_rng(0)
     resolved = resolve_block_columns(features.columns, blocks)
-    feat_cols = [c for cols in resolved.values() for c in cols]
+    feat_cols = list(dict.fromkeys(c for cols in resolved.values() for c in cols))
     if not feat_cols:
         return []
 
