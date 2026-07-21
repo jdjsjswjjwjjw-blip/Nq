@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""تشغيل بحث Failed FVG — مسار استراتيجية منفصل فوق البنية الموحّدة.
+"""تشغيل بحث Failed FVG عبر الخط الموحّد (نفس طبقة trap_setup / lead_lag).
 
     python scripts/run_fail_fvg.py --nq data/raw/nq.parquet --max-rows 500000
-    python scripts/run_fail_fvg.py --nq data/raw/nq.parquet --no-ssl-gate
+    python scripts/run_week.py --nq data/raw/nq.parquet --nq-only
+    # ↑ run_week يُفرز fail_fvg تلقائيًا مع باقي الإشارات
 """
 
 from __future__ import annotations

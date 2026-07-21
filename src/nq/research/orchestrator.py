@@ -31,6 +31,7 @@ from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_pipeline, run_ssl_
 from nq.research.assistant import LanguageModel, ResearchAssistant
 from nq.research.unified import UnifiedResearchReport, build_unified_report
 from nq.simulation.cross_market import cross_market_features
+from nq.simulation.fvg import failed_fvg_features
 
 if TYPE_CHECKING:
     from nq.alpha.discovery import AlphaDiscovery
@@ -45,6 +46,7 @@ _DEFAULT_SIGNAL_COLUMNS = (
     "trap_setup",
     "divergence",
     "session_phase",
+    "fail_fvg",
 )
 
 
@@ -82,6 +84,8 @@ class PipelineConfig:
     ssl_mode: SslMode = "tick"
     cross_market_mode: CrossMarketMode = "dual"
     max_rows: int | None = None
+    include_failed_fvg: bool = True
+    signal_columns: tuple[str, ...] | None = None
 
     @classmethod
     def from_toml(cls, path: Path | str) -> PipelineConfig:
@@ -93,9 +97,11 @@ class PipelineConfig:
         exec_cfg = raw.get("execution", {})
         ssl = raw.get("ssl", {})
         data = raw.get("data", {})
+        signals = raw.get("signals", {})
         det = raw.get("determinism", {})
         max_rows_raw = data.get("max_rows")
         max_rows = None if max_rows_raw in (None, 0) else int(max_rows_raw)
+        signal_cols = signals.get("columns")
         return cls(
             interval_ns=int(temporal.get("interval_ns", 1_000_000_000)),
             horizon=int(temporal.get("horizon", 1)),
@@ -114,6 +120,8 @@ class PipelineConfig:
             ssl_mode=str(ssl.get("mode", "tick")),  # type: ignore[arg-type]
             cross_market_mode=str(data.get("cross_market_mode", "dual")),  # type: ignore[arg-type]
             max_rows=max_rows,
+            include_failed_fvg=bool(signals.get("include_failed_fvg", True)),
+            signal_columns=tuple(signal_cols) if signal_cols else None,
         )
 
 
@@ -147,10 +155,65 @@ def _run_coverage_task(
 def _resolve_signal_columns(
     features: pl.DataFrame,
     signal_columns: Sequence[str] | None,
+    *,
+    config_columns: Sequence[str] | None = None,
 ) -> list[str]:
     if signal_columns is not None:
-        return list(signal_columns)
+        return [c for c in signal_columns if c in features.columns]
+    if config_columns is not None:
+        return [c for c in config_columns if c in features.columns]
     return [c for c in _DEFAULT_SIGNAL_COLUMNS if c in features.columns]
+
+
+def _attach_failed_fvg(features: pl.DataFrame, nq: pl.DataFrame) -> pl.DataFrame:
+    """يلحق إشارة Failed FVG بإطار البحث الموحّد (asof خلفي — بلا تسريب)."""
+    fvg = failed_fvg_features(nq)
+    if fvg.height == 0 or features.height == 0:
+        return features.with_columns(
+            pl.lit(0.0).alias("fail_fvg"),
+            pl.lit(0.0).alias("effort_range_ratio"),
+            pl.lit(0.0).alias("effort_volume_ratio"),
+        )
+    keep = [
+        c
+        for c in (
+            AVAILABILITY_TS,
+            "fail_fvg",
+            "effort_range_ratio",
+            "effort_volume_ratio",
+        )
+        if c in fvg.columns
+    ]
+    right = fvg.select(keep).sort(AVAILABILITY_TS)
+    left = features.sort(AVAILABILITY_TS)
+    # تجنّب تضارب أعمدة إن وُجدت سابقًا
+    drop_existing = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
+    if drop_existing:
+        left = left.drop(drop_existing)
+    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
+    return joined.with_columns(
+        pl.col("fail_fvg").fill_null(0.0),
+        pl.col("effort_range_ratio").fill_null(0.0),
+        pl.col("effort_volume_ratio").fill_null(0.0),
+    )
+
+
+def _build_research_features(
+    nq: pl.DataFrame,
+    mnq: pl.DataFrame,
+    cfg: PipelineConfig,
+) -> pl.DataFrame:
+    """يبني إطار البحث الموحّد: cross-market + طبقات محاكاة إضافية (Failed FVG)."""
+    features = cross_market_features(
+        nq,
+        mnq,
+        interval_ns=cfg.interval_ns,
+        lead_lag_window=cfg.lead_lag_window,
+        latency_ns=cfg.latency_ns,
+    )
+    if cfg.include_failed_fvg:
+        features = _attach_failed_fvg(features, nq)
+    return features
 
 
 def run_ssl_research_pipeline(
@@ -350,9 +413,7 @@ def _load_pipeline_frames(
     nq_frame = nq if isinstance(nq, pl.DataFrame) else load_mbo_frame(nq, max_rows=cfg.max_rows)
     if cfg.cross_market_mode == "nq_only":
         return nq_frame, nq_frame
-    mnq_frame = (
-        mnq if isinstance(mnq, pl.DataFrame) else load_mbo_frame(mnq, max_rows=cfg.max_rows)
-    )
+    mnq_frame = mnq if isinstance(mnq, pl.DataFrame) else load_mbo_frame(mnq, max_rows=cfg.max_rows)
     return nq_frame, mnq_frame
 
 
@@ -401,13 +462,9 @@ def run_research_pipeline(
 
     nq_frame, mnq_frame = _load_pipeline_frames(nq, mnq, cfg)
 
-    features = cross_market_features(
-        nq_frame,
-        mnq_frame,
-        interval_ns=cfg.interval_ns,
-        lead_lag_window=cfg.lead_lag_window,
-        latency_ns=cfg.latency_ns,
-    )
+    features = _build_research_features(nq_frame, mnq_frame, cfg)
+
+    resolved_signals = signal_columns if signal_columns is not None else cfg.signal_columns
 
     ssl_result, coverage_result, alpha_result, unified = run_ssl_research_pipeline(
         nq_frame,
@@ -415,7 +472,7 @@ def run_research_pipeline(
         features,
         interval_ns=cfg.interval_ns,
         horizon=cfg.horizon,
-        signal_columns=signal_columns,
+        signal_columns=resolved_signals,
         price_col=price_col,
         alpha=cfg.alpha,
         n_permutations=cfg.n_permutations,

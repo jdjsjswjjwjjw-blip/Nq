@@ -60,6 +60,22 @@ def test_run_research_pipeline_unified_report() -> None:
     assert result.alpha.evaluations.height >= 0
 
 
+def test_run_research_pipeline_includes_failed_fvg_signal() -> None:
+    nq, mnq = _paired_streams(2500, seed=70)
+    result = run_research_pipeline(
+        nq,
+        mnq,
+        interval_ns=10_000,
+        n_permutations=200,
+        parallel_coverage=False,
+        rng=make_generator(3),
+    )
+    assert "fail_fvg" in result.features.columns
+    assert "effort_range_ratio" in result.features.columns
+    names = result.alpha.evaluations["name"].to_list() if result.alpha.evaluations.height else []
+    assert "fail_fvg" in names or result.alpha.evaluations.height == 0
+
+
 def test_run_research_pipeline_sequential_coverage() -> None:
     nq, mnq = _paired_streams(2000, seed=60)
     parallel = run_research_pipeline(

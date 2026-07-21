@@ -25,6 +25,19 @@ window = 5
 n_components = 4
 n_splits = 3
 
+# إشارات تُفرَز في قناة الألفا (نفس طبقة trap_setup / lead_lag)
+[signals]
+include_failed_fvg = true
+columns = [
+  "nq_delta",
+  "mnq_delta",
+  "lead_lag",
+  "trap_setup",
+  "divergence",
+  "session_phase",
+  "fail_fvg",
+]
+
 [statistics]
 alpha = 0.05
 n_permutations = 2000

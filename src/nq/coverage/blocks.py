@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-#: كتل ميزات cross-market الافتراضية (من مخرجات ``cross_market_features``).
+#: كتل ميزات المحاكيات الافتراضية (من إطار البحث الموحّد).
 DEFAULT_FEATURE_BLOCKS: dict[str, tuple[str, ...]] = {
     "order_flow": ("nq_delta", "mnq_delta"),
     "cross_market": (
@@ -17,6 +17,11 @@ DEFAULT_FEATURE_BLOCKS: dict[str, tuple[str, ...]] = {
         "confirmation_failure",
         "nq_leads_corr",
         "mnq_leads_corr",
+    ),
+    "failed_fvg": (
+        "fail_fvg",
+        "effort_range_ratio",
+        "effort_volume_ratio",
     ),
     "price": ("nq_return", "mnq_return"),
 }
