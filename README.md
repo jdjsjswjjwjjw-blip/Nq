@@ -85,9 +85,25 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 
 ---
 
+### اختيار المسار — مهم
+
+**ما فيش حذف لأي طبقة.** المسارات أدناه كلها فوق نفس المحرك (`run_research_pipeline`). الفرق فقط في **أي إشارات تُفرَز** في قناة الألفا:
+
+| المسار | ماذا يفعل | ماذا **لا** يفعل |
+|--------|-----------|-------------------|
+| `run_week` + `configs/research.toml` | يشغّل **الكل مع بعض**: `trap_setup` / `lead_lag` / `fail_fvg` / `vp_balance` / … | لا يلغي Failed FVG ولا الـ VP |
+| `run_fail_fvg` | يضيّق الفرز على Failed FVG (+ cross-market) | لا يمسح المحرك؛ باقي الإشارات تبقى قابلة في الخط العام |
+| `run_vp_auction` + `configs/vp_auction.toml` | يضيّق الفرز على Volume Profile + توازن/اختلال (NQ فقط) | **لا يلغي** باقي الطبقات من المشروع؛ مجرد تركيز فرز |
+
+> لو عايز الكل شغّال → `run_week`.  
+> لو عايز فرضية واحدة فقط للفرز → سكربت التركيز المناسب.
+
+---
+
 ### 1) الخط الموحّد — من MBO إلى التقرير (`run_week`)
 
-نقطة الدخول الأساسية: **SSL ‖ M9 ‖ ألفا** في تقرير واحد، مع `fail_fvg` بجانب `trap_setup` / `lead_lag`.
+نقطة الدخول الأساسية: **SSL ‖ M9 ‖ ألفا** في تقرير واحد.  
+الإشارات الافتراضية معًا: `trap_setup` / `lead_lag` / `fail_fvg` / `vp_balance` / `vp_imbalance` / …
 
 ```bash
 # NQ فقط (بدون ملف MNQ منفصل) + حد ذاكرة
@@ -129,7 +145,7 @@ python scripts/run_week.py \
 
 ### 2) تركيز فرز Failed FVG (`run_fail_fvg`)
 
-نفس الخط الموحّد مع تركيز أعمدة الفرز على `fail_fvg` (+ إشارات cross-market).
+نفس الخط الموحّد مع **تضييق** أعمدة الفرز على `fail_fvg` (+ إشارات cross-market) — ليس بديلاً عن الخط العام.
 
 ```bash
 python scripts/run_fail_fvg.py \
@@ -138,14 +154,15 @@ python scripts/run_fail_fvg.py \
   --output data/runs/fail_fvg
 ```
 
-> ملاحظة: `run_week` يُفرز `fail_fvg` تلقائيًا إن `include_failed_fvg = true`.  
-> استخدم `run_fail_fvg` عند الحاجة لتقرير/فرز أضيق على الاستراتيجية.
+> `run_week` يُفرز `fail_fvg` تلقائيًا إن `include_failed_fvg = true`.  
+> استخدم `run_fail_fvg` فقط عند الحاجة لتقرير أضيق على الاستراتيجية.
 
 ---
 
 ### 3) تركيز Volume Profile + التوازن/الاختلال (`run_vp_auction`)
 
-NQ فقط — فرضيات الملف الحجمي والسوق المتوازن/غير المتوازن:
+نفس الخط الموحّد مع **تضييق** الفرز على فرضيات الملف الحجمي والسوق المتوازن/غير المتوازن (NQ فقط).  
+هذا **تركيز فرز**، وليس إلغاء لـ Failed FVG أو باقي الطبقات من المشروع.
 
 | إشارة | المعنى |
 |--------|--------|
@@ -156,7 +173,7 @@ NQ فقط — فرضيات الملف الحجمي والسوق المتوازن
 | `vp_flip_to_imbalance` | انتقال توازن → اختلال |
 
 ```bash
-# سكربت مركّز
+# سكربت مركّز (فرز VP فقط)
 python scripts/run_vp_auction.py \
   --nq /path/to/nq.parquet \
   --max-rows 500000 \
@@ -170,7 +187,7 @@ python scripts/run_week.py \
   --max-rows 500000
 ```
 
-> `include_auction_vp = true` في `configs/research.toml` يُلحق إشارات VP تلقائيًا في الخط العام.
+> في الخط العام (`configs/research.toml`): `include_auction_vp = true` يُلحق إشارات VP **مع** باقي الإشارات، بدون استبدالها.
 
 ---
 
