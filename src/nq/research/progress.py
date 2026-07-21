@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import sys
 import time
-from collections.abc import TextIO
 from dataclasses import dataclass, field
+from typing import TextIO
 
 
 def _fmt_duration(seconds: float) -> str:

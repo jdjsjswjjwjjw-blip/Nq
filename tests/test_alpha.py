@@ -125,5 +125,5 @@ def test_pipeline_reproducible_from_raw_mbo() -> None:
         quiet=True,
     )
     # نفس البيانات الخام + نفس البذرة -> نفس المخرجات بالضبط (قابلية إعادة الإنتاج)
-    assert a.alpha.evaluations.equals(b.alpha.evaluations)
-    assert a.alpha.selected == b.alpha.selected
+    assert a.evaluations.equals(b.evaluations)
+    assert a.selected == b.selected
