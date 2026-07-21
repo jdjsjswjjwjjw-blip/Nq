@@ -293,11 +293,13 @@ Nq/
 ├── README.md
 ├── configs/
 │   ├── default.toml
-│   └── research.toml          # إعدادات الخط الموحّد + signals + ssl
+│   ├── research.toml          # الخط العام — كل الإشارات معًا
+│   ├── fail_fvg.toml          # أمر FVG منفصل (فرز مركّز، مخرجات كاملة)
+│   └── vp_auction.toml        # أمر VP منفصل (فرز مركّز، مخرجات كاملة)
 ├── scripts/
 │   ├── run_week.py            # الخط الموحّد MBO → تقرير
-│   ├── run_fail_fvg.py        # تركيز فرز Failed FVG
-│   └── run_vp_auction.py      # تركيز VP / توازن·اختلال (NQ)
+│   ├── run_fail_fvg.py        # أمر منفصل Failed FVG (داخل المنظومة)
+│   └── run_vp_auction.py      # أمر منفصل VP / توازن·اختلال (داخل المنظومة)
 ├── docs/
 │   ├── architecture.md
 │   └── data_contracts.md
