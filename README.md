@@ -136,8 +136,10 @@ python scripts/run_week.py \
 | `coverage_metrics.parquet` | مقاييس M9 |
 | `alpha_evaluations.parquet` | فرز الإشارات |
 
-**تقدّم التشغيل (stderr):** الخط يطبع كل خطوة من البداية للنهاية (`[nq] → ...`) مع الزمن،
-ولو فشل يعرض اسم الخطوة والخطأ. عطّل بـ `--quiet` أو `[run] quiet = true` في TOML.
+**تقدّم التشغيل (stderr + `progress.log`):** كل خطوة وكل عملية داخلها تُطبع سطرًا بسطر
+(`→` للخطوات، `-` للعمليات، `…` لنسبة التقدّم داخل الحلقات الطويلة مثل tick_stream).
+عند تحديد `--output` يُكتب نفس اللوج إلى `progress.log` داخل المجلد.
+عطّل بـ `--quiet` أو `[run] quiet = true`.
 
 **الإعدادات:** `configs/research.toml`
 

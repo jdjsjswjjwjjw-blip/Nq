@@ -310,8 +310,18 @@ def build_tick_stream(
     *,
     nq_instrument_id: int = 1,
     mnq_instrument_id: int = 2,
+    progress: object | None = None,
 ) -> TickStream:
-    """يبني تسلسل tick موحّد من MBO خام (NQ + MNQ) مع دفتر حي وميزات inline."""
+    """يبني تسلسل tick موحّد من MBO خام (NQ + MNQ) مع دفتر حي وميزات inline.
+
+    ``progress`` كائن اختياري يدعم ``op`` / ``heartbeat`` (مثل ``PipelineProgress``).
+    """
+    log = progress
+    if log is not None:
+        log.op(  # type: ignore[union-attr]
+            f"دمج NQ+MNQ وترتيب سببي "
+            f"(NQ={nq.height:,} · MNQ={mnq.height:,})"
+        )
     nq_sorted = sort_causal(nq.with_columns(pl.lit(nq_instrument_id).alias("instrument_id")))
     mnq_sorted = sort_causal(mnq.with_columns(pl.lit(mnq_instrument_id).alias("instrument_id")))
     combined = pl.concat([nq_sorted, mnq_sorted], how="vertical").sort([EVENT_TS, SEQUENCE])
@@ -336,18 +346,28 @@ def build_tick_stream(
     sequences = combined["sequence"].to_list()
     instruments = combined["instrument_id"].to_list()
 
+    total = len(actions)
+    if log is not None:
+        log.op(f"بدء آلة الحالة حدث-بحدث: {total:,} حدث")  # type: ignore[union-attr]
+    # نبضة كل ~2% أو على الأقل كل 5k حدث حتى لا يصمت التشغيل
+    hb_every = max(5_000, total // 50) if total else 1
+    next_hb = hb_every
+
     prev_nq_mid: float | None = None
 
-    for action, side, price, size, order_id, ts, seq, inst in zip(
-        actions,
-        sides,
-        prices,
-        sizes,
-        order_ids,
-        event_times,
-        sequences,
-        instruments,
-        strict=True,
+    for i, (action, side, price, size, order_id, ts, seq, inst) in enumerate(
+        zip(
+            actions,
+            sides,
+            prices,
+            sizes,
+            order_ids,
+            event_times,
+            sequences,
+            instruments,
+            strict=True,
+        ),
+        start=1,
     ):
         row, mnq_signed, nq_high, mnq_high, mnq_low, prev_nq_mid = _tick_row(
             action=str(action),
@@ -371,11 +391,21 @@ def build_tick_stream(
             prev_nq_mid=prev_nq_mid,
         )
         rows.append(row)
+        if log is not None and (i >= next_hb or i == total):
+            log.heartbeat(i, total, label="tick_stream", force=True, every=hb_every)  # type: ignore[union-attr]
+            next_hb = i + hb_every
 
     if not rows:
+        if log is not None:
+            log.op("آلة الحالة: لا أحداث — إطار فارغ")  # type: ignore[union-attr]
         return TickStream(frame=pl.DataFrame(schema=_TICK_SCHEMA))
 
-    return TickStream(frame=pl.DataFrame(rows))
+    if log is not None:
+        log.op(f"تجميع DataFrame من {len(rows):,} صف tick")  # type: ignore[union-attr]
+    frame = pl.DataFrame(rows)
+    if log is not None:
+        log.op(f"اكتمل tick_stream: {frame.height:,} صف")  # type: ignore[union-attr]
+    return TickStream(frame=frame)
 
 
 __all__ = [
