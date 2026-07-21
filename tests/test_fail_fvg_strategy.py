@@ -18,7 +18,9 @@ def test_run_fail_fvg_research_uses_unified_features() -> None:
     assert "fail_fvg" in result.features.columns
     assert "trap_setup" in result.features.columns or "lead_lag" in result.features.columns
     assert "fail_fvg" in result.signal_columns
+    assert "vp_balance" not in result.signal_columns
     assert result.unified is not None
+    assert "قناة 1 — SSL" in result.unified.to_markdown()
 
 
 def test_run_fail_fvg_research_produces_report() -> None:
