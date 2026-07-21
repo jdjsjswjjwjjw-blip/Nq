@@ -14,13 +14,26 @@ import numpy.typing as npt
 FloatArray = npt.NDArray[np.float64]
 
 
-def r2_score(y_true: FloatArray, y_pred: FloatArray) -> float:
-    """معامل التحديد R² (نسخة متعدّدة المخرجات، مجمّعة)."""
+def r2_score(
+    y_true: FloatArray,
+    y_pred: FloatArray,
+    *,
+    baseline_mean: FloatArray | float,
+) -> float:
+    """معامل التحديد R² (متعدّد المخرجات، مجمّع) — صيغة Campbell–Thompson OOS.
+
+    ``baseline_mean`` يجب أن يكون متوسط أهداف **التدريب** المتاحة عند التقييم
+    (لا متوسط عيّنة الاختبار). استخدام ``y_true.mean()`` على الاختبار يسرّب
+    متوسط المستقبل إلى خط الأساس ويشوّه ``ss_tot`` ومقياس R².
+    """
     yt = np.asarray(y_true, dtype=np.float64)
     yp = np.asarray(y_pred, dtype=np.float64)
+    if yt.shape != yp.shape:
+        raise ValueError(f"y_true and y_pred shape mismatch: {yt.shape} vs {yp.shape}")
+    base = np.asarray(baseline_mean, dtype=np.float64)
     ss_res = float(np.sum((yt - yp) ** 2))
-    ss_tot = float(np.sum((yt - yt.mean(axis=0)) ** 2))
-    if ss_tot == 0:
+    ss_tot = float(np.sum((yt - base) ** 2))
+    if ss_tot == 0.0:
         return 0.0
     return 1.0 - ss_res / ss_tot
 

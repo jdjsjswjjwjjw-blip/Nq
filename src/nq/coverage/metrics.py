@@ -21,7 +21,7 @@ from nq.models.encoder import PCAEncoder
 from nq.models.masking import MaskedMatrix, mask_matrix, masked_reconstruction_error
 from nq.models.preprocessing import CausalStandardScaler
 from nq.models.splitting import WalkForwardFold, purged_walk_forward_split
-from nq.models.world_model import NextStatePredictor
+from nq.models.world_model import NextStatePredictor, r2_score
 from nq.research.evidence import Evidence
 from nq.states.regimes import KMeansRegimes, transition_matrix
 from nq.statistics.regime_tests import regime_difference_test
@@ -81,18 +81,15 @@ def _ridge_r2(
     *,
     alpha: float = 1.0,
 ) -> float:
-    """R² خارج العيّنة لانحدار ريدج مغلق الصيغة."""
+    """R² خارج العيّنة لانحدار ريدج — خط الأساس = متوسط أهداف التدريب."""
     if x_train.shape[0] < _MIN_RIDGE_TRAIN or x_test.shape[0] < 1:
         return 0.0
+    ytr = y_train.reshape(-1, 1) if y_train.ndim == 1 else y_train
+    yte = y_test.reshape(-1, 1) if y_test.ndim == 1 else y_test
     predictor = NextStatePredictor(alpha=alpha)
-    predictor.fit(x_train, y_train.reshape(-1, 1) if y_train.ndim == 1 else y_train)
+    predictor.fit(x_train, ytr)
     pred = predictor.predict(x_test)
-    yt = y_test.reshape(-1, 1) if y_test.ndim == 1 else y_test
-    ss_res = float(np.sum((yt - pred) ** 2))
-    ss_tot = float(np.sum((yt - yt.mean()) ** 2))
-    if ss_tot <= 0:
-        return 0.0
-    return max(1.0 - ss_res / ss_tot, 0.0)
+    return max(r2_score(yte, pred, baseline_mean=ytr.mean(axis=0)), 0.0)
 
 
 def _align_frames(

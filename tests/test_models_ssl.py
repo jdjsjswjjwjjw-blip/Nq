@@ -59,7 +59,24 @@ def test_next_state_predictor_learns_linear_map() -> None:
     y = x @ true_map
     model = NextStatePredictor(alpha=1e-6).fit(x[:200], y[:200])
     pred = model.predict(x[200:])
-    assert r2_score(y[200:], pred) > 0.99
+    train_mean = y[:200].mean(axis=0)
+    assert r2_score(y[200:], pred, baseline_mean=train_mean) > 0.99
+
+
+def test_oos_r2_uses_train_baseline_not_test_mean() -> None:
+    """Campbell OOS R²: ss_tot مقابل متوسط التدريب؛ متوسط الاختبار يحرّف المقياس."""
+    rng = make_generator(11)
+    # أهداف اختبار مزاحَة عن متوسط التدريب → ss_tot أكبر مع baseline التدريب
+    y_train = rng.normal(0.0, 1.0, size=(100, 2))
+    y_test = rng.normal(5.0, 1.0, size=(50, 2))
+    # تنبّؤ ضعيف = متوسط التدريب (خط الأساس نفسه)
+    y_pred = np.broadcast_to(y_train.mean(axis=0), y_test.shape).copy()
+    r2_oos = r2_score(y_test, y_pred, baseline_mean=y_train.mean(axis=0))
+    # تنبّؤ بنفس متوسط الاختبار يُظهر R²≈0 بصيغة خاطئة؛ هنا نثبت أن الصيغة
+    # الصحيحة تعطي R² قريبًا من 0 عندما التنبّؤ = متوسط التدريب فقط
+    assert r2_oos < 0.05
+    with pytest.raises(TypeError):
+        r2_score(y_test, y_pred)  # type: ignore[call-arg]
 
 
 def test_next_state_requires_fit() -> None:
