@@ -21,6 +21,8 @@
 - كل ميزة تحمل طابعًا زمنيًا صريحًا (`event_ts`, `ingest_ts`, `availability_ts`).
 - التقسيم Walk‑Forward / Purged + Embargo — لا عشوائي.
 - التطبيع fit‑on‑past ثم تطبيق للأمام فقط.
+- **OOS R² (Campbell–Thompson):** خط الأساس = متوسط أهداف **التدريب**، لا متوسط عيّنة الاختبار.
+- **قمم/قيعان intraday:** `cum_max` / `cum_min` داخل `session_date` (ET) فقط — لا تراكمي عالمي عبر الأيام.
 - **قاعدة PR:** إثبات خلوّ من التسريب (Leakage Test) قبل الدمج.
 
 ### 2) صرامة كمية وعلمية بلا أخطاء
