@@ -200,6 +200,7 @@ def _run_coverage_task(
     embargo: int,
     n_permutations: int,
     seed: int,
+    progress: PipelineProgress | None = None,
 ) -> CoverageReport:
     return run_coverage_on_features(
         nq,
@@ -212,6 +213,7 @@ def _run_coverage_task(
         embargo=embargo,
         n_permutations=n_permutations,
         rng=np.random.default_rng(seed),
+        progress=progress,
     )
 
 
@@ -433,6 +435,7 @@ def run_ssl_research_pipeline(
             alpha=alpha,
             rng=generator,
             assistant=ssl_assistant,
+            progress=log,
         )
 
     if parallel_coverage and (features.height > 0 or ssl_mode == "tick"):
@@ -450,6 +453,7 @@ def run_ssl_research_pipeline(
                 embargo=embargo_val,
                 n_permutations=n_permutations,
                 seed=seed,
+                progress=log,
             )
             log.note("M9 يعمل في الخلفية")
             log.note(f"SSL يبدأ الآن (mode={ssl_mode})")
@@ -471,6 +475,7 @@ def run_ssl_research_pipeline(
                 n_permutations=n_permutations,
                 rng=generator,
                 assistant=alpha_assistant,
+                progress=log,
             )
             log.op(
                 f"ألفا انتهى — evals={alpha_result.evaluations.height} · "
@@ -499,6 +504,7 @@ def run_ssl_research_pipeline(
             n_permutations=n_permutations,
             rng=generator,
             assistant=alpha_assistant,
+            progress=log,
         )
         log.op(
             f"ألفا انتهى — evals={alpha_result.evaluations.height} · "
@@ -517,6 +523,7 @@ def run_ssl_research_pipeline(
             embargo=embargo_val,
             n_permutations=n_permutations,
             rng=np.random.default_rng(seed),
+            progress=log,
         )
         log.note(f"M9 انتهى — metrics={coverage_result.metrics.height}")
 
