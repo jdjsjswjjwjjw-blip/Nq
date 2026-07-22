@@ -80,6 +80,7 @@ def run_vp_auction_research(
     cfg = PipelineConfig(
         include_auction_vp=True,
         include_failed_fvg=False,
+        include_failed_breakout=False,
         cross_market_mode="nq_only" if mnq is None else "dual",
         max_rows=max_rows,
         horizon=horizon,

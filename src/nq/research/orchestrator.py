@@ -36,6 +36,7 @@ from nq.research.assistant import LanguageModel, ResearchAssistant
 from nq.research.progress import PipelineProgress, resolve_progress
 from nq.research.unified import UnifiedResearchReport, build_unified_report
 from nq.simulation.auction import auction_signal_frame
+from nq.simulation.breakout import failed_breakout_features
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import failed_fvg_features
 
@@ -57,6 +58,7 @@ _DEFAULT_SIGNAL_COLUMNS = (
     "poc_dist_norm",
     "session_phase",
     "fail_fvg",
+    "fail_breakout",
     "vp_balance",
     "vp_imbalance",
     "vp_expansion",
@@ -72,6 +74,7 @@ _BATCH_SIGNAL_COLUMNS = (
     "divergence",
     "session_phase",
     "fail_fvg",
+    "fail_breakout",
     "vp_balance",
     "vp_imbalance",
     "vp_expansion",
@@ -88,6 +91,15 @@ _VP_AUCTION_SIGNAL_COLUMNS = (
     "vp_pullback_defense",
     "vp_poc_migration",
     "vp_flip_to_imbalance",
+)
+
+_FB_SIGNAL_COLUMNS = (
+    "fail_breakout",
+    "fb_break_level",
+    "fb_entry_ref",
+    "fb_effort_range_ratio",
+    "fb_effort_volume_ratio",
+    "fb_risk_pts",
 )
 
 
@@ -127,6 +139,7 @@ class PipelineConfig:
     max_rows: int | None = None
     include_failed_fvg: bool = True
     include_auction_vp: bool = True
+    include_failed_breakout: bool = True
     feature_mode: FeatureMode = "streaming"
     signal_columns: tuple[str, ...] | None = None
     quiet: bool = False
@@ -168,6 +181,7 @@ class PipelineConfig:
             max_rows=max_rows,
             include_failed_fvg=bool(signals.get("include_failed_fvg", True)),
             include_auction_vp=bool(signals.get("include_auction_vp", True)),
+            include_failed_breakout=bool(signals.get("include_failed_breakout", True)),
             feature_mode=str(features_cfg.get("mode", signals.get("feature_mode", "streaming"))),  # type: ignore[arg-type]
             signal_columns=tuple(signal_cols) if signal_cols else None,
             quiet=bool(run_cfg.get("quiet", False)),
@@ -273,6 +287,23 @@ def _attach_auction_vp(
     return joined.with_columns(fills) if fills else joined
 
 
+def _attach_failed_breakout(features: pl.DataFrame, nq: pl.DataFrame) -> pl.DataFrame:
+    """يلحق Failed Breakout asof خلفي — إشارة اتجاه + مراجع دخول سببية."""
+    fb = failed_breakout_features(nq)
+    zero_exprs = [pl.lit(0.0).alias(c) for c in _FB_SIGNAL_COLUMNS]
+    if fb.height == 0 or features.height == 0:
+        return features.with_columns(zero_exprs)
+    keep = [c for c in (AVAILABILITY_TS, *_FB_SIGNAL_COLUMNS) if c in fb.columns]
+    right = fb.select(keep).sort(AVAILABILITY_TS)
+    left = features.sort(AVAILABILITY_TS)
+    drop_existing = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
+    if drop_existing:
+        left = left.drop(drop_existing)
+    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
+    fills = [pl.col(c).fill_null(0.0) for c in _FB_SIGNAL_COLUMNS if c in joined.columns]
+    return joined.with_columns(fills) if fills else joined
+
+
 def _build_research_features(
     nq: pl.DataFrame,
     mnq: pl.DataFrame,
@@ -317,6 +348,11 @@ def _build_research_features(
         log.op("auction_signal_frame + join_asof backward")
         features = _attach_auction_vp(features, nq, interval_ns=cfg.interval_ns)
         log.op(f"بعد Auction/VP: {features.height:,} صف")
+    if cfg.include_failed_breakout:
+        log.step("إلحاق Failed Breakout (asof خلفي — دخول=إغلاق)")
+        log.op("failed_breakout_features + join_asof backward")
+        features = _attach_failed_breakout(features, nq)
+        log.op(f"بعد Failed Breakout: {features.height:,} صف")
     return features
 
 
@@ -624,7 +660,11 @@ def run_research_pipeline(
         cfg = replace(cfg, quiet=quiet)
 
     log = resolve_progress(progress, quiet=cfg.quiet)
-    feature_extra = int(cfg.include_failed_fvg) + int(cfg.include_auction_vp)
+    feature_extra = (
+        int(cfg.include_failed_fvg)
+        + int(cfg.include_auction_vp)
+        + int(cfg.include_failed_breakout)
+    )
     save_step = 1 if output_dir is not None else 0
     llm_step = 1 if language_model is not None else 0
     # load + feature_base + extras + ssl/m9/alpha path (~4) + unify + optional save/llm

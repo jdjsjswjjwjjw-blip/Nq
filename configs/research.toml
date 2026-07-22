@@ -33,6 +33,7 @@ mode = "streaming"
 [signals]
 include_failed_fvg = true
 include_auction_vp = true
+include_failed_breakout = true
 columns = [
   "nq_delta",
   "mnq_delta",
@@ -44,6 +45,7 @@ columns = [
   "poc_dist_norm",
   "session_phase",
   "fail_fvg",
+  "fail_breakout",
   "vp_balance",
   "vp_imbalance",
   "vp_expansion",

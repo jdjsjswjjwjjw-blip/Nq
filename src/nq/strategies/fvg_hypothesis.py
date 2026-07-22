@@ -81,9 +81,12 @@ def default_fvg_grid() -> tuple[FvgHypothesisSpec, ...]:
         (15, 60),
         (30, 60),
         (30, 120),
+        (5, 15),
+        (10, 30),
+        (45, 90),
     )
-    windows = (60, 90)
-    thresholds = ((1.1, 1.2), (1.2, 1.3), (1.3, 1.5))
+    windows = (60, 90, 120)
+    thresholds = ((1.1, 1.2), (1.2, 1.3), (1.3, 1.5), (1.5, 1.8))
     specs: list[FvgHypothesisSpec] = []
     for sig_m, fvg_m in pairs:
         if fvg_m < sig_m:
