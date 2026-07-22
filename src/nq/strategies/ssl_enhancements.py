@@ -29,6 +29,11 @@ _CONTEXT_FILTERS = (
     ("in_value_area", 0.5),
     ("near_vah", 0.5),
     ("near_val", 0.5),
+    # فوليوم سببي (من Failed Breakout) — عتبات نسبية مقابل 0 أو متوسط ضعيف
+    ("fb_effort_volume_ratio", 1.2),
+    ("fb_effort_result_ratio", 1.2),
+    ("fb_absorption", 0.0),  # |absorption| > 0 عند التفعيل لاحقًا عبر >= بعد abs
+    ("fb_vol_imbalance", 0.0),  # |imbalance| > 0
 )
 
 
@@ -129,7 +134,7 @@ def generate_ssl_enhancement_candidates(
         for ctx_col, thresh in _CONTEXT_FILTERS:
             if ctx_col not in work.columns:
                 continue
-            if ctx_col == "trap_setup":
+            if ctx_col in ("trap_setup", "fb_vol_imbalance", "fb_absorption"):
                 gate = (pl.col(ctx_col).abs() > thresh).cast(pl.Float64)
             else:
                 gate = (pl.col(ctx_col).fill_null(0.0) >= thresh).cast(pl.Float64)

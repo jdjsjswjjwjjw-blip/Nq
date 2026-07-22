@@ -167,5 +167,82 @@ def test_materialize_breakout_hypotheses_asof_backward() -> None:
 
 
 def test_default_breakout_grid_nonempty() -> None:
+    from nq.strategies.breakout_hypothesis import volume_breakout_grid
+
     grid = default_breakout_grid()
-    assert len(grid) >= 12
+    assert len(grid) >= 100
+    modes = {s.vol_mode for s in grid}
+    assert modes == {"bar", "cum", "delta", "effort_result"}
+    assert len(volume_breakout_grid()) == len(grid)
+
+
+def test_volume_modes_emit_volume_columns() -> None:
+    bars = _synthetic_signal_bars()
+    for mode in ("bar", "cum", "delta", "effort_result"):
+        out = failed_breakout_from_bars(
+            bars,
+            lookback=5,
+            require_sma_filter=False,
+            rth_only=False,
+            range_mult=1.05,
+            vol_mult=1.05,
+            result_mult=1.05,
+            vol_mode=mode,  # type: ignore[arg-type]
+        )
+        for col in (
+            "fb_effort_volume_ratio",
+            "fb_effort_result_ratio",
+            "fb_bar_volume",
+            "fb_cum_volume",
+            "fb_delta",
+            "fb_cum_delta",
+            "fb_absorption",
+            "fb_vol_imbalance",
+        ):
+            assert col in out.columns
+
+
+def test_volume_baselines_past_only_stable() -> None:
+    """تشويش شموع المستقبل لا يغيّر نسب الجهد الماضية."""
+    bars = _synthetic_signal_bars(90)
+    base = failed_breakout_from_bars(
+        bars,
+        lookback=5,
+        require_sma_filter=False,
+        rth_only=False,
+        range_mult=1.05,
+        vol_mult=1.05,
+        vol_mode="effort_result",
+    )
+    if base.height == 0:
+        return
+    cut = int(base[AVAILABILITY_TS].median())
+    past = base.filter(pl.col(AVAILABILITY_TS) <= cut)
+    scrambled = bars.with_columns(
+        pl.when(pl.col(BUCKET_START) > cut)
+        .then(pl.col("volume") * 10.0)
+        .otherwise(pl.col("volume"))
+        .alias("volume")
+    )
+    again = failed_breakout_from_bars(
+        scrambled,
+        lookback=5,
+        require_sma_filter=False,
+        rth_only=False,
+        range_mult=1.05,
+        vol_mult=1.05,
+        vol_mode="effort_result",
+    )
+    past2 = again.filter(pl.col(AVAILABILITY_TS) <= cut)
+    cols = ["fail_breakout", "fb_effort_volume_ratio", "fb_effort_result_ratio"]
+    a = past.select(AVAILABILITY_TS, *cols).sort(AVAILABILITY_TS)
+    b = past2.select(AVAILABILITY_TS, *cols).sort(AVAILABILITY_TS)
+    assert a.equals(b)
+
+
+def test_ohlcv_bars_include_flow_columns() -> None:
+    nq, _ = _paired_streams(800, seed=21)
+    bars = build_ohlcv_bars(nq, interval_ns=NS_30M)
+    for col in ("buy_volume", "sell_volume", "delta", "volume"):
+        assert col in bars.columns
+

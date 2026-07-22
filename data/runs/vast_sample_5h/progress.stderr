@@ -1,0 +1,6 @@
+[nq] ========== بدء: الخط الموحّد MBO → تقرير ==========
+[nq] عدد الخطوات المتوقعة: 9
+[nq] → [1/9] تهيئة الحتمية + تحميل MBO — mode=nq_only · features=streaming · ssl=tick · max_rows=400000 ...
+[nq]   · NQ=400,000 صف · MNQ=400,000 صف (nq_only)
+[nq]   ✓ انتهى: تهيئة الحتمية + تحميل MBO (6m09.9s)
+[nq] → [2/9] بناء الميزات (streaming state-machine) — NQ=400,000 · MNQ=400,000 · interval_ns=1000000000 ...
