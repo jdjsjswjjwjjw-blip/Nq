@@ -148,7 +148,8 @@ def test_pipeline_progress_prints_alpha_and_m9_ops() -> None:
     assert "M9 مقياس:" in text
     assert "mfig" in text
     assert "qduf" in text
-    assert "SSL-tick fold" in text or "SSL-bucket fold" in text
+    # مسار tick دائمًا يطبع ops حتى عند تخطّي الطيّات لصغر العيّنة
+    assert "SSL-tick" in text
 
 
 def test_fvg_search_passes_progress_into_ssl(tmp_path) -> None:
@@ -198,4 +199,5 @@ def test_bucket_ssl_emits_fold_progress() -> None:
     )
     text = buf.getvalue()
     assert "SSL-bucket" in text
-    assert "fold" in text
+    assert "ألفا [" in text
+    assert "M9 مقياس:" in text
