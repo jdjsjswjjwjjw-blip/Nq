@@ -22,16 +22,19 @@ from nq.strategies.fvg_hypothesis import (
     FvgHypothesisSpec,
     search_fail_fvg_hypotheses,
 )
+from nq.strategies.ssl_enhancements import EnhancementSpec, generate_ssl_enhancement_candidates
 from nq.strategies.vp_auction import VpAuctionResearchResult, run_vp_auction_research
 
 __all__ = [
     "BreakoutHypothesisSearchResult",
     "BreakoutHypothesisSpec",
+    "EnhancementSpec",
     "FailBreakoutResearchResult",
     "FailFvgResearchResult",
     "FvgHypothesisSearchResult",
     "FvgHypothesisSpec",
     "VpAuctionResearchResult",
+    "generate_ssl_enhancement_candidates",
     "run_fail_breakout_research",
     "run_fail_fvg_research",
     "run_vp_auction_research",

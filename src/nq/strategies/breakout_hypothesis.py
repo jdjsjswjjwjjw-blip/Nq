@@ -2,7 +2,8 @@
 
 * شبكة محدودة من lookback / عتبات جهد / فلتر SMA.
 * اختيار walk-forward purged (train فقط → OOS).
-* بوابة SSL سببية كفلتر تأكيد (لا اختراع إشارة من المستقبل).
+* بوابة SSL سببية + **مولّد تعزيزات** من التمثيلات/السياق
+  (شروط تأكيد مرشّحة — لا إعادة كتابة القاعدة أثناء التدريب).
 
 الدخول التقييمي عبر مسار الألفا (close/bid-ask) — ليس ملء عند ``fb_break_level``.
 """
@@ -32,6 +33,10 @@ from nq.strategies.fvg_hypothesis import (
     exploratory_screen_candidates,
     walk_forward_select_hypotheses,
 )
+from nq.strategies.ssl_enhancements import (
+    EnhancementSpec,
+    generate_ssl_enhancement_candidates,
+)
 
 _SSL_GATE_QUANTILE = 0.7
 
@@ -58,6 +63,8 @@ class BreakoutHypothesisSearchResult:
     features: pl.DataFrame
     specs: tuple[BreakoutHypothesisSpec, ...]
     candidate_columns: tuple[str, ...]
+    enhancement_columns: tuple[str, ...]
+    enhancement_specs: tuple[EnhancementSpec, ...]
     fold_selections: pl.DataFrame
     exploratory_screen: pl.DataFrame
     oos_selected_ic: float
@@ -95,6 +102,48 @@ def default_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
                         )
                     )
     return tuple(specs)
+
+
+def core_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
+    """شبكة مضغوطة لتوليد تعزيزات SSL (عدد مرشّحين محدود علميًا)."""
+    return (
+        BreakoutHypothesisSpec(
+            name="s30_lb5_r1p1_v1p2_sma",
+            signal_interval_ns=30 * NS_PER_MIN,
+            trend_interval_ns=60 * NS_PER_MIN,
+            lookback=5,
+            range_mult=1.1,
+            vol_mult=1.2,
+            require_sma_filter=True,
+        ),
+        BreakoutHypothesisSpec(
+            name="s30_lb5_r1p2_v1p3_nosma",
+            signal_interval_ns=30 * NS_PER_MIN,
+            trend_interval_ns=60 * NS_PER_MIN,
+            lookback=5,
+            range_mult=1.2,
+            vol_mult=1.3,
+            require_sma_filter=False,
+        ),
+        BreakoutHypothesisSpec(
+            name="s15_lb3_r1p1_v1p2_sma",
+            signal_interval_ns=15 * NS_PER_MIN,
+            trend_interval_ns=60 * NS_PER_MIN,
+            lookback=3,
+            range_mult=1.1,
+            vol_mult=1.2,
+            require_sma_filter=True,
+        ),
+        BreakoutHypothesisSpec(
+            name="s15_lb8_r1p3_v1p5_nosma",
+            signal_interval_ns=15 * NS_PER_MIN,
+            trend_interval_ns=60 * NS_PER_MIN,
+            lookback=8,
+            range_mult=1.3,
+            vol_mult=1.5,
+            require_sma_filter=False,
+        ),
+    )
 
 
 def materialize_breakout_hypotheses(
@@ -155,6 +204,7 @@ def search_fail_breakout_hypotheses(
     interval_ns: int = 1_000_000_000,
     horizon: int = 1,
     use_ssl_gate: bool = True,
+    enhance_with_ssl: bool = True,
     ssl_window: int = 5,
     ssl_components: int = 4,
     n_splits: int = 3,
@@ -167,13 +217,19 @@ def search_fail_breakout_hypotheses(
     progress: PipelineProgress | bool | None = None,
     quiet: bool = False,
 ) -> BreakoutHypothesisSearchResult:
-    """يبحث أفضل إعداد Failed Breakout بـ walk-forward + بوابة SSL اختيارية."""
+    """يبحث أفضل إعداد/تعزيز Failed Breakout بـ walk-forward + SSL.
+
+    عند ``enhance_with_ssl=True`` (افتراضي مع البحث):
+    يستخدم شبكة مضغوطة + يولّد مرشّحي تعزيز من ``z*`` والسياق،
+    ثم يختار بـ walk-forward (OOS هو الحكم).
+    """
     log = resolve_progress(progress, quiet=quiet)
+    need_ssl = use_ssl_gate or enhance_with_ssl
     save_step = 1 if output_dir is not None else 0
-    gate_step = 1 if use_ssl_gate else 0
+    ssl_steps = (1 if need_ssl else 0) + (1 if enhance_with_ssl else 0) + (1 if use_ssl_gate else 0)
     log.begin(
-        "بحث فرضيات Failed Breakout (walk-forward)",
-        total_steps=6 + gate_step + save_step,
+        "بحث فرضيات Failed Breakout + تعزيزات SSL",
+        total_steps=6 + ssl_steps + save_step,
     )
     try:
         log.step("تهيئة + تحميل MBO", f"max_rows={max_rows}")
@@ -189,7 +245,14 @@ def search_fail_breakout_hypotheses(
             )
             log.note(f"NQ={nq_frame.height:,} · MNQ={mnq_frame.height:,}")
 
-        grid = tuple(specs) if specs is not None else default_breakout_grid()
+        if specs is not None:
+            grid = tuple(specs)
+        elif enhance_with_ssl:
+            grid = core_breakout_grid()
+            log.note("شبكة مضغوطة (core) لتوليد تعزيزات SSL")
+        else:
+            grid = default_breakout_grid()
+
         log.step("بناء ساعة البحث", f"interval_ns={interval_ns}")
         clock = cross_market_features(
             nq_frame,
@@ -198,7 +261,7 @@ def search_fail_breakout_hypotheses(
             lead_lag_window=2,
             latency_ns=0,
         )
-        log.step("تجسيد شبكة فرضيات FB", f"candidates={len(grid)}")
+        log.step("تجسيد فرضيات FB الأساس", f"specs={len(grid)}")
         hyp = materialize_breakout_hypotheses(nq_frame, grid, clock=clock)
         base = clock.sort(AVAILABILITY_TS)
         hyp_cols = [s.column() for s in grid]
@@ -215,9 +278,12 @@ def search_fail_breakout_hypotheses(
                 features = features.with_columns(pl.col(col).fill_null(0.0))
 
         ssl_result: SSLPipelineResult | None = None
-        candidates: tuple[str, ...] = tuple(hyp_cols)
-        if use_ssl_gate:
-            log.step("SSL tick + بوابة تأكيد سببية", f"window={ssl_window}")
+        enhancement_columns: tuple[str, ...] = ()
+        enhancement_specs: tuple[EnhancementSpec, ...] = ()
+        candidates: list[str] = list(hyp_cols)
+
+        if need_ssl:
+            log.step("تشغيل SSL tick (تمثيلات للتعزيز/البوابة)", f"window={ssl_window}")
             ssl_result = run_ssl_tick_pipeline(
                 nq_frame,
                 mnq_frame,
@@ -228,6 +294,21 @@ def search_fail_breakout_hypotheses(
                 rng=generator,
                 progress=log,
             )
+
+        if enhance_with_ssl and ssl_result is not None:
+            log.step("توليد مرشّحي تعزيز SSL/سياق", f"bases={len(hyp_cols)}")
+            features, enh_cols, enh_specs = generate_ssl_enhancement_candidates(
+                features,
+                ssl_result.embeddings,
+                hyp_cols,
+            )
+            enhancement_columns = enh_cols
+            enhancement_specs = enh_specs
+            candidates.extend(list(enh_cols))
+            log.note(f"تعزيزات مولَّدة: {len(enh_cols)}")
+
+        if use_ssl_gate and ssl_result is not None:
+            log.step("بوابة SSL كلاسيكية على الأساس", f"q={_SSL_GATE_QUANTILE}")
             features, gated = apply_causal_ssl_gate(
                 features,
                 ssl_result.embeddings,
@@ -235,15 +316,25 @@ def search_fail_breakout_hypotheses(
                 z_col="z0",
                 quantile=_SSL_GATE_QUANTILE,
             )
-            candidates = gated
-            log.note(f"مرشّحون بعد البوابة: {len(candidates)} / {len(hyp_cols)}")
+            candidates.extend(list(gated))
+            log.note(f"أعمدة بوابة: {len(gated)}")
+
+        # إزالة تكرار مع الحفاظ على الترتيب
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for c in candidates:
+            if c in features.columns and c not in seen:
+                seen.add(c)
+                uniq.append(c)
+        candidates_t = tuple(uniq)
+        log.note(f"إجمالي المرشّحين للاختيار: {len(candidates_t)}")
 
         policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window)
         embargo = policy.embargo_time_units(interval_ns=interval_ns)
-        log.step("اختيار walk-forward", f"n_splits={n_splits}")
+        log.step("اختيار walk-forward (OOS)", f"n_splits={n_splits}")
         fold_df, oos_ic, oos_p, oos_n, best = walk_forward_select_hypotheses(
             features,
-            candidates,
+            candidates_t,
             price_col="nq_close",
             horizon=horizon,
             n_splits=n_splits,
@@ -252,12 +343,16 @@ def search_fail_breakout_hypotheses(
             n_permutations=n_permutations,
             rng=generator,
         )
-        log.note(f"best_oos={best!r} · oos_ic={oos_ic:.4g}")
+        enh_won = best is not None and "__enh__" in str(best)
+        log.note(
+            f"best_oos={best!r} · oos_ic={oos_ic:.4g} · "
+            f"{'تعزيز SSL فاز' if enh_won else 'أساس/بوابة'}"
+        )
 
         log.step("شاشة استكشافية")
         explor = exploratory_screen_candidates(
             features,
-            candidates,
+            candidates_t,
             price_col="nq_close",
             horizon=horizon,
             alpha=alpha,
@@ -267,6 +362,10 @@ def search_fail_breakout_hypotheses(
 
         log.step("تقرير البحث")
         assistant = ResearchAssistant(alpha=alpha)
+        detail = (
+            f"best_oos_spec={best!r}; enhancements={len(enhancement_columns)}; "
+            f"enhance_won={enh_won}; walk-forward nested selection"
+        )
         evidence = Evidence(
             id="fb_search:oos_ic",
             source="breakout_hypothesis_search",
@@ -274,11 +373,11 @@ def search_fail_breakout_hypotheses(
             value=oos_ic,
             pvalue=oos_p,
             sample_size=oos_n,
-            detail=f"best_oos_spec={best!r}; walk-forward nested selection",
+            detail=detail,
         )
         claim = (
-            f"فرضية Failed Breakout المختارة بـ walk-forward "
-            f"(best={best!r}) تحقق IC خارج العينة = {oos_ic:.4g} (p={oos_p:.4g})."
+            f"فرضية/تعزيز Failed Breakout المختار بـ walk-forward "
+            f"(best={best!r}) يحقق IC خارج العينة = {oos_ic:.4g} (p={oos_p:.4g})."
         )
         findings = [
             assistant.generate_hypothesis(
@@ -290,12 +389,18 @@ def search_fail_breakout_hypotheses(
         ]
         report = assistant.write_report(
             findings,
-            title="Failed Breakout Hypothesis Search — Walk-Forward + SSL Gate",
+            title=(
+                "Failed Breakout Search — Walk-Forward + SSL Enhancements"
+                if enhance_with_ssl
+                else "Failed Breakout Hypothesis Search — Walk-Forward + SSL Gate"
+            ),
         )
         result = BreakoutHypothesisSearchResult(
             features=features,
             specs=grid,
-            candidate_columns=candidates,
+            candidate_columns=candidates_t,
+            enhancement_columns=enhancement_columns,
+            enhancement_specs=enhancement_specs,
             fold_selections=fold_df,
             exploratory_screen=explor,
             oos_selected_ic=oos_ic,
@@ -311,6 +416,15 @@ def search_fail_breakout_hypotheses(
             features.write_parquet(out / "features.parquet")
             fold_df.write_parquet(out / "fold_selections.parquet")
             explor.write_parquet(out / "exploratory_screen.parquet")
+            if enhancement_specs:
+                pl.DataFrame(
+                    {
+                        "column": [s.column() for s in enhancement_specs],
+                        "base": [s.base_column for s in enhancement_specs],
+                        "name": [s.name for s in enhancement_specs],
+                        "kind": [s.kind for s in enhancement_specs],
+                    }
+                ).write_parquet(out / "enhancement_specs.parquet")
             if ssl_result is not None and ssl_result.metrics.height > 0:
                 ssl_result.metrics.write_parquet(out / "ssl_metrics.parquet")
         log.done(f"best={best!r} · oos_ic={oos_ic:.4g}")
@@ -323,6 +437,7 @@ def search_fail_breakout_hypotheses(
 __all__ = [
     "BreakoutHypothesisSearchResult",
     "BreakoutHypothesisSpec",
+    "core_breakout_grid",
     "default_breakout_grid",
     "materialize_breakout_hypotheses",
     "search_fail_breakout_hypotheses",
