@@ -234,11 +234,15 @@ python scripts/run_fail_breakout.py \
   --output data/runs/fail_breakout_search
 ```
 
+مع `--search` (افتراضي): SSL يولّد **مرشّحي تعزيز** (`ssl_abs_q*`, `ssl_sign_*`, `ctx_*`) فوق نواة Failed Breakout،
+ثم walk-forward يختار الأفضل خارج العينة. عطّل بـ `--no-enhance` أو `--no-ssl-gate`.
+
 | عمود | المعنى |
 |------|--------|
 | `fail_breakout` | `+1` LONG / `−1` SHORT / `0` |
 | `fb_entry_ref` | مرجع دخول قابل للتنفيذ (إغلاق شمعة الإشارة) |
 | `fb_break_level` | مستوى الكسر الفاشل (ليس سعر ملء) |
+| `*__enh__*` | تعزيزات SSL/سياق مرشّحة (عند `--search`) |
 
 ---
 

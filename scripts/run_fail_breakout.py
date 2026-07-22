@@ -4,7 +4,7 @@
     # فرضية افتراضية (دخول سببي = إغلاق الشمعة، ليس مستوى الكسر)
     python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --max-rows 500000
 
-    # بحث شبكة إعدادات + بوابة SSL كتأكيد
+    # بحث + تعزيزات SSL علمية (افتراضي مع --search)
     python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --search --max-rows 500000
 """
 
@@ -44,12 +44,17 @@ def main() -> None:
     parser.add_argument(
         "--search",
         action="store_true",
-        help="بحث شبكة إعدادات بـ walk-forward + بوابة SSL سببية",
+        help="بحث شبكة إعدادات بـ walk-forward + تعزيزات/بوابة SSL",
     )
     parser.add_argument(
         "--no-ssl-gate",
         action="store_true",
-        help="مع --search: تعطيل بوابة SSL",
+        help="مع --search: تعطيل بوابة SSL الكلاسيكية",
+    )
+    parser.add_argument(
+        "--no-enhance",
+        action="store_true",
+        help="مع --search: تعطيل مولّد تعزيزات SSL/السياق",
     )
     parser.add_argument("--n-splits", type=int, default=3)
     parser.add_argument("--quiet", action="store_true")
@@ -66,6 +71,7 @@ def main() -> None:
             args.mnq,
             horizon=args.horizon,
             use_ssl_gate=not args.no_ssl_gate,
+            enhance_with_ssl=not args.no_enhance,
             n_splits=args.n_splits,
             max_rows=args.max_rows,
             output_dir=args.output,
@@ -75,6 +81,7 @@ def main() -> None:
         print(f"\nbest_oos_spec: {result.best_oos_spec}")
         print(f"oos_selected_ic: {result.oos_selected_ic}")
         print(f"candidates: {len(result.candidate_columns)}")
+        print(f"enhancements: {len(result.enhancement_columns)}")
         print(f"features: {result.features.height} rows")
         print(f"outputs: {args.output.resolve()}/")
         return
