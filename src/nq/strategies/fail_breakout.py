@@ -1,8 +1,8 @@
-"""Failed FVG كطبقة بحث داخل الخط الموحّد.
+"""Failed Breakout كطبقة بحث داخل الخط الموحّد.
 
-أمر تشغيل منفصل (``run_fail_fvg`` / ``run_fail_fvg_research``) يمرّ بنفس
-محرك المشروع كاملًا: ميزات + SSL ‖ M9 ‖ ألفا + مخرجات. يضيّق فقط أعمدة
-الفرز على ``fail_fvg`` — ليس fork خارج المنظومة.
+أمر تشغيل منفصل يمرّ بنفس المحرك: ميزات + SSL ‖ M9 ‖ ألفا + مخرجات.
+يضيّق الفرز على ``fail_breakout`` — مع دخول سببي (إغلاق الشمعة) بلا ملء
+وهمي عند مستوى الكسر.
 """
 
 from __future__ import annotations
@@ -23,19 +23,20 @@ from nq.research.orchestrator import (
 )
 from nq.research.unified import UnifiedResearchReport
 
-_FAIL_FVG_FOCUS = (
-    "fail_fvg",
-    "lead_lag",
+_FAIL_BREAKOUT_FOCUS = (
+    "fail_breakout",
+    "fb_effort_range_ratio",
+    "fb_effort_volume_ratio",
     "trap_setup",
-    "divergence",
     "nq_delta",
     "mnq_delta",
+    "lead_lag",
 )
 
 
 @dataclass(frozen=True, slots=True)
-class FailFvgResearchResult:
-    """غلاف مريح فوق ``UnifiedResearchResult`` لتركيز Failed FVG."""
+class FailBreakoutResearchResult:
+    """غلاف مريح فوق ``UnifiedResearchResult`` لتركيز Failed Breakout."""
 
     features: pl.DataFrame
     alpha: AlphaDiscovery
@@ -50,7 +51,7 @@ class FailFvgResearchResult:
         result: UnifiedResearchResult,
         *,
         signal_columns: tuple[str, ...],
-    ) -> FailFvgResearchResult:
+    ) -> FailBreakoutResearchResult:
         return cls(
             features=result.features,
             alpha=result.alpha,
@@ -61,11 +62,10 @@ class FailFvgResearchResult:
         )
 
 
-def run_fail_fvg_research(
+def run_fail_breakout_research(
     nq: pl.DataFrame | str | Path,
     mnq: pl.DataFrame | str | Path | None = None,
     *,
-    use_ssl_gate: bool = True,
     ssl_window: int = 5,
     ssl_components: int = 4,
     horizon: int = 1,
@@ -75,17 +75,12 @@ def run_fail_fvg_research(
     rng: np.random.Generator | None = None,
     output_dir: Path | str | None = None,
     quiet: bool = False,
-) -> FailFvgResearchResult:
-    """يشغّل Failed FVG عبر الخط الموحّد (أمر تشغيل منفصل — داخل المنظومة).
-
-    نفس المرّات الكاملة: ميزات + SSL + M9 + ألفا + مخرجات ``output_dir``.
-    ``use_ssl_gate`` اسم توافق؛ البوابة عبر ``ssl_mode`` داخل الخط الموحّد.
-    """
-    _ = use_ssl_gate  # التوافق مع الواجهة السابقة؛ البوابة عبر ssl_mode في الخط الموحّد
+) -> FailBreakoutResearchResult:
+    """يشغّل Failed Breakout عبر الخط الموحّد (أمر تشغيل منفصل)."""
     cfg = PipelineConfig(
-        include_failed_fvg=True,
-        include_auction_vp=False,  # تركيز فرز FVG؛ الخط العام ما زال يجمع الكل
-        include_failed_breakout=False,
+        include_failed_breakout=True,
+        include_failed_fvg=False,
+        include_auction_vp=False,
         cross_market_mode="nq_only" if mnq is None else "dual",
         max_rows=max_rows,
         horizon=horizon,
@@ -93,7 +88,7 @@ def run_fail_fvg_research(
         n_permutations=n_permutations,
         ssl_window=ssl_window,
         ssl_components=ssl_components,
-        signal_columns=_FAIL_FVG_FOCUS,
+        signal_columns=_FAIL_BREAKOUT_FOCUS,
         quiet=quiet,
     )
     partner = mnq if mnq is not None else nq
@@ -101,14 +96,16 @@ def run_fail_fvg_research(
         nq,
         partner,
         config=cfg,
-        signal_columns=_FAIL_FVG_FOCUS,
+        signal_columns=_FAIL_BREAKOUT_FOCUS,
         output_dir=output_dir,
         rng=rng,
     )
-    return FailFvgResearchResult.from_unified(result, signal_columns=_FAIL_FVG_FOCUS)
+    return FailBreakoutResearchResult.from_unified(
+        result, signal_columns=_FAIL_BREAKOUT_FOCUS
+    )
 
 
 __all__ = [
-    "FailFvgResearchResult",
-    "run_fail_fvg_research",
+    "FailBreakoutResearchResult",
+    "run_fail_breakout_research",
 ]

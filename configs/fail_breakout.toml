@@ -1,0 +1,54 @@
+# فرضيات Failed Breakout — أمر تشغيل منفصل فوق الخط الموحّد (NQ فقط)
+# دخول سببي عند إغلاق الشمعة — ليس ملء وهمي عند مستوى الكسر
+
+[determinism]
+global_seed = 20260719
+
+[temporal]
+interval_ns = 1_000_000_000
+horizon = 1
+embargo_ns = 1_000_000_000
+
+[cross_market]
+latency_ns = 0
+lead_lag_window = 2
+
+[execution]
+mode = "intraday"
+slippage_ticks = 0.5
+tick_size = 0.25
+commission_bps = 0.0
+
+[ssl]
+mode = "tick"
+window = 5
+n_components = 4
+n_splits = 3
+
+[signals]
+include_failed_breakout = true
+include_failed_fvg = false
+include_auction_vp = false
+columns = [
+  "fail_breakout",
+  "fb_effort_range_ratio",
+  "fb_effort_volume_ratio",
+  "trap_setup",
+  "nq_delta",
+  "mnq_delta",
+  "lead_lag",
+]
+
+[statistics]
+alpha = 0.05
+n_permutations = 2000
+
+[data]
+nq_path = "data/raw/nq.parquet"
+mnq_path = "data/raw/nq.parquet"
+output_dir = "data/runs/fail_breakout"
+cross_market_mode = "nq_only"
+max_rows = 0
+
+[run]
+quiet = false

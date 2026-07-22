@@ -23,6 +23,13 @@ DEFAULT_FEATURE_BLOCKS: dict[str, tuple[str, ...]] = {
         "effort_range_ratio",
         "effort_volume_ratio",
     ),
+    "failed_breakout": (
+        "fail_breakout",
+        "fb_effort_range_ratio",
+        "fb_effort_volume_ratio",
+        "fb_entry_ref",
+        "fb_break_level",
+    ),
     "volume_profile_auction": (
         "vp_balance",
         "vp_imbalance",
