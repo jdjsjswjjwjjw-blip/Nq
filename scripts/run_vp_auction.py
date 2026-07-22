@@ -44,6 +44,13 @@ def main() -> None:
     if not args.nq.is_file():
         raise FileNotFoundError(f"NQ MBO not found: {args.nq.resolve()}")
 
+    if not args.quiet:
+        print(
+            "[nq] ========== بدء: run_vp_auction (Volume Profile) ==========",
+            file=sys.stderr,
+            flush=True,
+        )
+
     result = run_vp_auction_research(
         args.nq,
         horizon=args.horizon,

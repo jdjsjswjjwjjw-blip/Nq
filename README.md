@@ -140,8 +140,9 @@ python scripts/run_week.py \
 | `alpha_evaluations.parquet` | فرز الإشارات |
 
 **تقدّم التشغيل (stderr + `progress.log`):** كل خطوة وكل عملية داخلها تُطبع سطرًا بسطر
-(`→` للخطوات، `-` للعمليات، `…` لنسبة التقدّم داخل الحلقات الطويلة مثل tick_stream).
-عند تحديد `--output` يُكتب نفس اللوج إلى `progress.log` داخل المجلد.
+(`→` للخطوات، `-` للعمليات، `…` لنسبة التقدّم داخل الحلقات الطويلة مثل tick_stream / walk-forward / M9).
+يغطي: تحميل MBO، الميزات، SSL (tick أو bucket) طيّةً بطِيّة، اكتشاف الألفا إشارةً بإشارة،
+مقاييس M9، وبحث فرضيات FVG/Breakout. عند تحديد `--output` يُكتب نفس اللوج إلى `progress.log`.
 عطّل بـ `--quiet` أو `[run] quiet = true`.
 
 **الإعدادات:** `configs/research.toml`

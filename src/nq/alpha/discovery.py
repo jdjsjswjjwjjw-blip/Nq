@@ -59,14 +59,25 @@ def discover_alpha_from_features(
     n_permutations: int = 2000,
     rng: np.random.Generator | None = None,
     assistant: ResearchAssistant | None = None,
+    progress: object | None = None,
 ) -> AlphaDiscovery:
     """يقيّم ويفرز إشارات مرشّحة من إطار ميزات، ويكتب تقريرًا موثّقًا."""
     generator = rng if rng is not None else np.random.default_rng(0)
     research = assistant if assistant is not None else ResearchAssistant(alpha=alpha)
+    log = progress
 
     if frame.height == 0:
+        if log is not None:
+            log.op("ألفا: إطار فارغ — لا إشارات للتقييم")  # type: ignore[union-attr]
         empty = screen_signals([], alpha=alpha)
         return AlphaDiscovery(empty, [], research.write_report([], title="Alpha Discovery"))
+
+    cols = list(signal_columns)
+    if log is not None:
+        log.op(  # type: ignore[union-attr]
+            f"ألفا: تقييم {len(cols)} إشارة · mode={execution_mode} · "
+            f"n_perm={n_permutations} · rows={frame.height:,}"
+        )
 
     evaluations = []
     if execution_mode == "intraday":
@@ -76,7 +87,9 @@ def discover_alpha_from_features(
             )
         bid = frame[bid_col].to_numpy().astype(np.float64)
         ask = frame[ask_col].to_numpy().astype(np.float64)
-        for col in signal_columns:
+        for i, col in enumerate(cols, start=1):
+            if log is not None:
+                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} (intraday)")  # type: ignore[union-attr]
             evaluations.append(
                 evaluate_signal_intraday(
                     col,
@@ -94,16 +107,21 @@ def discover_alpha_from_features(
     else:
         prices = frame[price_col].to_numpy().astype(np.float64)
         forward = align_forward_returns(prices, horizon=horizon)
-        evaluations = [
-            evaluate_signal(
-                col,
-                frame[col].to_numpy().astype(np.float64),
-                forward,
-                n_permutations=n_permutations,
-                rng=generator,
+        evaluations = []
+        for i, col in enumerate(cols, start=1):
+            if log is not None:
+                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} (mid)")  # type: ignore[union-attr]
+            evaluations.append(
+                evaluate_signal(
+                    col,
+                    frame[col].to_numpy().astype(np.float64),
+                    forward,
+                    n_permutations=n_permutations,
+                    rng=generator,
+                )
             )
-            for col in signal_columns
-        ]
+    if log is not None:
+        log.op("ألفا: فرز/تصحيح تعدّد (screen_signals)")  # type: ignore[union-attr]
     screened = screen_signals(evaluations, alpha=alpha)
 
     findings: list[Finding] = []
@@ -125,6 +143,10 @@ def discover_alpha_from_features(
         )
         findings.append(research.generate_hypothesis(claim, evidence, category="alpha"))
 
+    if log is not None:
+        log.op(  # type: ignore[union-attr]
+            f"ألفا: selected={selected!r} · evals={screened.height}"
+        )
     report = research.write_report(findings, title="Novel Alpha Signals — Research Report")
     return AlphaDiscovery(evaluations=screened, selected=selected, report=report)
 

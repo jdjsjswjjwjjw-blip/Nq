@@ -625,10 +625,18 @@ def run_all_metrics(
     alpha: float = 0.05,
     n_permutations: int = _DEFAULT_N_PERM,
     rng: np.random.Generator | None = None,
+    progress: object | None = None,
 ) -> list[MetricResult]:
     """يشغّل كل مقاييس التغطية الستة."""
     generator = rng if rng is not None else np.random.default_rng(0)
+    log = progress
     results: list[MetricResult] = []
+
+    def _emit(name: str) -> None:
+        if log is not None:
+            log.op(f"M9 مقياس: {name}")  # type: ignore[union-attr]
+
+    _emit("mfig")
     results.append(
         measure_mfig(
             features,
@@ -641,6 +649,7 @@ def run_all_metrics(
             rng=generator,
         )
     )
+    _emit("cer")
     results.extend(
         measure_cer(
             features,
@@ -652,6 +661,7 @@ def run_all_metrics(
             rng=generator,
         )
     )
+    _emit("psg")
     results.append(
         measure_psg(
             features,
@@ -661,6 +671,7 @@ def run_all_metrics(
             rng=generator,
         )
     )
+    _emit("crs")
     results.extend(
         measure_crs(
             features,
@@ -670,6 +681,7 @@ def run_all_metrics(
             rng=generator,
         )
     )
+    _emit("lori")
     results.extend(
         measure_lori(
             features,
@@ -679,6 +691,7 @@ def run_all_metrics(
             rng=generator,
         )
     )
+    _emit("qduf")
     results.append(
         measure_qduf(
             features,
@@ -691,4 +704,7 @@ def run_all_metrics(
             rng=generator,
         )
     )
+    if log is not None:
+        triggered = sum(1 for r in results if r.triggered)
+        log.op(f"M9 انتهى — metrics={len(results)} · triggered={triggered}")  # type: ignore[union-attr]
     return results

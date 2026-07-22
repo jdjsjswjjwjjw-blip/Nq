@@ -227,21 +227,32 @@ def search_fail_breakout_hypotheses(
     need_ssl = use_ssl_gate or enhance_with_ssl
     save_step = 1 if output_dir is not None else 0
     ssl_steps = (1 if need_ssl else 0) + (1 if enhance_with_ssl else 0) + (1 if use_ssl_gate else 0)
+    if output_dir is not None:
+        out_early = Path(output_dir)
+        out_early.mkdir(parents=True, exist_ok=True)
+        log.attach_log(out_early / "progress.log")
     log.begin(
         "بحث فرضيات Failed Breakout + تعزيزات SSL",
         total_steps=6 + ssl_steps + save_step,
     )
+    log.line("كل عملية تُطبع سطرًا بسطر — راقب progress.log أو stderr")
     try:
         log.step("تهيئة + تحميل MBO", f"max_rows={max_rows}")
         seed_everything(global_seed)
         generator = rng if rng is not None else np.random.default_rng(global_seed)
-        nq_frame = nq if isinstance(nq, pl.DataFrame) else load_mbo_frame(nq, max_rows=max_rows)
+        nq_frame = (
+            nq
+            if isinstance(nq, pl.DataFrame)
+            else load_mbo_frame(nq, max_rows=max_rows, progress=log)
+        )
         if mnq is None:
             mnq_frame = nq_frame
             log.note(f"NQ={nq_frame.height:,} (nq_only)")
         else:
             mnq_frame = (
-                mnq if isinstance(mnq, pl.DataFrame) else load_mbo_frame(mnq, max_rows=max_rows)
+                mnq
+                if isinstance(mnq, pl.DataFrame)
+                else load_mbo_frame(mnq, max_rows=max_rows, progress=log)
             )
             log.note(f"NQ={nq_frame.height:,} · MNQ={mnq_frame.height:,}")
 
@@ -342,6 +353,7 @@ def search_fail_breakout_hypotheses(
             purge_samples=policy.purge_samples(),
             n_permutations=n_permutations,
             rng=generator,
+            progress=log,
         )
         enh_won = best is not None and "__enh__" in str(best)
         log.note(

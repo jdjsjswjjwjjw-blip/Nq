@@ -62,6 +62,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if not args.quiet:
+        print(
+            "[nq] ========== بدء: run_week (الخط الموحّد) ==========",
+            file=sys.stderr,
+            flush=True,
+        )
+
     cfg = PipelineConfig.from_toml(args.config) if args.config.is_file() else PipelineConfig()
     data: dict[str, object] = {}
     if args.config.is_file():

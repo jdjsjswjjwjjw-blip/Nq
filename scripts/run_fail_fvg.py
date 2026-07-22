@@ -64,6 +64,10 @@ def main() -> None:
     if args.mnq is not None and not args.mnq.is_file():
         raise FileNotFoundError(f"MNQ MBO not found: {args.mnq.resolve()}")
 
+    mode = "بحث فرضيات (--search)" if args.search else "خط Failed FVG"
+    if not args.quiet:
+        print(f"[nq] ========== بدء: run_fail_fvg · {mode} ==========", file=sys.stderr, flush=True)
+
     if args.search:
         result = search_fail_fvg_hypotheses(
             args.nq,

@@ -226,12 +226,14 @@ def walk_forward_select_hypotheses(
     purge_samples: int = 0,
     n_permutations: int = 200,
     rng: np.random.Generator | None = None,
+    progress: object | None = None,
 ) -> tuple[pl.DataFrame, float, float, int, str | None]:
     """اختيار فرضية على التدريب فقط؛ قياس IC خارج العينة على الاختبار.
 
     يُعيد: (fold_df, oos_ic, oos_pvalue, oos_n, best_name)
     """
     generator = rng if rng is not None else np.random.default_rng(0)
+    log = progress
     work = features.sort(AVAILABILITY_TS)
     times = work[AVAILABILITY_TS].to_numpy()
     prices = work[price_col].to_numpy().astype(np.float64)
@@ -246,6 +248,10 @@ def walk_forward_select_hypotheses(
         }
     )
     if not cols or work.height < _MIN_ROWS_FOR_SEARCH:
+        if log is not None:
+            log.op(  # type: ignore[union-attr]
+                f"walk-forward: تخطّي (cols={len(cols)} · rows={work.height})"
+            )
         return empty, 0.0, 1.0, 0, None
 
     folds = purged_walk_forward_split(
@@ -255,13 +261,23 @@ def walk_forward_select_hypotheses(
         purge_samples=purge_samples,
         min_train_size=max(10, work.height // (n_splits + 2)),
     )
+    if log is not None:
+        log.op(  # type: ignore[union-attr]
+            f"walk-forward: {len(folds)} طيّات · candidates={len(cols)} · "
+            f"n_perm={n_permutations}"
+        )
     rows: list[dict[str, float | int | str]] = []
     oos_values = np.full(work.height, np.nan, dtype=np.float64)
     oos_fwd = np.full(work.height, np.nan, dtype=np.float64)
     for fold_i, fold in enumerate(folds):
+        if log is not None:
+            log.op(  # type: ignore[union-attr]
+                f"WF fold {fold_i + 1}/{len(folds)} "
+                f"(train={len(fold.train_idx):,} · test={len(fold.test_idx):,})"
+            )
         best_name = cols[0]
         best_ic = -1e18
-        for col in cols:
+        for col_i, col in enumerate(cols, start=1):
             vals = work[col].to_numpy().astype(np.float64)
             ic = _ic_on_slice(
                 vals,
@@ -274,6 +290,12 @@ def walk_forward_select_hypotheses(
             if abs(ic) > abs(best_ic) or (abs(ic) == abs(best_ic) and ic > best_ic):
                 best_ic = ic
                 best_name = col
+            if log is not None:
+                log.heartbeat(  # type: ignore[union-attr]
+                    col_i,
+                    len(cols),
+                    label=f"WF fold {fold_i + 1} candidates",
+                )
         test_vals = work[best_name].to_numpy().astype(np.float64)
         test_ic = _ic_on_slice(
             test_vals,
@@ -293,6 +315,11 @@ def walk_forward_select_hypotheses(
                 "test_ic": float(test_ic),
             }
         )
+        if log is not None:
+            log.op(  # type: ignore[union-attr]
+                f"WF fold {fold_i + 1}: selected={best_name!r} · "
+                f"train_ic={best_ic:.4g} · test_ic={test_ic:.4g}"
+            )
 
     fold_df = pl.DataFrame(rows) if rows else empty
     mask = np.isfinite(oos_values) & np.isfinite(oos_fwd)
@@ -373,22 +400,33 @@ def search_fail_fvg_hypotheses(
     log = resolve_progress(progress, quiet=quiet)
     save_step = 1 if output_dir is not None else 0
     gate_step = 1 if use_ssl_gate else 0
+    if output_dir is not None:
+        out_early = Path(output_dir)
+        out_early.mkdir(parents=True, exist_ok=True)
+        log.attach_log(out_early / "progress.log")
     log.begin(
         "بحث فرضيات Failed FVG (walk-forward)",
         total_steps=6 + gate_step + save_step,
     )
+    log.line("كل عملية تُطبع سطرًا بسطر — راقب progress.log أو stderr")
     try:
         log.step("تهيئة الحتمية + تحميل MBO", f"max_rows={max_rows}")
         seed_everything(global_seed)
         generator = rng if rng is not None else np.random.default_rng(global_seed)
 
-        nq_frame = nq if isinstance(nq, pl.DataFrame) else load_mbo_frame(nq, max_rows=max_rows)
+        nq_frame = (
+            nq
+            if isinstance(nq, pl.DataFrame)
+            else load_mbo_frame(nq, max_rows=max_rows, progress=log)
+        )
         if mnq is None:
             mnq_frame = nq_frame
             log.note(f"NQ={nq_frame.height:,} صف (nq_only)")
         else:
             mnq_frame = (
-                mnq if isinstance(mnq, pl.DataFrame) else load_mbo_frame(mnq, max_rows=max_rows)
+                mnq
+                if isinstance(mnq, pl.DataFrame)
+                else load_mbo_frame(mnq, max_rows=max_rows, progress=log)
             )
             log.note(f"NQ={nq_frame.height:,} · MNQ={mnq_frame.height:,}")
 
@@ -430,6 +468,7 @@ def search_fail_fvg_hypotheses(
                 n_splits=max(2, n_splits),
                 alpha=alpha,
                 rng=generator,
+                progress=log,
             )
             features, gated = apply_causal_ssl_gate(
                 features,
@@ -457,6 +496,7 @@ def search_fail_fvg_hypotheses(
             purge_samples=policy.purge_samples(),
             n_permutations=n_permutations,
             rng=generator,
+            progress=log,
         )
         log.note(f"best_oos={best!r} · oos_ic={oos_ic:.4g} · p={oos_p:.4g} · n={oos_n}")
 
