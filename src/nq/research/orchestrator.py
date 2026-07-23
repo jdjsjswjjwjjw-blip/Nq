@@ -38,6 +38,7 @@ from nq.research.unified import UnifiedResearchReport, build_unified_report
 from nq.simulation.auction import auction_signal_frame
 from nq.simulation.breakout import failed_breakout_features
 from nq.simulation.cross_market import cross_market_features
+from nq.simulation.depth_lifecycle import attach_depth_asof, depth_at_bar_close
 from nq.simulation.fvg import failed_fvg_features
 
 if TYPE_CHECKING:
@@ -107,6 +108,10 @@ _FB_SIGNAL_COLUMNS = (
     "fb_vol_imbalance",
     "fb_absorption",
     "fb_risk_pts",
+    "fb_depth_at_break",
+    "fb_depth_imbalance",
+    "fb_depth_cum_bid",
+    "fb_depth_cum_ask",
 )
 
 
@@ -297,11 +302,91 @@ def _attach_auction_vp(
 
 
 def _attach_failed_breakout(features: pl.DataFrame, nq: pl.DataFrame) -> pl.DataFrame:
-    """يلحق Failed Breakout asof خلفي — إشارة اتجاه + مراجع دخول سببية."""
+    """يلحق Failed Breakout asof خلفي — إشارة + عمق عند مستوى الكسر (سببي)."""
+    from nq.contracts.mbo import PRICE_SCALE  # noqa: PLC0415
+
     fb = failed_breakout_features(nq)
     zero_exprs = [pl.lit(0.0).alias(c) for c in _FB_SIGNAL_COLUMNS]
     if fb.height == 0 or features.height == 0:
         return features.with_columns(zero_exprs)
+
+    # عمق عند إغلاق شمعة الإشارة (30m) — لا طمس السلم
+    depth = depth_at_bar_close(nq, interval_ns=30 * 60 * 1_000_000_000, n_levels=5)
+    if depth.height > 0:
+        fb = attach_depth_asof(
+            fb,
+            depth,
+            columns=[
+                "depth_cum_bid",
+                "depth_cum_ask",
+                "depth_imbalance",
+                "depth_bid_px_1",
+                "depth_bid_sz_1",
+                "depth_ask_px_1",
+                "depth_ask_sz_1",
+                "depth_bid_px_2",
+                "depth_bid_sz_2",
+                "depth_ask_px_2",
+                "depth_ask_sz_2",
+                "depth_bid_px_3",
+                "depth_bid_sz_3",
+                "depth_ask_px_3",
+                "depth_ask_sz_3",
+                "depth_bid_px_4",
+                "depth_bid_sz_4",
+                "depth_ask_px_4",
+                "depth_ask_sz_4",
+                "depth_bid_px_5",
+                "depth_bid_sz_5",
+                "depth_ask_px_5",
+                "depth_ask_sz_5",
+            ],
+        )
+        # سيولة ظاهرة عند مستوى الكسر: نبحث أقرب مستوى ضمن السلم
+        levels_bid_px = [f"depth_bid_px_{k}" for k in range(1, 6)]
+        levels_bid_sz = [f"depth_bid_sz_{k}" for k in range(1, 6)]
+        levels_ask_px = [f"depth_ask_px_{k}" for k in range(1, 6)]
+        levels_ask_sz = [f"depth_ask_sz_{k}" for k in range(1, 6)]
+
+        def _depth_at_break(row: dict) -> float:
+            level = float(row.get("fb_break_level") or 0.0)
+            signal = float(row.get("fail_breakout") or 0.0)
+            if level <= 0 or signal == 0.0:
+                return 0.0
+            # SHORT بعد فشل كسر أعلى → سيولة عروض عند المستوى؛ LONG → طلبات
+            px_cols = levels_ask_px if signal < 0 else levels_bid_px
+            sz_cols = levels_ask_sz if signal < 0 else levels_bid_sz
+            best = 0.0
+            best_dist = float("inf")
+            for px_c, sz_c in zip(px_cols, sz_cols, strict=True):
+                px = row.get(px_c)
+                sz = row.get(sz_c)
+                if px is None or sz is None:
+                    continue
+                dist = abs(float(px) - level)
+                if dist < best_dist:
+                    best_dist = dist
+                    best = float(sz)
+            # تطابق ضمن تيك تقريبًا
+            if best_dist <= max(PRICE_SCALE * 4, 1e-6):
+                return best
+            return 0.0
+
+        at_break = [_depth_at_break(r) for r in fb.iter_rows(named=True)]
+        fb = fb.with_columns(
+            pl.Series("fb_depth_at_break", at_break),
+            pl.col("depth_imbalance").fill_null(0.0).alias("fb_depth_imbalance"),
+            pl.col("depth_cum_bid").fill_null(0.0).alias("fb_depth_cum_bid"),
+            pl.col("depth_cum_ask").fill_null(0.0).alias("fb_depth_cum_ask"),
+        )
+    else:
+        fb = fb.with_columns(
+            pl.lit(0.0).alias("fb_depth_at_break"),
+            pl.lit(0.0).alias("fb_depth_imbalance"),
+            pl.lit(0.0).alias("fb_depth_cum_bid"),
+            pl.lit(0.0).alias("fb_depth_cum_ask"),
+        )
+
     keep = [c for c in (AVAILABILITY_TS, *_FB_SIGNAL_COLUMNS) if c in fb.columns]
     right = fb.select(keep).sort(AVAILABILITY_TS)
     left = features.sort(AVAILABILITY_TS)
@@ -311,6 +396,30 @@ def _attach_failed_breakout(features: pl.DataFrame, nq: pl.DataFrame) -> pl.Data
     joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
     fills = [pl.col(c).fill_null(0.0) for c in _FB_SIGNAL_COLUMNS if c in joined.columns]
     return joined.with_columns(fills) if fills else joined
+
+
+def _attach_causal_depth(
+    features: pl.DataFrame,
+    nq: pl.DataFrame,
+    *,
+    interval_ns: int,
+    progress: PipelineProgress | None = None,
+) -> pl.DataFrame:
+    """يلحق سلم عمق NQ عند إغلاق كل فاصل بحثي (مراقبة + تنفيذ/خروج)."""
+    log = progress if progress is not None else PipelineProgress(enabled=False)
+    log.op(f"depth_at_bar_close levels=5 · interval_ns={interval_ns}")
+    depth = depth_at_bar_close(nq, interval_ns=interval_ns, n_levels=5)
+    if depth.height == 0:
+        log.op("عمق: لا لقطات — تخطّي")
+        return features
+    # لا تستبدل nq_bid/nq_ask إن وُجدت من streaming؛ أبقِ أعمدة depth_*
+    cols = [c for c in depth.columns if c.startswith("depth_")]
+    # إن لم توجد عروض L1 في الإطار، ألحقها من لقطة العمق
+    if "nq_bid" not in features.columns and "nq_bid" in depth.columns:
+        cols = [*cols, "nq_bid", "nq_ask"]
+    out = attach_depth_asof(features, depth, columns=cols)
+    log.op(f"عمق مُلحق: {len(cols)} عمود · rows={out.height:,}")
+    return out
 
 
 def _build_research_features(
@@ -347,6 +456,8 @@ def _build_research_features(
             latency_ns=cfg.latency_ns,
         )
     log.note(f"إطار الميزات الأساسي: {features.height:,} صف × {features.width} عمود")
+    log.step("إلحاق عمق الدفتر السببي (دخول/مراقبة/تنفيذ/خروج)")
+    features = _attach_causal_depth(features, nq, interval_ns=cfg.interval_ns, progress=log)
     if cfg.include_failed_fvg:
         log.step("إلحاق Failed FVG (asof خلفي)")
         log.op("failed_fvg_features + join_asof backward")
@@ -358,8 +469,8 @@ def _build_research_features(
         features = _attach_auction_vp(features, nq, interval_ns=cfg.interval_ns)
         log.op(f"بعد Auction/VP: {features.height:,} صف")
     if cfg.include_failed_breakout:
-        log.step("إلحاق Failed Breakout (asof خلفي — دخول=إغلاق)")
-        log.op("failed_breakout_features + join_asof backward")
+        log.step("إلحاق Failed Breakout + عمق عند مستوى الكسر")
+        log.op("failed_breakout_features + depth_at_break + join_asof backward")
         features = _attach_failed_breakout(features, nq)
         log.op(f"بعد Failed Breakout: {features.height:,} صف")
     return features
@@ -681,8 +792,8 @@ def run_research_pipeline(
     )
     save_step = 1 if output_dir is not None else 0
     llm_step = 1 if language_model is not None else 0
-    # load + feature_base + extras + ssl/m9/alpha path (~4) + unify + optional save/llm
-    total_steps = 2 + feature_extra + 4 + llm_step + save_step
+    # load + feature_base + depth + extras + ssl/m9/alpha path (~4) + unify + optional save/llm
+    total_steps = 3 + feature_extra + 4 + llm_step + save_step
     if output_dir is not None:
         out_early = Path(output_dir)
         out_early.mkdir(parents=True, exist_ok=True)
