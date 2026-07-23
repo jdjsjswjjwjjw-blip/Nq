@@ -99,6 +99,13 @@ _FB_SIGNAL_COLUMNS = (
     "fb_entry_ref",
     "fb_effort_range_ratio",
     "fb_effort_volume_ratio",
+    "fb_effort_result_ratio",
+    "fb_bar_volume",
+    "fb_cum_volume",
+    "fb_delta",
+    "fb_cum_delta",
+    "fb_vol_imbalance",
+    "fb_absorption",
     "fb_risk_pts",
 )
 

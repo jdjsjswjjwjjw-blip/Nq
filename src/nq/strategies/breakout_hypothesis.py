@@ -1,9 +1,9 @@
-"""بحث فرضيات Failed Breakout (تايم فريم + إعدادات) بلا تسريب.
+"""بحث فرضيات Failed Breakout — تركيز فوليوم بلا تسريب.
 
-* شبكة محدودة من lookback / عتبات جهد / فلتر SMA.
+* شبكة واسعة من أوضاع الفوليوم: فردي (bar) / تراكمي (cum) /
+  دلتا (delta) / جهد مقابل نتيجة (effort_result).
 * اختيار walk-forward purged (train فقط → OOS).
-* بوابة SSL سببية + **مولّد تعزيزات** من التمثيلات/السياق
-  (شروط تأكيد مرشّحة — لا إعادة كتابة القاعدة أثناء التدريب).
+* بوابة SSL سببية + تعزيزات سياق/فوليوم — لا إعادة كتابة القاعدة أثناء التدريب.
 
 الدخول التقييمي عبر مسار الألفا (close/bid-ask) — ليس ملء عند ``fb_break_level``.
 """
@@ -25,7 +25,7 @@ from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
 from nq.research.progress import PipelineProgress, resolve_progress
-from nq.simulation.breakout import failed_breakout_from_bars
+from nq.simulation.breakout import VolMode, failed_breakout_features, failed_breakout_from_bars
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import NS_PER_MIN, build_ohlcv_bars
 from nq.strategies.fvg_hypothesis import (
@@ -40,10 +40,22 @@ from nq.strategies.ssl_enhancements import (
 
 _SSL_GATE_QUANTILE = 0.7
 
+_VOLUME_FEATURE_COLUMNS = (
+    "fb_effort_range_ratio",
+    "fb_effort_volume_ratio",
+    "fb_effort_result_ratio",
+    "fb_bar_volume",
+    "fb_cum_volume",
+    "fb_delta",
+    "fb_cum_delta",
+    "fb_vol_imbalance",
+    "fb_absorption",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class BreakoutHypothesisSpec:
-    """فرضية Failed Breakout بإطار وإعدادات جهد ثابتة."""
+    """فرضية Failed Breakout بإطار + إعدادات فوليوم/جهد ثابتة."""
 
     name: str
     signal_interval_ns: int
@@ -51,6 +63,10 @@ class BreakoutHypothesisSpec:
     lookback: int = 5
     range_mult: float = 1.1
     vol_mult: float = 1.2
+    result_mult: float = 1.2
+    vol_window: int = 20
+    cum_window: int = 5
+    vol_mode: VolMode = "bar"
     sma_period: int = 50
     require_sma_filter: bool = True
 
@@ -73,8 +89,62 @@ class BreakoutHypothesisSearchResult:
     report: ResearchReport
 
 
-def default_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
-    """شبكة حتمية صغيرة: أطر إشارة + lookback + عتبات + SMA on/off."""
+def _tag_float(value: float) -> str:
+    return str(value).replace(".", "p")
+
+
+def volume_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
+    """شبكة فرضيات فوليوم واسعة (حتمية) — فردي/تراكمي/دلتا/جهد×نتيجة.
+
+    الأبعاد:
+    * إطار إشارة 15m/30m
+    * lookback ∈ {3,5,8}
+    * vol_mode ∈ {bar, cum, delta, effort_result}
+    * ملفات عتبة فوليوم (window × mult × result)
+    * SMA on/off
+    """
+    signal_mins = (15, 30)
+    lookbacks = (3, 5, 8)
+    vol_modes: tuple[VolMode, ...] = ("bar", "cum", "delta", "effort_result")
+    # (vol_window, vol_mult, result_mult, cum_window)
+    vol_profiles = (
+        (10, 1.2, 1.2, 3),
+        (20, 1.5, 1.5, 5),
+        (40, 2.0, 1.8, 8),
+    )
+    sma_modes = (True, False)
+    specs: list[BreakoutHypothesisSpec] = []
+    for sig_m in signal_mins:
+        for lb in lookbacks:
+            for mode in vol_modes:
+                for vw, vm, rm, cw in vol_profiles:
+                    for use_sma in sma_modes:
+                        tag = "sma" if use_sma else "nosma"
+                        name = (
+                            f"s{sig_m}_lb{lb}_{mode}_"
+                            f"vw{vw}_v{_tag_float(vm)}_"
+                            f"er{_tag_float(rm)}_{tag}"
+                        )
+                        specs.append(
+                            BreakoutHypothesisSpec(
+                                name=name,
+                                signal_interval_ns=sig_m * NS_PER_MIN,
+                                trend_interval_ns=60 * NS_PER_MIN,
+                                lookback=lb,
+                                range_mult=1.1,
+                                vol_mult=vm,
+                                result_mult=rm,
+                                vol_window=vw,
+                                cum_window=cw,
+                                vol_mode=mode,
+                                require_sma_filter=use_sma,
+                            )
+                        )
+    return tuple(specs)
+
+
+def classic_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
+    """الشبكة القديمة (جهد حجم فردي فقط) — للتوافق/المقارنة."""
     signal_mins = (15, 30)
     lookbacks = (3, 5, 8)
     thresholds = ((1.1, 1.2), (1.2, 1.3), (1.3, 1.5))
@@ -87,8 +157,8 @@ def default_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
                     tag = "sma" if use_sma else "nosma"
                     name = (
                         f"s{sig_m}_lb{lb}_"
-                        f"r{str(rm).replace('.', 'p')}_"
-                        f"v{str(vm).replace('.', 'p')}_{tag}"
+                        f"r{_tag_float(rm)}_"
+                        f"v{_tag_float(vm)}_{tag}"
                     )
                     specs.append(
                         BreakoutHypothesisSpec(
@@ -98,50 +168,112 @@ def default_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
                             lookback=lb,
                             range_mult=rm,
                             vol_mult=vm,
+                            vol_mode="bar",
                             require_sma_filter=use_sma,
                         )
                     )
     return tuple(specs)
 
 
+def default_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
+    """الافتراضي = شبكة الفوليوم الواسعة."""
+    return volume_breakout_grid()
+
+
 def core_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
-    """شبكة مضغوطة لتوليد تعزيزات SSL (عدد مرشّحين محدود علميًا)."""
+    """نواة مضغوطة: وضع فوليوم واحد لكل عائلة + تعزيزات SSL لاحقًا."""
     return (
         BreakoutHypothesisSpec(
-            name="s30_lb5_r1p1_v1p2_sma",
+            name="core_bar_vw20_v1p5_sma",
             signal_interval_ns=30 * NS_PER_MIN,
             trend_interval_ns=60 * NS_PER_MIN,
             lookback=5,
             range_mult=1.1,
-            vol_mult=1.2,
+            vol_mode="bar",
+            vol_window=20,
+            vol_mult=1.5,
             require_sma_filter=True,
         ),
         BreakoutHypothesisSpec(
-            name="s30_lb5_r1p2_v1p3_nosma",
+            name="core_cum_vw20_v1p5_sma",
             signal_interval_ns=30 * NS_PER_MIN,
             trend_interval_ns=60 * NS_PER_MIN,
             lookback=5,
-            range_mult=1.2,
-            vol_mult=1.3,
+            range_mult=1.1,
+            vol_mode="cum",
+            vol_window=20,
+            vol_mult=1.5,
+            cum_window=5,
+            require_sma_filter=True,
+        ),
+        BreakoutHypothesisSpec(
+            name="core_delta_vw20_v1p5_nosma",
+            signal_interval_ns=30 * NS_PER_MIN,
+            trend_interval_ns=60 * NS_PER_MIN,
+            lookback=5,
+            range_mult=1.1,
+            vol_mode="delta",
+            vol_window=20,
+            vol_mult=1.5,
             require_sma_filter=False,
         ),
         BreakoutHypothesisSpec(
-            name="s15_lb3_r1p1_v1p2_sma",
+            name="core_effort_result_vw20_er1p5_sma",
+            signal_interval_ns=30 * NS_PER_MIN,
+            trend_interval_ns=60 * NS_PER_MIN,
+            lookback=5,
+            range_mult=1.1,
+            vol_mode="effort_result",
+            vol_window=20,
+            vol_mult=1.5,
+            result_mult=1.5,
+            require_sma_filter=True,
+        ),
+        BreakoutHypothesisSpec(
+            name="core15_bar_vw10_v1p2_sma",
             signal_interval_ns=15 * NS_PER_MIN,
             trend_interval_ns=60 * NS_PER_MIN,
             lookback=3,
             range_mult=1.1,
+            vol_mode="bar",
+            vol_window=10,
             vol_mult=1.2,
             require_sma_filter=True,
         ),
         BreakoutHypothesisSpec(
-            name="s15_lb8_r1p3_v1p5_nosma",
+            name="core15_effort_result_vw40_er1p8_nosma",
             signal_interval_ns=15 * NS_PER_MIN,
             trend_interval_ns=60 * NS_PER_MIN,
             lookback=8,
-            range_mult=1.3,
-            vol_mult=1.5,
+            range_mult=1.1,
+            vol_mode="effort_result",
+            vol_window=40,
+            vol_mult=2.0,
+            result_mult=1.8,
             require_sma_filter=False,
+        ),
+        BreakoutHypothesisSpec(
+            name="core_cum_vw40_v2p0_nosma",
+            signal_interval_ns=30 * NS_PER_MIN,
+            trend_interval_ns=60 * NS_PER_MIN,
+            lookback=8,
+            range_mult=1.1,
+            vol_mode="cum",
+            vol_window=40,
+            vol_mult=2.0,
+            cum_window=8,
+            require_sma_filter=False,
+        ),
+        BreakoutHypothesisSpec(
+            name="core_delta_vw10_v1p2_sma",
+            signal_interval_ns=15 * NS_PER_MIN,
+            trend_interval_ns=60 * NS_PER_MIN,
+            lookback=5,
+            range_mult=1.1,
+            vol_mode="delta",
+            vol_window=10,
+            vol_mult=1.2,
+            require_sma_filter=True,
         ),
     )
 
@@ -176,6 +308,10 @@ def materialize_breakout_hypotheses(
             lookback=spec.lookback,
             range_mult=spec.range_mult,
             vol_mult=spec.vol_mult,
+            result_mult=spec.result_mult,
+            vol_window=spec.vol_window,
+            cum_window=spec.cum_window,
+            vol_mode=spec.vol_mode,
             sma_period=spec.sma_period,
             require_sma_filter=spec.require_sma_filter,
         )
@@ -194,6 +330,25 @@ def materialize_breakout_hypotheses(
             pl.col(col).fill_null(0.0)
         )
     return out
+
+
+def _attach_volume_context(features: pl.DataFrame, nq: pl.DataFrame) -> pl.DataFrame:
+    """يلحق أعمدة فوليوم سببية افتراضية للتعزيز/السياق (asof خلفي)."""
+    fb = failed_breakout_features(nq, require_sma_filter=False, rth_only=False)
+    keep = [c for c in (AVAILABILITY_TS, *_VOLUME_FEATURE_COLUMNS) if c in fb.columns]
+    if len(keep) < 2 or features.height == 0:
+        zeros = [
+            pl.lit(0.0).alias(c) for c in _VOLUME_FEATURE_COLUMNS if c not in features.columns
+        ]
+        return features.with_columns(zeros) if zeros else features
+    right = fb.select(keep).sort(AVAILABILITY_TS)
+    left = features.sort(AVAILABILITY_TS)
+    drop = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
+    if drop:
+        left = left.drop(drop)
+    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
+    fills = [pl.col(c).fill_null(0.0) for c in _VOLUME_FEATURE_COLUMNS if c in joined.columns]
+    return joined.with_columns(fills) if fills else joined
 
 
 def search_fail_breakout_hypotheses(
@@ -217,11 +372,12 @@ def search_fail_breakout_hypotheses(
     progress: PipelineProgress | bool | None = None,
     quiet: bool = False,
 ) -> BreakoutHypothesisSearchResult:
-    """يبحث أفضل إعداد/تعزيز Failed Breakout بـ walk-forward + SSL.
+    """يبحث أفضل إعداد فوليوم/تعزيز Failed Breakout بـ walk-forward + SSL.
 
     عند ``enhance_with_ssl=True`` (افتراضي مع البحث):
-    يستخدم شبكة مضغوطة + يولّد مرشّحي تعزيز من ``z*`` والسياق،
+    يستخدم نواة فوليوم مضغوطة + يولّد مرشّحي تعزيز من ``z*`` والسياق/الفوليوم،
     ثم يختار بـ walk-forward (OOS هو الحكم).
+    بدون تعزيز: الشبكة الكاملة ``volume_breakout_grid`` (~144 فرضية).
     """
     log = resolve_progress(progress, quiet=quiet)
     need_ssl = use_ssl_gate or enhance_with_ssl
@@ -232,8 +388,8 @@ def search_fail_breakout_hypotheses(
         out_early.mkdir(parents=True, exist_ok=True)
         log.attach_log(out_early / "progress.log")
     log.begin(
-        "بحث فرضيات Failed Breakout + تعزيزات SSL",
-        total_steps=6 + ssl_steps + save_step,
+        "بحث فرضيات Failed Breakout (فوليوم) + تعزيزات SSL",
+        total_steps=7 + ssl_steps + save_step,
     )
     log.line("كل عملية تُطبع سطرًا بسطر — راقب progress.log أو stderr")
     try:
@@ -260,9 +416,10 @@ def search_fail_breakout_hypotheses(
             grid = tuple(specs)
         elif enhance_with_ssl:
             grid = core_breakout_grid()
-            log.note("شبكة مضغوطة (core) لتوليد تعزيزات SSL")
+            log.note(f"نواة فوليوم مضغوطة ({len(grid)}) لتوليد تعزيزات SSL")
         else:
-            grid = default_breakout_grid()
+            grid = volume_breakout_grid()
+            log.note(f"شبكة فوليوم كاملة: {len(grid)} فرضية")
 
         log.step("بناء ساعة البحث", f"interval_ns={interval_ns}")
         clock = cross_market_features(
@@ -272,7 +429,7 @@ def search_fail_breakout_hypotheses(
             lead_lag_window=2,
             latency_ns=0,
         )
-        log.step("تجسيد فرضيات FB الأساس", f"specs={len(grid)}")
+        log.step("تجسيد فرضيات FB الفوليوم", f"specs={len(grid)}")
         hyp = materialize_breakout_hypotheses(nq_frame, grid, clock=clock)
         base = clock.sort(AVAILABILITY_TS)
         hyp_cols = [s.column() for s in grid]
@@ -287,6 +444,10 @@ def search_fail_breakout_hypotheses(
         for col in hyp_cols:
             if col in features.columns:
                 features = features.with_columns(pl.col(col).fill_null(0.0))
+
+        log.step("إلحاق سياق فوليوم سببي (asof خلفي)")
+        features = _attach_volume_context(features, nq_frame)
+        log.note(f"أعمدة فوليوم: {[c for c in _VOLUME_FEATURE_COLUMNS if c in features.columns]}")
 
         ssl_result: SSLPipelineResult | None = None
         enhancement_columns: tuple[str, ...] = ()
@@ -307,7 +468,7 @@ def search_fail_breakout_hypotheses(
             )
 
         if enhance_with_ssl and ssl_result is not None:
-            log.step("توليد مرشّحي تعزيز SSL/سياق", f"bases={len(hyp_cols)}")
+            log.step("توليد مرشّحي تعزيز SSL/سياق/فوليوم", f"bases={len(hyp_cols)}")
             features, enh_cols, enh_specs = generate_ssl_enhancement_candidates(
                 features,
                 ssl_result.embeddings,
@@ -330,7 +491,6 @@ def search_fail_breakout_hypotheses(
             candidates.extend(list(gated))
             log.note(f"أعمدة بوابة: {len(gated)}")
 
-        # إزالة تكرار مع الحفاظ على الترتيب
         seen: set[str] = set()
         uniq: list[str] = []
         for c in candidates:
@@ -358,7 +518,7 @@ def search_fail_breakout_hypotheses(
         enh_won = best is not None and "__enh__" in str(best)
         log.note(
             f"best_oos={best!r} · oos_ic={oos_ic:.4g} · "
-            f"{'تعزيز SSL فاز' if enh_won else 'أساس/بوابة'}"
+            f"{'تعزيز SSL فاز' if enh_won else 'أساس فوليوم/بوابة'}"
         )
 
         log.step("شاشة استكشافية")
@@ -375,8 +535,9 @@ def search_fail_breakout_hypotheses(
         log.step("تقرير البحث")
         assistant = ResearchAssistant(alpha=alpha)
         detail = (
-            f"best_oos_spec={best!r}; enhancements={len(enhancement_columns)}; "
-            f"enhance_won={enh_won}; walk-forward nested selection"
+            f"best_oos_spec={best!r}; volume_specs={len(grid)}; "
+            f"enhancements={len(enhancement_columns)}; enhance_won={enh_won}; "
+            f"walk-forward nested selection"
         )
         evidence = Evidence(
             id="fb_search:oos_ic",
@@ -388,8 +549,8 @@ def search_fail_breakout_hypotheses(
             detail=detail,
         )
         claim = (
-            f"فرضية/تعزيز Failed Breakout المختار بـ walk-forward "
-            f"(best={best!r}) يحقق IC خارج العينة = {oos_ic:.4g} (p={oos_p:.4g})."
+            f"فرضية فوليوم/تعزيز Failed Breakout المختارة بـ walk-forward "
+            f"(best={best!r}) تحقق IC خارج العينة = {oos_ic:.4g} (p={oos_p:.4g})."
         )
         findings = [
             assistant.generate_hypothesis(
@@ -402,9 +563,9 @@ def search_fail_breakout_hypotheses(
         report = assistant.write_report(
             findings,
             title=(
-                "Failed Breakout Search — Walk-Forward + SSL Enhancements"
+                "Failed Breakout Volume Search — Walk-Forward + SSL Enhancements"
                 if enhance_with_ssl
-                else "Failed Breakout Hypothesis Search — Walk-Forward + SSL Gate"
+                else "Failed Breakout Volume Hypothesis Search — Walk-Forward"
             ),
         )
         result = BreakoutHypothesisSearchResult(
@@ -449,8 +610,10 @@ def search_fail_breakout_hypotheses(
 __all__ = [
     "BreakoutHypothesisSearchResult",
     "BreakoutHypothesisSpec",
+    "classic_breakout_grid",
     "core_breakout_grid",
     "default_breakout_grid",
     "materialize_breakout_hypotheses",
     "search_fail_breakout_hypotheses",
+    "volume_breakout_grid",
 ]
