@@ -26,6 +26,11 @@ from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
 from nq.research.findings import Finding
+from nq.simulation.execution import (
+    depth_matrices_from_frame,
+    directional_execution_returns,
+    execution_forward_returns_depth,
+)
 
 if TYPE_CHECKING:
     from nq.coverage.types import CoverageReport
@@ -87,23 +92,60 @@ def discover_alpha_from_features(
             )
         bid = frame[bid_col].to_numpy().astype(np.float64)
         ask = frame[ask_col].to_numpy().astype(np.float64)
-        for i, col in enumerate(cols, start=1):
+        use_depth = "depth_bid_sz_1" in frame.columns and "depth_ask_sz_1" in frame.columns
+        depth_long = depth_short = None
+        if use_depth:
             if log is not None:
-                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} (intraday)")  # type: ignore[union-attr]
-            evaluations.append(
-                evaluate_signal_intraday(
-                    col,
-                    frame[col].to_numpy().astype(np.float64),
-                    bid,
-                    ask,
-                    horizon=horizon,
-                    slippage_ticks=slippage_ticks,
-                    tick_size=tick_size,
-                    commission_bps=commission_bps,
-                    n_permutations=n_permutations,
-                    rng=generator,
-                )
+                log.op("ألفا: عوائد أمامية بمسح عمق ظاهر (دخول+خروج)")  # type: ignore[union-attr]
+            bid_px, bid_sz, ask_px, ask_sz = depth_matrices_from_frame(frame, n_levels=5)
+            depth_long, depth_short = execution_forward_returns_depth(
+                bid_px,
+                bid_sz,
+                ask_px,
+                ask_sz,
+                horizon=horizon,
+                order_qty=1,
+                n_levels=5,
+                commission_bps=commission_bps,
+                fallback_bid=bid,
+                fallback_ask=ask,
+                slippage_ticks=slippage_ticks,
+                tick_size=tick_size,
             )
+        for i, col in enumerate(cols, start=1):
+            mode_tag = "depth-walk" if use_depth else "intraday"
+            if log is not None:
+                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} ({mode_tag})")  # type: ignore[union-attr]
+            if use_depth and depth_long is not None and depth_short is not None:
+                directional = directional_execution_returns(
+                    frame[col].to_numpy().astype(np.float64),
+                    depth_long,
+                    depth_short,
+                )
+                evaluations.append(
+                    evaluate_signal(
+                        col,
+                        frame[col].to_numpy().astype(np.float64),
+                        directional,
+                        n_permutations=n_permutations,
+                        rng=generator,
+                    )
+                )
+            else:
+                evaluations.append(
+                    evaluate_signal_intraday(
+                        col,
+                        frame[col].to_numpy().astype(np.float64),
+                        bid,
+                        ask,
+                        horizon=horizon,
+                        slippage_ticks=slippage_ticks,
+                        tick_size=tick_size,
+                        commission_bps=commission_bps,
+                        n_permutations=n_permutations,
+                        rng=generator,
+                    )
+                )
     else:
         prices = frame[price_col].to_numpy().astype(np.float64)
         forward = align_forward_returns(prices, horizon=horizon)

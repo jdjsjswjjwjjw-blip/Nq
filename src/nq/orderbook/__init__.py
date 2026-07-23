@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from nq.orderbook.book import OrderBook
+from nq.orderbook.depth import DepthSnapshot, walk_buy_vwap, walk_sell_vwap
 from nq.orderbook.integrity import IntegrityReport, check_integrity
 from nq.orderbook.reconstruction import (
     ReconstructionResult,
@@ -18,10 +19,13 @@ from nq.orderbook.reconstruction import (
 )
 
 __all__ = [
+    "DepthSnapshot",
     "IntegrityReport",
     "OrderBook",
     "ReconstructionResult",
     "check_integrity",
     "reconstruct",
     "reconstruct_by_instrument",
+    "walk_buy_vwap",
+    "walk_sell_vwap",
 ]
