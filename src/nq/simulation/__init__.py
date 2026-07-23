@@ -22,9 +22,12 @@ from nq.simulation.breakout import failed_breakout_features, failed_breakout_fro
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.execution import (
+    ExecutionSimulationReport,
     directional_execution_returns,
     execution_forward_returns,
+    realistic_depth_execution_simulation,
     realistic_execution_forward_returns,
+    realistic_execution_simulation,
 )
 from nq.simulation.footprint import footprint_cells, footprint_summary
 from nq.simulation.fvg import (
@@ -48,6 +51,7 @@ __all__ = [
     "BUCKET_END",
     "BUCKET_START",
     "DevelopingVolumeProfile",
+    "ExecutionSimulationReport",
     "ValueArea",
     "add_time_bucket",
     "auction_signal_frame",
@@ -72,6 +76,8 @@ __all__ = [
     "ofi_by_bucket",
     "order_flow_imbalance",
     "order_flow_summary",
+    "realistic_depth_execution_simulation",
     "realistic_execution_forward_returns",
+    "realistic_execution_simulation",
     "value_area",
 ]

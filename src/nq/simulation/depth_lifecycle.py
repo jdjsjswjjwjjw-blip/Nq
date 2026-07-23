@@ -16,6 +16,7 @@ from typing import Final
 
 import polars as pl
 
+from nq.contracts.instruments import require_single_contract_identity
 from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.time import sort_causal
@@ -102,6 +103,7 @@ def depth_event_series(
     """لقطات عمق بعد كل حدث — للمراقبة (``availability_ts = event_ts``)."""
     if n_levels < 1:
         raise ValueError(f"n_levels must be >= 1, got {n_levels}")
+    require_single_contract_identity(frame, context="depth_event_series")
     if frame.height == 0:
         return pl.DataFrame(schema=_empty_depth_schema(n_levels=n_levels))
 
@@ -138,6 +140,7 @@ def depth_at_bar_close(
         raise ValueError(f"interval_ns must be >= 1, got {interval_ns}")
     if n_levels < 1:
         raise ValueError(f"n_levels must be >= 1, got {n_levels}")
+    require_single_contract_identity(frame, context="depth_at_bar_close")
     empty_schema = _empty_depth_schema(n_levels=n_levels)
     empty_schema[BUCKET_START] = pl.Int64()
     empty_schema[BUCKET_END] = pl.Int64()

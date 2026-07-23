@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import polars as pl
 
+from nq.contracts.instruments import instrument_metadata
+from nq.contracts.mbo import PRICE_SCALE
 from nq.simulation.volume_profile import (
     DevelopingVolumeProfile,
     build_volume_profile,
@@ -68,6 +70,44 @@ def test_developing_volume_profile_incremental() -> None:
     assert va.poc == 100
     feats = profile.features_at_mid(100.0, ref_price=1.0, near_ticks=2)
     assert feats[5] == 1.0  # in_value_area
+
+
+def test_developing_volume_profile_near_levels_use_nq_tick_size() -> None:
+    meta = instrument_metadata("NQU4")
+    level = int(round(20_000.0 / PRICE_SCALE))
+    profile = DevelopingVolumeProfile()
+    profile.add_trade(level, 10)
+
+    at_two_ticks = profile.features_at_mid(
+        level + 2 * meta.tick_size_fixed,
+        ref_price=float(level),
+        near_ticks=2,
+        tick_size_fixed=meta.tick_size_fixed,
+    )
+    at_three_ticks = profile.features_at_mid(
+        level + 3 * meta.tick_size_fixed,
+        ref_price=float(level),
+        near_ticks=2,
+        tick_size_fixed=meta.tick_size_fixed,
+    )
+
+    assert at_two_ticks[3] == 1.0
+    assert at_two_ticks[4] == 1.0
+    assert at_three_ticks[3] == 0.0
+    assert at_three_ticks[4] == 0.0
+
+
+def test_instrument_metadata_distinguishes_nq_and_mnq_contract_specs() -> None:
+    nq = instrument_metadata("NQU4")
+    mnq = instrument_metadata("MNQU4")
+
+    assert nq.root_symbol == "NQ"
+    assert mnq.root_symbol == "MNQ"
+    assert nq.tick_size == 0.25
+    assert mnq.tick_size == 0.25
+    assert nq.tick_size_fixed == mnq.tick_size_fixed == int(round(0.25 / PRICE_SCALE))
+    assert nq.point_value == 20.0
+    assert mnq.point_value == 2.0
 
 
 def test_developing_value_area_accumulates_within_session() -> None:

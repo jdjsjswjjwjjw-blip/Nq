@@ -21,6 +21,7 @@ import numpy as np
 import polars as pl
 
 from nq.alpha.signals import ExecutionMode
+from nq.contracts.instruments import NQ_METADATA
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.determinism import seed_everything
 from nq.core.temporal_policy import TemporalPolicy
@@ -140,7 +141,7 @@ class PipelineConfig:
     coverage_embargo: int | None = None
     execution_mode: ExecutionMode = "intraday"
     slippage_ticks: float = 0.5
-    tick_size: float = 0.25
+    tick_size: float = NQ_METADATA.tick_size
     commission_bps: float = 0.0
     alpha: float = 0.05
     n_permutations: int = 2000
@@ -183,7 +184,7 @@ class PipelineConfig:
             coverage_splits=int(ssl.get("n_splits", 3)),
             execution_mode=str(exec_cfg.get("mode", "intraday")),  # type: ignore[arg-type]
             slippage_ticks=float(exec_cfg.get("slippage_ticks", 0.5)),
-            tick_size=float(exec_cfg.get("tick_size", 0.25)),
+            tick_size=float(exec_cfg.get("tick_size", NQ_METADATA.tick_size)),
             commission_bps=float(exec_cfg.get("commission_bps", 0.0)),
             alpha=float(raw.get("statistics", {}).get("alpha", 0.05)),
             n_permutations=int(raw.get("statistics", {}).get("n_permutations", 2000)),
@@ -506,7 +507,7 @@ def run_ssl_research_pipeline(
     coverage_embargo: int | None = None,
     execution_mode: ExecutionMode = "intraday",
     slippage_ticks: float = 0.5,
-    tick_size: float = 0.25,
+    tick_size: float = NQ_METADATA.tick_size,
     commission_bps: float = 0.0,
     parallel_coverage: bool = True,
     ssl_mode: SslMode = "tick",

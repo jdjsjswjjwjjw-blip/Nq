@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import polars as pl
 
+from nq.contracts.instruments import require_single_contract_identity
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.session import TRADING_SESSION_ID, add_session_columns
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
@@ -30,6 +31,7 @@ from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extr
 
 def order_flow_summary(frame: pl.DataFrame, *, interval_ns: int) -> pl.DataFrame:
     """يلخّص تدفّق الأوامر العدواني لكل نافذة زمنية (متاح عند ``bucket_end``)."""
+    require_single_contract_identity(frame, context="order_flow_summary")
     trades = extract_trades(add_time_bucket(frame, interval_ns=interval_ns))
     buckets = trades.group_by(BUCKET_START).agg(
         pl.col("buy_volume").sum(),

@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 
 import polars as pl
 
+from nq.contracts.instruments import require_single_contract_identity
 from nq.contracts.temporal import EVENT_TS, SEQUENCE
 from nq.core.time import assert_sorted_causal
 from nq.orderbook.book import OrderBook
@@ -120,6 +121,13 @@ def _raise_if_strict_rejected(integrity: IntegrityReport) -> None:
     raise StrictReconstructionError(f"strict MBO reconstruction rejected stream: {detail}")
 
 
+def _raise_if_contract_identity_changes(frame: pl.DataFrame) -> None:
+    try:
+        require_single_contract_identity(frame, context="strict reconstruction")
+    except ValueError as exc:
+        raise StrictReconstructionError(str(exc)) from exc
+
+
 def reconstruct(
     frame: pl.DataFrame,
     *,
@@ -135,6 +143,8 @@ def reconstruct(
     if n_instruments > 1:
         raise ValueError("reconstruct expects a single instrument; use reconstruct_by_instrument.")
     assert_sorted_causal(frame)
+    if strict:
+        _raise_if_contract_identity_changes(frame)
 
     book = OrderBook()
     base_integrity = check_integrity(frame)

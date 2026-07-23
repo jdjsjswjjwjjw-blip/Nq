@@ -10,7 +10,10 @@ from nq.simulation.execution import (
     buy_fill_price,
     directional_execution_returns,
     execution_forward_returns,
+    execution_forward_returns_depth,
+    realistic_depth_execution_simulation,
     realistic_execution_forward_returns,
+    realistic_execution_simulation,
     sell_fill_price,
 )
 
@@ -43,6 +46,80 @@ def test_realistic_execution_applies_latency_before_entry() -> None:
     )
     assert np.isclose(long_fwd[0], (95.0 - 91.0) / 91.0)
     assert np.isnan(long_fwd[1])
+
+
+def test_realistic_execution_reports_fill_timestamps_and_order_size() -> None:
+    bid = np.array([100.0, 90.0, 95.0])
+    ask = np.array([101.0, 91.0, 96.0])
+    timestamps = np.array([10, 20, 30], dtype=np.int64)
+
+    report = realistic_execution_simulation(
+        bid,
+        ask,
+        timestamps=timestamps,
+        horizon=1,
+        latency_steps=1,
+        order_qty=3,
+        slippage_ticks=0.0,
+        commission_bps=0.0,
+    )
+
+    assert report.long_entry_ts[0] == 20
+    assert report.long_exit_ts[0] == 30
+    assert report.long_filled_qty[0] == 3
+    assert np.isclose(report.long_returns[0], (95.0 - 91.0) / 91.0)
+    assert np.isnan(report.long_returns[1])
+
+
+def test_depth_execution_rejects_insufficient_liquidity_even_with_l1_fallback_by_default() -> None:
+    bid_px = np.array([[100.0], [100.5], [101.0]])
+    bid_sz = np.array([[1.0], [1.0], [1.0]])
+    ask_px = np.array([[100.25], [100.75], [101.25]])
+    ask_sz = np.array([[1.0], [1.0], [1.0]])
+
+    long_fwd, short_fwd = execution_forward_returns_depth(
+        bid_px,
+        bid_sz,
+        ask_px,
+        ask_sz,
+        horizon=1,
+        order_qty=2,
+        n_levels=1,
+        fallback_bid=np.array([100.0, 100.5, 101.0]),
+        fallback_ask=np.array([100.25, 100.75, 101.25]),
+        slippage_ticks=0.0,
+    )
+
+    assert np.isnan(long_fwd[0])
+    assert np.isnan(short_fwd[0])
+
+
+def test_depth_execution_allows_partial_fills_with_reported_qty_and_timestamps() -> None:
+    bid_px = np.array([[100.0, 99.75], [100.5, 100.25], [101.0, 100.75]])
+    bid_sz = np.array([[2.0, 0.0], [2.0, 0.0], [2.0, 0.0]])
+    ask_px = np.array([[100.25, 100.5], [100.75, 101.0], [101.25, 101.5]])
+    ask_sz = np.array([[2.0, 0.0], [2.0, 0.0], [2.0, 0.0]])
+    timestamps = np.array([10, 20, 30], dtype=np.int64)
+
+    report = realistic_depth_execution_simulation(
+        bid_px,
+        bid_sz,
+        ask_px,
+        ask_sz,
+        timestamps=timestamps,
+        horizon=1,
+        order_qty=3,
+        n_levels=2,
+        latency_steps=1,
+        allow_partial_fills=True,
+        commission_bps=0.0,
+    )
+
+    assert report.long_entry_ts[0] == 20
+    assert report.long_exit_ts[0] == 30
+    assert report.long_filled_qty[0] == 2
+    assert report.long_partial[0]
+    assert np.isfinite(report.long_returns[0])
 
 
 def test_directional_returns_follow_signal_sign() -> None:

@@ -6,6 +6,7 @@ import datetime as dt
 from zoneinfo import ZoneInfo
 
 import polars as pl
+import pytest
 
 from nq.orderbook import reconstruct
 from nq.simulation.order_flow import ofi_by_bucket, order_flow_imbalance, order_flow_summary
@@ -45,6 +46,18 @@ def test_order_flow_cumulative_delta_resets_at_cme_session_boundary() -> None:
     )
     summary = order_flow_summary(trades, interval_ns=60_000_000_000).sort("bucket_start")
     assert summary["cumulative_delta"].to_list() == [5, 7]
+
+
+def test_order_flow_rejects_contract_roll_without_explicit_lifecycle_config() -> None:
+    trades = make_stream(
+        [("T", "B", 100, 5, 0), ("T", "B", 101, 7, 0)],
+        event_ts=[0, 1],
+        sequence=[1, 2],
+        symbol="NQU4",
+    ).with_columns(pl.Series("symbol", ["NQU4", "NQZ4"], dtype=pl.Utf8()))
+
+    with pytest.raises(ValueError, match="contract roll"):
+        order_flow_summary(trades, interval_ns=10)
 
 
 def _tob() -> pl.DataFrame:

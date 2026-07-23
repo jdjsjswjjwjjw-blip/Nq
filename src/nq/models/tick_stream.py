@@ -21,6 +21,11 @@ import numpy as np
 import numpy.typing as npt
 import polars as pl
 
+from nq.contracts.instruments import (
+    contract_identity_values,
+    first_instrument_metadata,
+    require_single_contract_identity,
+)
 from nq.contracts.mbo import MboAction
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS, SEQUENCE
 from nq.core.session import trading_session_id_from_ns
@@ -36,6 +41,8 @@ _TRADE = MboAction.TRADE.value
 _BID = "B"
 _NEAR_TICKS = 2  # قرب VAH/VAL بوحدات السعر الثابتة (fixed-point steps)
 _REF_PRICE: Final = 20_000_000_000.0
+_CONTRACT_ID_COL: Final = "_contract_id"
+_SOURCE_INSTRUMENT_ID_COL: Final = "_source_instrument_id"
 
 
 class MarketPhase(IntEnum):
@@ -138,8 +145,16 @@ class _SessionScopedState:
 
 
 def _new_session_scoped_state() -> _SessionScopedState:
+    return _new_session_scoped_state_with_tick_size()
+
+
+def _new_session_scoped_state_with_tick_size(tick_size_fixed: int | None = None) -> _SessionScopedState:
     return _SessionScopedState(
-        profile=DevelopingVolumeProfile(),
+        profile=(
+            DevelopingVolumeProfile()
+            if tick_size_fixed is None
+            else DevelopingVolumeProfile(tick_size_fixed=tick_size_fixed)
+        ),
         regime_tracker=CausalRegimeTracker(min_samples=8, refit_interval=16),
         mnq_signed=0,
         nq_high=0.0,
@@ -291,6 +306,7 @@ def _tick_row(
     mnq_low: float,
     ref_price: float,
     prev_nq_mid: float | None,
+    tick_size_fixed: int,
 ) -> tuple[
     dict[str, float | int],
     int,
@@ -319,7 +335,12 @@ def _tick_row(
     mnq_mid = mnq_row[5] * ref_price
 
     va = nq_profile.value_area()
-    vp_feats = nq_profile.features_at_mid(nq_mid, ref_price=ref_price, near_ticks=_NEAR_TICKS)
+    vp_feats = nq_profile.features_at_mid(
+        nq_mid,
+        ref_price=ref_price,
+        near_ticks=_NEAR_TICKS,
+        tick_size_fixed=tick_size_fixed,
+    )
     depth_feats = _book_depth_features(nq_book, va)
     phase = MarketPhase(regime_tracker.update(_regime_features(vp_feats, depth_feats)))
     phase_oh = _phase_one_hot(phase)
@@ -367,6 +388,7 @@ def build_tick_stream(
     *,
     nq_instrument_id: int = 1,
     mnq_instrument_id: int = 2,
+    allow_contract_roll: bool = False,
     progress: object | None = None,
 ) -> TickStream:
     """يبني تسلسل tick موحّد من MBO خام (NQ + MNQ) مع دفتر حي وميزات inline.
@@ -378,13 +400,32 @@ def build_tick_stream(
         log.op(  # type: ignore[union-attr]
             f"دمج NQ+MNQ وترتيب سببي (NQ={nq.height:,} · MNQ={mnq.height:,})"
         )
-    nq_sorted = sort_causal(nq.with_columns(pl.lit(nq_instrument_id).alias("instrument_id")))
-    mnq_sorted = sort_causal(mnq.with_columns(pl.lit(mnq_instrument_id).alias("instrument_id")))
+    if not allow_contract_roll:
+        require_single_contract_identity(nq, context="NQ tick stream")
+        require_single_contract_identity(mnq, context="MNQ tick stream")
+
+    nq_meta = first_instrument_metadata(nq, default_symbol="NQ")
+    nq_tick_size_fixed = nq_meta.tick_size_fixed
+
+    def _prepare_market_frame(frame: pl.DataFrame, *, stream_instrument_id: int) -> pl.DataFrame:
+        source_ids = (
+            frame["instrument_id"].to_list()
+            if "instrument_id" in frame.columns
+            else [stream_instrument_id] * frame.height
+        )
+        return frame.with_columns(
+            pl.Series(_SOURCE_INSTRUMENT_ID_COL, source_ids, dtype=pl.UInt64()),
+            pl.Series(_CONTRACT_ID_COL, contract_identity_values(frame), dtype=pl.Utf8()),
+            pl.lit(stream_instrument_id).cast(pl.UInt32).alias("instrument_id"),
+        )
+
+    nq_sorted = sort_causal(_prepare_market_frame(nq, stream_instrument_id=nq_instrument_id))
+    mnq_sorted = sort_causal(_prepare_market_frame(mnq, stream_instrument_id=mnq_instrument_id))
     combined = sort_causal(pl.concat([nq_sorted, mnq_sorted], how="vertical"))
 
     nq_book = OrderBook()
     mnq_book = OrderBook()
-    session_state = _new_session_scoped_state()
+    session_state = _new_session_scoped_state_with_tick_size(nq_tick_size_fixed)
     ref_price = _REF_PRICE
 
     rows: list[dict[str, float | int]] = []
@@ -396,6 +437,7 @@ def build_tick_stream(
     event_times = combined[EVENT_TS].to_list()
     sequences = combined["sequence"].to_list()
     instruments = combined["instrument_id"].to_list()
+    contract_ids = combined[_CONTRACT_ID_COL].to_list()
 
     total = len(actions)
     if log is not None:
@@ -405,8 +447,9 @@ def build_tick_stream(
     next_hb = hb_every
 
     current_session_id: str | None = None
+    current_contract_by_stream: dict[int, str] = {}
 
-    for i, (action, side, price, size, order_id, ts, seq, inst) in enumerate(
+    for i, (action, side, price, size, order_id, ts, seq, inst, contract_id) in enumerate(
         zip(
             actions,
             sides,
@@ -416,6 +459,7 @@ def build_tick_stream(
             event_times,
             sequences,
             instruments,
+            contract_ids,
             strict=True,
         ),
         start=1,
@@ -424,8 +468,23 @@ def build_tick_stream(
         if current_session_id is None:
             current_session_id = session_id
         elif session_id != current_session_id:
-            session_state = _new_session_scoped_state()
+            session_state = _new_session_scoped_state_with_tick_size(nq_tick_size_fixed)
             current_session_id = session_id
+        stream_inst = int(inst)
+        contract_key = str(contract_id)
+        active_contract = current_contract_by_stream.get(stream_inst)
+        if active_contract is None:
+            current_contract_by_stream[stream_inst] = contract_key
+        elif contract_key != active_contract:
+            if not allow_contract_roll:
+                raise ValueError(
+                    "contract roll/identity change detected; explicit contract lifecycle "
+                    "configuration is required"
+                )
+            nq_book = OrderBook()
+            mnq_book = OrderBook()
+            session_state = _new_session_scoped_state_with_tick_size(nq_tick_size_fixed)
+            current_contract_by_stream = {stream_inst: contract_key}
         row, mnq_signed, nq_high, nq_low, mnq_high, mnq_low, prev_nq_mid = _tick_row(
             action=str(action),
             side=str(side),
@@ -447,6 +506,7 @@ def build_tick_stream(
             mnq_low=session_state.mnq_low,
             ref_price=ref_price,
             prev_nq_mid=session_state.prev_nq_mid,
+            tick_size_fixed=nq_tick_size_fixed,
         )
         _update_session_scoped_state(
             session_state,

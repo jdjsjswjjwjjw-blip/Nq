@@ -18,16 +18,18 @@ from dataclasses import dataclass, field
 
 import polars as pl
 
+from nq.contracts.instruments import NQ_METADATA, require_single_contract_identity
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.session import TRADING_SESSION_ID, trading_session_id_from_ns
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 
 _DEFAULT_VALUE_AREA_FRACTION = 0.7
-_PRICE_SCALE: float = 1_000_000  # خطوة ~1$ لعقود NQ تقريبًا (fixed-point)
+_DEFAULT_TICK_SIZE_FIXED: int = NQ_METADATA.tick_size_fixed
 
 
 def build_volume_profile(frame: pl.DataFrame) -> pl.DataFrame:
     """يبني ملف الحجم: إجمالي الحجم المُنفَّذ لكل سعر (مرتّبًا تصاعديًا بالسعر)."""
+    require_single_contract_identity(frame, context="build_volume_profile")
     trades = extract_trades(frame)
     return (
         trades.group_by("price")
@@ -102,11 +104,14 @@ class DevelopingVolumeProfile:
     """
 
     fraction: float = _DEFAULT_VALUE_AREA_FRACTION
+    tick_size_fixed: int = _DEFAULT_TICK_SIZE_FIXED
     _levels: dict[int, int] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         if not 0 < self.fraction <= 1:
             raise ValueError(f"fraction must be in (0, 1], got {self.fraction}")
+        if self.tick_size_fixed < 1:
+            raise ValueError(f"tick_size_fixed must be >= 1, got {self.tick_size_fixed}")
 
     def add_trade(self, price: int, size: int) -> None:
         """يُضيف حجم صفقة إلى المستوى السعري."""
@@ -130,14 +135,20 @@ class DevelopingVolumeProfile:
         *,
         ref_price: float,
         near_ticks: int,
+        tick_size_fixed: int | None = None,
     ) -> tuple[float, float, float, float, float, float]:
         """ميزات VP سببية: مسافات POC/VAH/VAL + أعلام القرب/داخل المنطقة."""
+        if near_ticks < 0:
+            raise ValueError(f"near_ticks must be non-negative, got {near_ticks}")
+        effective_tick = self.tick_size_fixed if tick_size_fixed is None else int(tick_size_fixed)
+        if effective_tick < 1:
+            raise ValueError(f"tick_size_fixed must be >= 1, got {effective_tick}")
         if not self._levels or mid <= 0 or ref_price <= 0:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         va = self.value_area()
         if va is None:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        scale = near_ticks * _PRICE_SCALE
+        scale = near_ticks * effective_tick
         poc_d = (mid - va.poc) / ref_price
         vah_d = (mid - va.vah) / ref_price
         val_d = (mid - va.val) / ref_price
@@ -172,6 +183,7 @@ def developing_value_area(
     ``poc_migration`` (إزاحة POC عن النافذة السابقة), ``bucket_end``,
     ``availability_ts``. كل صف متاح فقط عند ``bucket_end``.
     """
+    require_single_contract_identity(frame, context="developing_value_area")
     trades = extract_trades(add_time_bucket(frame, interval_ns=interval_ns))
     if trades.height == 0:
         return pl.DataFrame(

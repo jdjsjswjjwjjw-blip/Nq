@@ -16,6 +16,7 @@ import numpy as np
 import numpy.typing as npt
 import polars as pl
 
+from nq.contracts.instruments import NQ_METADATA
 from nq.simulation.execution.intraday import (
     directional_execution_returns,
     realistic_execution_forward_returns,
@@ -171,7 +172,7 @@ def evaluate_signal_intraday(
     *,
     horizon: int = 1,
     slippage_ticks: float = 0.5,
-    tick_size: float = 0.25,
+    tick_size: float = NQ_METADATA.tick_size,
     commission_bps: float = 0.0,
     n_permutations: int = 2000,
     permutation_block_size: int | None = None,

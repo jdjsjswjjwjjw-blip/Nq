@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
+from nq.contracts.instruments import NQ_METADATA
+
 FloatArray = npt.NDArray[np.float64]
 
 
@@ -12,7 +14,7 @@ def buy_fill_price(
     ask: npt.NDArray[np.floating] | float,
     *,
     slippage_ticks: float = 0.5,
-    tick_size: float = 0.25,
+    tick_size: float = NQ_METADATA.tick_size,
 ) -> FloatArray | float:
     """سعر شراء عدواني: ask + انزلاق."""
     slip = slippage_ticks * tick_size
@@ -25,7 +27,7 @@ def sell_fill_price(
     bid: npt.NDArray[np.floating] | float,
     *,
     slippage_ticks: float = 0.5,
-    tick_size: float = 0.25,
+    tick_size: float = NQ_METADATA.tick_size,
 ) -> FloatArray | float:
     """سعر بيع عدواني: bid − انزلاق."""
     slip = slippage_ticks * tick_size

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Final
 
+from nq.contracts.instruments import NQ_METADATA
+
 _DEFAULT_SLIPPAGE_TICKS: Final = 0.5
-_DEFAULT_TICK_SIZE: Final = 0.25
+_DEFAULT_TICK_SIZE: Final = NQ_METADATA.tick_size
 _DEFAULT_COMMISSION_BPS: Final = 0.0
 
 

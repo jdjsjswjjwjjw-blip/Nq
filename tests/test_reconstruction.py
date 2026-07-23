@@ -5,7 +5,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from nq.orderbook import reconstruct, reconstruct_by_instrument
+from nq.orderbook import StrictReconstructionError, reconstruct, reconstruct_by_instrument
 from tests.mbo_factory import make_stream
 
 
@@ -106,6 +106,21 @@ def test_multi_instrument_rejected() -> None:
     b = make_stream([("A", "B", 100, 1, 1)], instrument_id=2)
     with pytest.raises(ValueError, match="single instrument"):
         reconstruct(pl.concat([a, b]))
+
+
+def test_strict_reconstruction_rejects_contract_identity_change() -> None:
+    frame = make_stream(
+        [
+            ("A", "B", 100, 1, 1),
+            ("A", "B", 101, 1, 2),
+        ],
+        symbol="NQU4",
+        event_ts=[0, 1],
+        sequence=[1, 2],
+    ).with_columns(pl.Series("symbol", ["NQU4", "NQZ4"], dtype=pl.Utf8()))
+
+    with pytest.raises(StrictReconstructionError, match="contract identity"):
+        reconstruct(frame, strict=True)
 
 
 def test_reconstruct_by_instrument_splits() -> None:

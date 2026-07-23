@@ -23,6 +23,7 @@ from nq.alpha.signals import (
     evaluate_signal_intraday,
     screen_signals,
 )
+from nq.contracts.instruments import NQ_METADATA
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
@@ -222,7 +223,7 @@ def discover_alpha_from_features(
     bid_col: str = "nq_bid",
     ask_col: str = "nq_ask",
     slippage_ticks: float = 0.5,
-    tick_size: float = 0.25,
+    tick_size: float = NQ_METADATA.tick_size,
     commission_bps: float = 0.0,
     alpha: float = 0.05,
     n_permutations: int = 2000,
@@ -419,7 +420,7 @@ def run_research_pipeline(
     lead_lag_window: int = 2,
     execution_mode: ExecutionMode = "intraday",
     slippage_ticks: float = 0.5,
-    tick_size: float = 0.25,
+    tick_size: float = NQ_METADATA.tick_size,
     commission_bps: float = 0.0,
     rng: np.random.Generator | None = None,
     quiet: bool = True,

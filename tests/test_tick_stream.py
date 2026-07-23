@@ -6,6 +6,7 @@ import datetime as dt
 from zoneinfo import ZoneInfo
 
 import polars as pl
+import pytest
 
 from nq.models.tick_stream import MarketPhase, MaskPath, _trap_setup, build_tick_stream
 from tests.mbo_factory import Event, make_stream
@@ -111,3 +112,42 @@ def test_tick_stream_resets_session_scoped_state_at_cme_session_boundary() -> No
     )
 
     assert mnq_trades["mnq_signed_vol"].to_list() == [1.0, 1.0]
+
+
+def test_tick_stream_rejects_contract_roll_without_explicit_config() -> None:
+    nq = make_stream(
+        [
+            ("A", "B", 20_000_000_000, 5, 1),
+            ("A", "A", 20_001_000_000, 5, 2),
+            ("A", "A", 20_101_000_000, 5, 3),
+        ],
+        event_ts=[1, 2, 3],
+        sequence=[1, 2, 3],
+        symbol="NQU4",
+    ).with_columns(pl.Series("symbol", ["NQU4", "NQU4", "NQZ4"], dtype=pl.Utf8()))
+    mnq = make_stream([], instrument_id=2, symbol="MNQ")
+
+    with pytest.raises(ValueError, match="contract roll"):
+        build_tick_stream(nq, mnq)
+
+
+def test_tick_stream_resets_books_and_state_on_explicit_contract_roll() -> None:
+    nq = make_stream(
+        [
+            ("A", "B", 20_000_000_000, 5, 1),
+            ("A", "A", 20_001_000_000, 5, 2),
+            ("T", "B", 20_001_000_000, 1, 0),
+            ("A", "A", 20_101_000_000, 5, 3),
+        ],
+        event_ts=[1, 2, 3, 4],
+        sequence=[1, 2, 3, 4],
+        symbol="NQU4",
+    ).with_columns(pl.Series("symbol", ["NQU4", "NQU4", "NQU4", "NQZ4"], dtype=pl.Utf8()))
+    mnq = make_stream([], instrument_id=2, symbol="MNQ")
+
+    stream = build_tick_stream(nq, mnq, allow_contract_roll=True)
+    rolled = stream.frame.filter(pl.col("event_ts") == 4).row(0, named=True)
+
+    assert rolled["nq_best_bid_norm"] == 0.0
+    assert rolled["nq_best_ask_norm"] > 0.0
+    assert rolled["in_value_area"] == 0.0
