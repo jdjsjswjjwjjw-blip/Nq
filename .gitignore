@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Data artifacts (MBO / Parquet / Arrow) must never be committed
+data/**/*.parquet
+data/**/*.arrow
+data/**/*.dbn
+data/**/*.dbn.zst
+data/**/*.csv
+data/runs/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

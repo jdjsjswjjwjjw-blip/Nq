@@ -1,0 +1,72 @@
+# إعدادات الخط الموحّد — من MBO إلى التقرير (يرث من default.toml)
+# Unified research pipeline: load → features → SSL‖M9 → alpha → report
+
+[determinism]
+global_seed = 20260719
+
+[temporal]
+interval_ns = 1_000_000_000    # 1 second buckets
+horizon = 1
+embargo_ns = 1_000_000_000
+
+[cross_market]
+latency_ns = 5_000_000         # 5 µs MNQ lag vs NQ (adjust per venue)
+lead_lag_window = 20
+
+[execution]
+mode = "intraday"              # intraday | mid
+slippage_ticks = 0.5
+tick_size = 0.25
+commission_bps = 0.0
+
+[ssl]
+mode = "tick"                    # tick | bucket
+window = 5
+n_components = 4
+n_splits = 3
+
+# بناء الميزات: streaming = آلة حالة حدث-بحدث (افتراضي) | batch = نوافذ مجمّعة
+[features]
+mode = "streaming"
+
+# إشارات تُفرَز في قناة الألفا (نفس طبقة trap_setup / lead_lag / VP)
+[signals]
+include_failed_fvg = true
+include_auction_vp = true
+include_failed_breakout = true
+columns = [
+  "nq_delta",
+  "mnq_delta",
+  "trap_setup",
+  "phase_balance",
+  "phase_expansion",
+  "in_value_area",
+  "near_vah",
+  "poc_dist_norm",
+  "session_phase",
+  "fail_fvg",
+  "fail_breakout",
+  "vp_balance",
+  "vp_imbalance",
+  "vp_expansion",
+  "vp_close_in_value",
+  "vp_flip_to_imbalance",
+]
+
+[statistics]
+alpha = 0.05
+n_permutations = 2000
+
+[data]
+# مسارات MBO (Parquet/Arrow/CSV/.zst) — أو مرّر --nq / --mnq من CLI
+nq_path = "data/raw/nq.parquet"
+mnq_path = "data/raw/mnq.parquet"
+output_dir = "data/runs/latest"
+# dual = NQ+MNQ | nq_only = ملف NQ واحد فقط (يُكرَّر داخليًا لـ cross-market)
+cross_market_mode = "nq_only"
+# حد صفوف للتجارب (0 = بدون حد) — أو --max-rows من CLI
+max_rows = 0
+
+# طباعة تقدّم الخطوات على stderr أثناء التشغيل
+[run]
+quiet = false

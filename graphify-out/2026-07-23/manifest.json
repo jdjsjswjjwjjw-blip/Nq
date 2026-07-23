@@ -1,0 +1,657 @@
+{
+  "/Users/abdallah/Desktop/Trading/Nq-main/benchmarks/bench_reconstruction.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "fe8696849730c278178db239f8b15a6f",
+    "semantic_hash": "fe8696849730c278178db239f8b15a6f"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/scripts/run_fail_breakout.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "7b44ec8fc0673d6ddc3aaaafcf80ce87",
+    "semantic_hash": "7b44ec8fc0673d6ddc3aaaafcf80ce87"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/scripts/run_fail_fvg.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "0667f8bde3cb0b7e55a00ce8a7464d97",
+    "semantic_hash": "0667f8bde3cb0b7e55a00ce8a7464d97"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/scripts/run_vp_auction.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "74613d41ed686f71f247a679e520ba1e",
+    "semantic_hash": "74613d41ed686f71f247a679e520ba1e"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/scripts/run_week.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "d37eb155f8fa7f49a41df58e0e61330d",
+    "semantic_hash": "d37eb155f8fa7f49a41df58e0e61330d"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "1d79f379027c51b3701ef196ad90c160",
+    "semantic_hash": "1d79f379027c51b3701ef196ad90c160"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/alpha/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "c44e0fbb9546ca92582c155708b2d0a2",
+    "semantic_hash": "c44e0fbb9546ca92582c155708b2d0a2"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/alpha/discovery.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "989491632fbf8b2b998ad26b82734dbb",
+    "semantic_hash": "989491632fbf8b2b998ad26b82734dbb"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/alpha/signals.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "35aff7fd2f90643e494413e3e80a7fa4",
+    "semantic_hash": "35aff7fd2f90643e494413e3e80a7fa4"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/contracts/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "96be8a9258c7eb7fb882b64f2df6fee8",
+    "semantic_hash": "96be8a9258c7eb7fb882b64f2df6fee8"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/contracts/mbo.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "ddbb113484ad81e6138e1a4948ef7f79",
+    "semantic_hash": "ddbb113484ad81e6138e1a4948ef7f79"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/contracts/temporal.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "d122ab737761d522304f27c0ee9aae1c",
+    "semantic_hash": "d122ab737761d522304f27c0ee9aae1c"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/core/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "ddd2e0349596083dcf139e70933a54d9",
+    "semantic_hash": "ddd2e0349596083dcf139e70933a54d9"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/core/determinism.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "9215834dab32a1744a41c015ae544bb1",
+    "semantic_hash": "9215834dab32a1744a41c015ae544bb1"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/core/session.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "074137106590d9ad62c14978b4e47f1f",
+    "semantic_hash": "074137106590d9ad62c14978b4e47f1f"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/core/temporal_policy.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "8d5f2c32b81323dece25508928f126aa",
+    "semantic_hash": "8d5f2c32b81323dece25508928f126aa"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/core/time.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "e38a3d7461268ade01fcfbaa0aa1c199",
+    "semantic_hash": "e38a3d7461268ade01fcfbaa0aa1c199"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/features/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "f3628ccd2bafaf343328ce5a5e514f28",
+    "semantic_hash": "f3628ccd2bafaf343328ce5a5e514f28"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/features/store.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "93c397da01cfeb073503676a5a226d5b",
+    "semantic_hash": "93c397da01cfeb073503676a5a226d5b"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/features/streaming.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "5be1037780e96dcd2787b92dce29d454",
+    "semantic_hash": "5be1037780e96dcd2787b92dce29d454"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/ingestion/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "36781093a775688d35d75e9d1a13ecb9",
+    "semantic_hash": "36781093a775688d35d75e9d1a13ecb9"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/ingestion/databento.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "8492b73c08fa9eaf82841e539c3a500d",
+    "semantic_hash": "8492b73c08fa9eaf82841e539c3a500d"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/ingestion/reader.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "230d0009bfaddebc19fca4181e8cca55",
+    "semantic_hash": "230d0009bfaddebc19fca4181e8cca55"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/models/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "55000ddf55763887d0b45f613c0fb66b",
+    "semantic_hash": "55000ddf55763887d0b45f613c0fb66b"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/models/contrastive.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "6a902dccb63e23be0b84f09f52313de4",
+    "semantic_hash": "6a902dccb63e23be0b84f09f52313de4"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/models/encoder.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "0b2aca75faf4ebebe2fb11f70229a74f",
+    "semantic_hash": "0b2aca75faf4ebebe2fb11f70229a74f"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/models/masking.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "cd34d8a9bc70b2cb2a9c9a5a1d1fff38",
+    "semantic_hash": "cd34d8a9bc70b2cb2a9c9a5a1d1fff38"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/models/masking_structural.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "503f3bddc0d0eef9883c180dd47c8880",
+    "semantic_hash": "503f3bddc0d0eef9883c180dd47c8880"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/models/preprocessing.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "f76e2930b5a8832e5b1c35f440891e5f",
+    "semantic_hash": "f76e2930b5a8832e5b1c35f440891e5f"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/models/splitting.py": {
+    "mtime": 1784810823.7046552,
+    "ast_hash": "de4152e6c3f4caab1fef126906ba0f74",
+    "semantic_hash": ""
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/models/ssl_pipeline.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "c0920ce75320e30e09a30382d6dcc9b5",
+    "semantic_hash": "c0920ce75320e30e09a30382d6dcc9b5"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/models/tick_stream.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "cb1ecb44923d9539eaab6d198a427105",
+    "semantic_hash": "cb1ecb44923d9539eaab6d198a427105"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/models/windowing.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "f50c3cb962c7cfe8469963c4160e85d3",
+    "semantic_hash": "f50c3cb962c7cfe8469963c4160e85d3"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/models/world_model.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "6c2889f803201a3ba1a13227ffdcb70b",
+    "semantic_hash": "6c2889f803201a3ba1a13227ffdcb70b"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/orderbook/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "c15f5a3f04efcbe3595fcaaeb6cc2f9a",
+    "semantic_hash": "c15f5a3f04efcbe3595fcaaeb6cc2f9a"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/orderbook/book.py": {
+    "mtime": 1784811085.657739,
+    "ast_hash": "d77994b4934319a79b0a0fc032067ff8",
+    "semantic_hash": ""
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/orderbook/depth.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "b0faefb360df405db84b462a029311c4",
+    "semantic_hash": "b0faefb360df405db84b462a029311c4"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/orderbook/integrity.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "5e673914a024b1a70a02ccada21b321a",
+    "semantic_hash": "5e673914a024b1a70a02ccada21b321a"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/orderbook/reconstruction.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "624d30807097f6c635a205192770b498",
+    "semantic_hash": "624d30807097f6c635a205192770b498"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/research/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "c4609b5f6145c3064081dac3cf34174a",
+    "semantic_hash": "c4609b5f6145c3064081dac3cf34174a"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/research/assistant.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "2de2377f8e30aa10c30610d5ee98cbfa",
+    "semantic_hash": "2de2377f8e30aa10c30610d5ee98cbfa"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/research/evidence.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "a966df36f4fedf842ec04190f00d940a",
+    "semantic_hash": "a966df36f4fedf842ec04190f00d940a"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/research/findings.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "6b3e5c9379f6aec70f3fbf0bb7a07b8b",
+    "semantic_hash": "6b3e5c9379f6aec70f3fbf0bb7a07b8b"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/research/orchestrator.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "d34614926bbbcda4475c2b0d9b449436",
+    "semantic_hash": "d34614926bbbcda4475c2b0d9b449436"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/research/progress.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "6cd5af6de689f48fa72413dd7a732e15",
+    "semantic_hash": "6cd5af6de689f48fa72413dd7a732e15"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/research/unified.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "f83fd5ccc97c2a804b53bfbae9014240",
+    "semantic_hash": "f83fd5ccc97c2a804b53bfbae9014240"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "5b1e499974669faa93cfe6321896dd7a",
+    "semantic_hash": "5b1e499974669faa93cfe6321896dd7a"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/auction.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "ecc5c0844748069f00aaa660311c4710",
+    "semantic_hash": "ecc5c0844748069f00aaa660311c4710"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/breakout.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "9d08f5865651e6730faff3a78bfbf4e9",
+    "semantic_hash": "9d08f5865651e6730faff3a78bfbf4e9"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/common.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "da43364467baec7534f93cbfe531bd6a",
+    "semantic_hash": "da43364467baec7534f93cbfe531bd6a"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/cross_market.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "f67bcb3176299972b90d24c483967ed1",
+    "semantic_hash": "f67bcb3176299972b90d24c483967ed1"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/depth_lifecycle.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "7de7be2d1ac85598cf2c90bf68d33938",
+    "semantic_hash": "7de7be2d1ac85598cf2c90bf68d33938"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/execution/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "48fd575df8a80a148226d107ed718987",
+    "semantic_hash": "48fd575df8a80a148226d107ed718987"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/execution/costs.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "82be2394a526b3d35c4fed1e579b1bd1",
+    "semantic_hash": "82be2394a526b3d35c4fed1e579b1bd1"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/execution/depth_fill.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "165a9d6e556bbb1434b697827826fe71",
+    "semantic_hash": "165a9d6e556bbb1434b697827826fe71"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/execution/intraday.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "3804490dc05267d5b68db45969988d76",
+    "semantic_hash": "3804490dc05267d5b68db45969988d76"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/execution/spread.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "e1d6b00d1c24d72876c3f887e875c962",
+    "semantic_hash": "e1d6b00d1c24d72876c3f887e875c962"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/footprint.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "94c5d7c085f91fa13c26ecd2a750d200",
+    "semantic_hash": "94c5d7c085f91fa13c26ecd2a750d200"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/fvg.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "a4572c662953d5e7a1c0207d02654928",
+    "semantic_hash": "a4572c662953d5e7a1c0207d02654928"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/liquidity.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "145243b29d3e2dbd2ad062578ca560b8",
+    "semantic_hash": "145243b29d3e2dbd2ad062578ca560b8"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/order_flow.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "59b083b5ac738348e838f2badb127703",
+    "semantic_hash": "59b083b5ac738348e838f2badb127703"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/simulation/volume_profile.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "a788715552e24137a4526e2a3c831630",
+    "semantic_hash": "a788715552e24137a4526e2a3c831630"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/states/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "93eb4de4079d4dc77a8ebab9dfd252a6",
+    "semantic_hash": "93eb4de4079d4dc77a8ebab9dfd252a6"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/states/regimes.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "6cb8b79812e625ed12d2aae59d6bc7f4",
+    "semantic_hash": "6cb8b79812e625ed12d2aae59d6bc7f4"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/statistics/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "73f4d0ee8d5ac03d0a61598297c6adc1",
+    "semantic_hash": "73f4d0ee8d5ac03d0a61598297c6adc1"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/statistics/hypothesis.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "3eb4892e5bec290ac658721170f880f1",
+    "semantic_hash": "3eb4892e5bec290ac658721170f880f1"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/statistics/metrics.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "02ff21531642d9ba6dc394db3a530889",
+    "semantic_hash": "02ff21531642d9ba6dc394db3a530889"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/statistics/multiple_testing.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "d8a6b55c2fed8b958863313dd019ab34",
+    "semantic_hash": "d8a6b55c2fed8b958863313dd019ab34"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/statistics/regime_tests.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "c35a139eb8221b7930867b886ca8c700",
+    "semantic_hash": "c35a139eb8221b7930867b886ca8c700"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/statistics/resampling.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "12686ed1acf189a12c2cc4865a9170de",
+    "semantic_hash": "12686ed1acf189a12c2cc4865a9170de"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/strategies/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "9dbf0d48d63d394192c6d5c13079d145",
+    "semantic_hash": "9dbf0d48d63d394192c6d5c13079d145"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/strategies/breakout_hypothesis.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "cf26f08ece1d75a0a23c69cb7b606525",
+    "semantic_hash": "cf26f08ece1d75a0a23c69cb7b606525"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/strategies/fail_breakout.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "96c7afacd698a05dd0e8fafa894578dc",
+    "semantic_hash": "96c7afacd698a05dd0e8fafa894578dc"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/strategies/fail_fvg.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "6cf558cf587833f92d8b0ae3156c1434",
+    "semantic_hash": "6cf558cf587833f92d8b0ae3156c1434"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/strategies/fvg_hypothesis.py": {
+    "mtime": 1784811091.446248,
+    "ast_hash": "e48f36b889c80a454e73a8fcf5e953bb",
+    "semantic_hash": ""
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/strategies/ssl_enhancements.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "6f900143509f8cc7a394f7f696325259",
+    "semantic_hash": "6f900143509f8cc7a394f7f696325259"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/strategies/vp_auction.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "757b9422a99029f45190f2c39b823885",
+    "semantic_hash": "757b9422a99029f45190f2c39b823885"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/validation/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "f5e867438b1dd1749365dd649e121773",
+    "semantic_hash": "f5e867438b1dd1749365dd649e121773"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/src/nq/validation/leakage.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "9a4363870e75ca27f9cef2d4ad4a33fc",
+    "semantic_hash": "9a4363870e75ca27f9cef2d4ad4a33fc"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/__init__.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/mbo_factory.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "7a358d911581b750638137c154ac9410",
+    "semantic_hash": "7a358d911581b750638137c154ac9410"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_alpha.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "23391775e5f1e8e125c07bb472c5c929",
+    "semantic_hash": "23391775e5f1e8e125c07bb472c5c929"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_auction.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "7413e4f60f49277ef51cac1406441c11",
+    "semantic_hash": "7413e4f60f49277ef51cac1406441c11"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_book.py": {
+    "mtime": 1784810823.7066162,
+    "ast_hash": "61c6829f0afde4b280e83e5c7fe9296c",
+    "semantic_hash": ""
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_breakout.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "29d8975ee0d7ea17764d400ef459312f",
+    "semantic_hash": "29d8975ee0d7ea17764d400ef459312f"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_core.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "342b954da57bce29115ecaaf7ae3bcf8",
+    "semantic_hash": "342b954da57bce29115ecaaf7ae3bcf8"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_coverage.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "63aa9bca9580ec88d18b88789fc39a85",
+    "semantic_hash": "63aa9bca9580ec88d18b88789fc39a85"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_cross_market.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "63707b7a082ec891c729842e0cdce82e",
+    "semantic_hash": "63707b7a082ec891c729842e0cdce82e"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_cross_market_latency.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "6d893811d4068c59725323c07a92f1bc",
+    "semantic_hash": "6d893811d4068c59725323c07a92f1bc"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_databento.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "df5f4bbde8c5f375abb4d36d27236262",
+    "semantic_hash": "df5f4bbde8c5f375abb4d36d27236262"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_depth_lifecycle.py": {
+    "mtime": 1784810870.8687057,
+    "ast_hash": "b448222861466182e9ada98746a5ff05",
+    "semantic_hash": ""
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_execution.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "74007ef0f5337df08098115472bb1f29",
+    "semantic_hash": "74007ef0f5337df08098115472bb1f29"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_fail_fvg_strategy.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "a47e20824c5a8bc99ce12269e120b5d3",
+    "semantic_hash": "a47e20824c5a8bc99ce12269e120b5d3"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_feature_store.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "9efe48851899c0ca7734ba138436ec8c",
+    "semantic_hash": "9efe48851899c0ca7734ba138436ec8c"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_footprint.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "7cf469b1709bafadcb135dbd798f9102",
+    "semantic_hash": "7cf469b1709bafadcb135dbd798f9102"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_fvg.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "0b8078eac1336887d982f40dacd4779b",
+    "semantic_hash": "0b8078eac1336887d982f40dacd4779b"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_fvg_hypothesis_search.py": {
+    "mtime": 1784810768.96735,
+    "ast_hash": "153843b870ede73654ab6b0a8c3a1ce0",
+    "semantic_hash": ""
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_ingestion.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "6011439351db88bb8ad698ae2d9d73e3",
+    "semantic_hash": "6011439351db88bb8ad698ae2d9d73e3"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_integrity.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "8f7699bdaf393dce9cc108864349323f",
+    "semantic_hash": "8f7699bdaf393dce9cc108864349323f"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_invariants.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "76c786b6b5332700f970d33603e56e17",
+    "semantic_hash": "76c786b6b5332700f970d33603e56e17"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_leakage.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "68ec566dbcdcaa70c8d9beff022acf40",
+    "semantic_hash": "68ec566dbcdcaa70c8d9beff022acf40"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_liquidity.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "43099e2852993fe84275ee8f42ac0ec2",
+    "semantic_hash": "43099e2852993fe84275ee8f42ac0ec2"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_masking_structural.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "43a3e4af6ff69027ea76f7e06a4bbc7f",
+    "semantic_hash": "43a3e4af6ff69027ea76f7e06a4bbc7f"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_mbo_contract.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "c61a8d1c4e6ce0f382d016cbceff5f61",
+    "semantic_hash": "c61a8d1c4e6ce0f382d016cbceff5f61"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_models_pipeline.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "9aad43f97bf3d7351d70bc5cf9dbeae1",
+    "semantic_hash": "9aad43f97bf3d7351d70bc5cf9dbeae1"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_models_splitting.py": {
+    "mtime": 1784810768.9665253,
+    "ast_hash": "cfd9df75790bc2afd70e4f6195eb5cf1",
+    "semantic_hash": ""
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_models_ssl.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "4341bb2ad8d6b0cce5a0fb32fbf0cc19",
+    "semantic_hash": "4341bb2ad8d6b0cce5a0fb32fbf0cc19"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_orchestrator.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "53010d0b292fc8d203d01d760c3e115d",
+    "semantic_hash": "53010d0b292fc8d203d01d760c3e115d"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_order_flow.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "ff4bf5af8c17aa25e0abd4497d6ae01a",
+    "semantic_hash": "ff4bf5af8c17aa25e0abd4497d6ae01a"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_pipeline_progress.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "cdec69e6b5b8281091b26828c33dcfdf",
+    "semantic_hash": "cdec69e6b5b8281091b26828c33dcfdf"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_reconstruction.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "1a4b5827ce7225786af35f7085dc81f2",
+    "semantic_hash": "1a4b5827ce7225786af35f7085dc81f2"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_reconstruction_causality.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "0bfd98dda2aa27c8e1553a35e5b8b234",
+    "semantic_hash": "0bfd98dda2aa27c8e1553a35e5b8b234"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_research.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "4ece46047485a2e53bb011a74e81ca91",
+    "semantic_hash": "4ece46047485a2e53bb011a74e81ca91"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_session.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "146810e3ea69fc0222672248deb8ec89",
+    "semantic_hash": "146810e3ea69fc0222672248deb8ec89"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_ssl_enhancements.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "5a1646bfba2ccef4177e64b521bfb40c",
+    "semantic_hash": "5a1646bfba2ccef4177e64b521bfb40c"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_states.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "864d0073d341b9faea5a3e39274ad025",
+    "semantic_hash": "864d0073d341b9faea5a3e39274ad025"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_statistics.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "5feb4d4747021853626ee3464a36586d",
+    "semantic_hash": "5feb4d4747021853626ee3464a36586d"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_streaming_features.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "e4dcd15e460f15c109df7afe512d23ab",
+    "semantic_hash": "e4dcd15e460f15c109df7afe512d23ab"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_temporal_policy.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "f0ead550065debeb4001a03b314f893e",
+    "semantic_hash": "f0ead550065debeb4001a03b314f893e"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_tick_stream.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "8bdb5d04581c2b09bc52518c2fee7a33",
+    "semantic_hash": "8bdb5d04581c2b09bc52518c2fee7a33"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_volume_profile.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "2ddd9293055328d6182e67d28fe7e0ff",
+    "semantic_hash": "2ddd9293055328d6182e67d28fe7e0ff"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/tests/test_vp_auction_strategy.py": {
+    "mtime": 1784805975.0,
+    "ast_hash": "316cc174ae375bc212670c472f0a86e2",
+    "semantic_hash": "316cc174ae375bc212670c472f0a86e2"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/.github/pull_request_template.md": {
+    "mtime": 1784805975.0,
+    "ast_hash": "4d9a627b464bcdda4f2d00deb42f30b1",
+    "semantic_hash": "4d9a627b464bcdda4f2d00deb42f30b1"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/.github/workflows/ci.yml": {
+    "mtime": 1784805975.0,
+    "ast_hash": "f37eb4949d662167e70dfd4ed6eaaa17",
+    "semantic_hash": "f37eb4949d662167e70dfd4ed6eaaa17"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/README.md": {
+    "mtime": 1784805975.0,
+    "ast_hash": "e75b1217fb5ea2f77a794d4507d5a267",
+    "semantic_hash": "e75b1217fb5ea2f77a794d4507d5a267"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/docs/architecture.md": {
+    "mtime": 1784805975.0,
+    "ast_hash": "fa5bb5d489c59378c7cb91ba91009cbe",
+    "semantic_hash": "fa5bb5d489c59378c7cb91ba91009cbe"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/docs/data_contracts.md": {
+    "mtime": 1784805975.0,
+    "ast_hash": "f057b68fa184b38e2bde32882d047d24",
+    "semantic_hash": "f057b68fa184b38e2bde32882d047d24"
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/docs/deep_audit/00_baseline.md": {
+    "mtime": 1784809680.186412,
+    "ast_hash": "98258ddba18880b102b946712aa82e62",
+    "semantic_hash": ""
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/docs/deep_audit/01_graphify_baseline.md": {
+    "mtime": 1784809716.8594894,
+    "ast_hash": "702b13a3f2a154fce52d13d360f03c4f",
+    "semantic_hash": ""
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/docs/deep_audit/02_system_architecture_audit.md": {
+    "mtime": 1784810247.0562027,
+    "ast_hash": "c64f2644f84c417391773d382e9e80f1",
+    "semantic_hash": ""
+  },
+  "/Users/abdallah/Desktop/Trading/Nq-main/docs/deep_audit/03_master_quant_audit.md": {
+    "mtime": 1784810247.056575,
+    "ast_hash": "0d34685024d173f094d8b67946d13b12",
+    "semantic_hash": ""
+  }
+}

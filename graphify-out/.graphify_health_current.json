@@ -1,0 +1,420 @@
+{
+  "node_count": 1502,
+  "raw_edge_count": 5001,
+  "non_object_edges": 0,
+  "missing_endpoint_edges": 0,
+  "dangling_endpoint_edges": 604,
+  "self_loop_edges": 0,
+  "valid_candidate_edges": 4397,
+  "exact_duplicate_edges": 485,
+  "directed_unique_endpoint_pairs": 3604,
+  "directed_same_endpoint_collapsed_edges": 793,
+  "undirected_unique_endpoint_pairs": 3588,
+  "undirected_same_endpoint_collapsed_edges": 809,
+  "same_endpoint_group_count": 453,
+  "relation_variant_groups": 93,
+  "source_file_variant_groups": 0,
+  "source_location_variant_groups": 16,
+  "context_variant_groups": 198,
+  "post_build_graph_type": "Graph",
+  "post_build_node_count": 1502,
+  "post_build_edge_count": 3588,
+  "post_build_error": "",
+  "producer_suppression": {
+    "path": "/Users/abdallah/anaconda3/lib/python3.10/site-packages/graphify/extract.py",
+    "total_sites": 50,
+    "sites": [
+      {
+        "line": 1324,
+        "name": "seen_dyn_pairs",
+        "tuple_arity": 0,
+        "sample": "seen_dyn_pairs: set) -> bool:"
+      },
+      {
+        "line": 2180,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 2300,
+        "name": "seen_swift_base",
+        "tuple_arity": 0,
+        "sample": "seen_swift_base = False"
+      },
+      {
+        "line": 2335,
+        "name": "seen_swift_base",
+        "tuple_arity": 0,
+        "sample": "seen_swift_base = True"
+      },
+      {
+        "line": 3134,
+        "name": "seen_call_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_call_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 3135,
+        "name": "seen_dyn_import_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_dyn_import_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 3136,
+        "name": "seen_static_ref_pairs",
+        "tuple_arity": 3,
+        "sample": "seen_static_ref_pairs: set[tuple[str, str, str]] = set()"
+      },
+      {
+        "line": 3137,
+        "name": "seen_helper_ref_pairs",
+        "tuple_arity": 3,
+        "sample": "seen_helper_ref_pairs: set[tuple[str, str, str]] = set()"
+      },
+      {
+        "line": 3138,
+        "name": "seen_bind_pairs",
+        "tuple_arity": 3,
+        "sample": "seen_bind_pairs: set[tuple[str, str, str]] = set()"
+      },
+      {
+        "line": 3432,
+        "name": "seen_listen_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_listen_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 3512,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 3921,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 4168,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 4274,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = {file_nid}"
+      },
+      {
+        "line": 4314,
+        "name": "seen_refs",
+        "tuple_arity": 0,
+        "sample": "seen_refs: set[str] = set()"
+      },
+      {
+        "line": 4453,
+        "name": "seen_tbls",
+        "tuple_arity": 0,
+        "sample": "seen_tbls: set[str] = set()"
+      },
+      {
+        "line": 4548,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 4820,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 5061,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 5305,
+        "name": "seen_call_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_call_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 5402,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 5590,
+        "name": "seen_call_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_call_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 5681,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 5788,
+        "name": "seen_call_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_call_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 5851,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 6020,
+        "name": "seen_call_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_call_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 7347,
+        "name": "seen_keys",
+        "tuple_arity": 0,
+        "sample": "seen_keys: set[tuple] = set()"
+      },
+      {
+        "line": 7399,
+        "name": "seen_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 7469,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 7638,
+        "name": "seen_calls",
+        "tuple_arity": 2,
+        "sample": "seen_calls: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 7690,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 7799,
+        "name": "seen_call_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_call_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 7890,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 8186,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 8187,
+        "name": "seen_call_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_call_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 8364,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 8512,
+        "name": "seen_call_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_call_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 8587,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 8588,
+        "name": "seen_edge_pairs",
+        "tuple_arity": 3,
+        "sample": "seen_edge_pairs: set[tuple[str, str, str]] = set()"
+      },
+      {
+        "line": 8687,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 8688,
+        "name": "seen_edge_pairs",
+        "tuple_arity": 3,
+        "sample": "seen_edge_pairs: set[tuple[str, str, str]] = set()"
+      },
+      {
+        "line": 8807,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 8901,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 9117,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 9204,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 9305,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 9434,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 9574,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 9725,
+        "name": "seen_call_pairs",
+        "tuple_arity": 2,
+        "sample": "seen_call_pairs: set[tuple[str, str]] = set()"
+      },
+      {
+        "line": 9941,
+        "name": "seen_targets",
+        "tuple_arity": 0,
+        "sample": "seen_targets: set[str] = set()"
+      }
+    ],
+    "error": ""
+  },
+  "examples": [
+    {
+      "source": "models_tick_stream_regime_features",
+      "target": "src_nq_models_tick_stream_py_float",
+      "edge_count": 13,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src/nq/models/tick_stream.py"
+      ],
+      "source_locations": [
+        "L209"
+      ],
+      "contexts": [
+        "generic_arg"
+      ]
+    },
+    {
+      "source": "execution_depth_fill_execution_forward_returns_depth",
+      "target": "src_nq_simulation_execution_depth_fill_py_ndarray",
+      "edge_count": 12,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src/nq/simulation/execution/depth_fill.py"
+      ],
+      "source_locations": [
+        "L40"
+      ],
+      "contexts": [
+        "generic_arg",
+        "parameter_type"
+      ]
+    },
+    {
+      "source": "models_tick_stream_tick_row",
+      "target": "src_nq_models_tick_stream_py_int",
+      "edge_count": 10,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src/nq/models/tick_stream.py"
+      ],
+      "source_locations": [
+        "L226"
+      ],
+      "contexts": [
+        "generic_arg",
+        "parameter_type"
+      ]
+    },
+    {
+      "source": "models_tick_stream_tick_row",
+      "target": "src_nq_models_tick_stream_py_float",
+      "edge_count": 10,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src/nq/models/tick_stream.py"
+      ],
+      "source_locations": [
+        "L226"
+      ],
+      "contexts": [
+        "generic_arg",
+        "parameter_type"
+      ]
+    },
+    {
+      "source": "simulation_breakout_volume_gate",
+      "target": "src_nq_simulation_breakout_py_float",
+      "edge_count": 8,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src/nq/simulation/breakout.py"
+      ],
+      "source_locations": [
+        "L142"
+      ],
+      "contexts": [
+        "parameter_type"
+      ]
+    }
+  ]
+}

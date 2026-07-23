@@ -1,0 +1,43 @@
+"""استراتيجيات بحثية منفصلة — تُركَّب على خط المشروع دون fork معماري.
+
+كل استراتيجية:
+
+* تشتق إشاراتها من MBO عبر ``nq.simulation``.
+* تُقيَّم عبر ``nq.alpha`` (IC + دلالة + تصحيح تعدّد).
+* تُوثَّق عبر ``nq.research`` (فرضيات بأدلّة قابلة للتتبع).
+* قد تُفلتر اختياريًا بتمثيلات SSL الكامنة (بدون تسريب زمني).
+"""
+
+from __future__ import annotations
+
+from nq.strategies.breakout_hypothesis import (
+    BreakoutHypothesisSearchResult,
+    BreakoutHypothesisSpec,
+    search_fail_breakout_hypotheses,
+)
+from nq.strategies.fail_breakout import FailBreakoutResearchResult, run_fail_breakout_research
+from nq.strategies.fail_fvg import FailFvgResearchResult, run_fail_fvg_research
+from nq.strategies.fvg_hypothesis import (
+    FvgHypothesisSearchResult,
+    FvgHypothesisSpec,
+    search_fail_fvg_hypotheses,
+)
+from nq.strategies.ssl_enhancements import EnhancementSpec, generate_ssl_enhancement_candidates
+from nq.strategies.vp_auction import VpAuctionResearchResult, run_vp_auction_research
+
+__all__ = [
+    "BreakoutHypothesisSearchResult",
+    "BreakoutHypothesisSpec",
+    "EnhancementSpec",
+    "FailBreakoutResearchResult",
+    "FailFvgResearchResult",
+    "FvgHypothesisSearchResult",
+    "FvgHypothesisSpec",
+    "VpAuctionResearchResult",
+    "generate_ssl_enhancement_candidates",
+    "run_fail_breakout_research",
+    "run_fail_fvg_research",
+    "run_vp_auction_research",
+    "search_fail_breakout_hypotheses",
+    "search_fail_fvg_hypotheses",
+]

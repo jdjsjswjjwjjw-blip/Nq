@@ -1,0 +1,13 @@
+{
+  "runs": [
+    {
+      "date": "2026-07-23T12:26:53.870975+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 127,
+      "note": "Manual semantic extraction because graphify 0.8.27 claude-cli backend failed on unsupported --no-session-persistence option."
+    }
+  ],
+  "total_input_tokens": 0,
+  "total_output_tokens": 0
+}
