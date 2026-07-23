@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""تشغيل بحث Failed Breakout — أمر منفصل فوق الخط الموحّد.
+"""تشغيل بحث Failed Breakout — تركيز فوليوم فوق الخط الموحّد.
 
-    # فرضية افتراضية (دخول سببي = إغلاق الشمعة، ليس مستوى الكسر)
+    # خط أساسي (إشارة + أعمدة فوليوم سببية)
     python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --max-rows 500000
 
-    # بحث + تعزيزات SSL علمية (افتراضي مع --search)
+    # بحث نواة فوليوم + تعزيزات SSL (تنخيل walk-forward)
     python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --search --max-rows 500000
+
+    # شبكة فوليوم كاملة (~144 فرضية: bar/cum/delta/effort_result) بلا تعزيز SSL
+    python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --search --no-enhance
 """
 
 from __future__ import annotations
@@ -32,8 +35,8 @@ from nq.strategies.fail_breakout import run_fail_breakout_research  # noqa: E402
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Failed Breakout research — separate run on unified pipeline "
-            "(causal close entry; optional walk-forward + SSL confirmation gate)"
+            "Failed Breakout volume research — causal close entry; "
+            "walk-forward volume hypotheses (bar/cum/delta/effort_result) + SSL sift"
         )
     )
     parser.add_argument("--nq", type=Path, required=True, help="مسار NQ MBO")
@@ -44,7 +47,7 @@ def main() -> None:
     parser.add_argument(
         "--search",
         action="store_true",
-        help="بحث شبكة إعدادات بـ walk-forward + تعزيزات/بوابة SSL",
+        help="بحث فرضيات فوليوم بـ walk-forward + تعزيزات/بوابة SSL",
     )
     parser.add_argument(
         "--no-ssl-gate",
@@ -54,7 +57,7 @@ def main() -> None:
     parser.add_argument(
         "--no-enhance",
         action="store_true",
-        help="مع --search: تعطيل مولّد تعزيزات SSL/السياق",
+        help="مع --search: شبكة فوليوم كاملة (~144) بدل نواة+تعزيزات SSL",
     )
     parser.add_argument("--n-splits", type=int, default=3)
     parser.add_argument("--quiet", action="store_true")
@@ -65,7 +68,14 @@ def main() -> None:
     if args.mnq is not None and not args.mnq.is_file():
         raise FileNotFoundError(f"MNQ MBO not found: {args.mnq.resolve()}")
 
-    mode = "بحث + تعزيزات SSL (--search)" if args.search else "خط Failed Breakout"
+    if args.search:
+        mode = (
+            "شبكة فوليوم كاملة (--no-enhance)"
+            if args.no_enhance
+            else "نواة فوليوم + تعزيزات SSL"
+        )
+    else:
+        mode = "خط Failed Breakout (فوليوم)"
     if not args.quiet:
         print(
             f"[nq] ========== بدء: run_fail_breakout · {mode} ==========",
@@ -89,6 +99,7 @@ def main() -> None:
         print(f"\nbest_oos_spec: {result.best_oos_spec}")
         print(f"oos_selected_ic: {result.oos_selected_ic}")
         print(f"candidates: {len(result.candidate_columns)}")
+        print(f"volume_specs: {len(result.specs)}")
         print(f"enhancements: {len(result.enhancement_columns)}")
         print(f"features: {result.features.height} rows")
         print(f"outputs: {args.output.resolve()}/")
@@ -106,9 +117,27 @@ def main() -> None:
     print(f"\nsignals: {result.signal_columns}")
     print(f"features: {result.features.height} rows")
     print(f"outputs: {args.output.resolve()}/")
-    assert "fail_breakout" in result.features.columns, "missing fail_breakout"
-    if "fb_entry_ref" in result.features.columns and "fb_break_level" in result.features.columns:
-        # عند وجود إشارة: مستوى الكسر ≠ مرجع الدخول (إغلاق) في الحالات النموذجية
+    for name in (
+        "report.md",
+        "features.parquet",
+        "ssl_metrics.parquet",
+        "coverage_metrics.parquet",
+        "alpha_evaluations.parquet",
+        "progress.log",
+    ):
+        path = args.output / name
+        if path.is_file():
+            print(f"  - {name}")
+    assert "fail_breakout" in result.features.columns
+    for col in (
+        "fb_effort_volume_ratio",
+        "fb_effort_result_ratio",
+        "fb_cum_volume",
+        "fb_delta",
+        "fb_absorption",
+    ):
+        assert col in result.features.columns, f"missing volume column {col}"
+    if "fb_entry_ref" in result.features.columns:
         print("entry_model: fb_entry_ref=signal_bar_close (executable); fb_break_level=analytic only")
 
 

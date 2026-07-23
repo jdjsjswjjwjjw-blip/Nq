@@ -77,7 +77,10 @@ def test_ssl_quantile_gate_uses_past_only() -> None:
 
 
 def test_core_breakout_grid_small() -> None:
-    assert 3 <= len(core_breakout_grid()) <= 8
+    assert 6 <= len(core_breakout_grid()) <= 12
+    modes = {s.vol_mode for s in core_breakout_grid()}
+    assert "bar" in modes and "cum" in modes
+    assert "delta" in modes and "effort_result" in modes
 
 
 def test_search_with_enhancements_runs() -> None:

@@ -23,6 +23,7 @@ data/**/*.arrow
 data/**/*.dbn
 data/**/*.dbn.zst
 data/**/*.csv
+data/runs/
 
 # OS / editors
 .DS_Store

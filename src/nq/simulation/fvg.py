@@ -44,24 +44,30 @@ _EMPTY_FVG_SCHEMA: Final[dict[str, pl.DataType]] = {
 
 
 def build_ohlcv_bars(frame: pl.DataFrame, *, interval_ns: int) -> pl.DataFrame:
-    """يبني شموع OHLC + حجم من صفقات MBO؛ متاحة عند ``bucket_end``."""
+    """يبني شموع OHLC + حجم/تدفّق من صفقات MBO؛ متاحة عند ``bucket_end``.
+
+    الأعمدة الإضافية (سببية داخل الشمعة المكتملة):
+    ``buy_volume``, ``sell_volume``, ``delta`` = buy − sell.
+    """
     if interval_ns < 1:
         raise ValueError(f"interval_ns must be >= 1, got {interval_ns}")
     trades = extract_trades(frame)
+    empty = {
+        BUCKET_START: pl.Int64(),
+        BUCKET_END: pl.Int64(),
+        AVAILABILITY_TS: pl.Int64(),
+        "o": pl.Float64(),
+        "h": pl.Float64(),
+        "l": pl.Float64(),
+        "c": pl.Float64(),
+        "volume": pl.Float64(),
+        "buy_volume": pl.Float64(),
+        "sell_volume": pl.Float64(),
+        "delta": pl.Float64(),
+        "range": pl.Float64(),
+    }
     if trades.height == 0:
-        return pl.DataFrame(
-            schema={
-                BUCKET_START: pl.Int64(),
-                BUCKET_END: pl.Int64(),
-                AVAILABILITY_TS: pl.Int64(),
-                "o": pl.Float64(),
-                "h": pl.Float64(),
-                "l": pl.Float64(),
-                "c": pl.Float64(),
-                "volume": pl.Float64(),
-                "range": pl.Float64(),
-            }
-        )
+        return pl.DataFrame(schema=empty)
     priced = add_time_bucket(trades, interval_ns=interval_ns).with_columns(
         (pl.col("price").cast(pl.Float64) * PRICE_SCALE).alias("px")
     )
@@ -73,14 +79,30 @@ def build_ohlcv_bars(frame: pl.DataFrame, *, interval_ns: int) -> pl.DataFrame:
             pl.col("px").min().alias("l"),
             pl.col("px").last().alias("c"),
             pl.col("size").cast(pl.Float64).sum().alias("volume"),
+            pl.col("buy_volume").cast(pl.Float64).sum().alias("buy_volume"),
+            pl.col("sell_volume").cast(pl.Float64).sum().alias("sell_volume"),
             pl.col(BUCKET_END).first(),
         )
         .sort(BUCKET_START)
         .with_columns(
             (pl.col("h") - pl.col("l")).alias("range"),
+            (pl.col("buy_volume") - pl.col("sell_volume")).alias("delta"),
             pl.col(BUCKET_END).alias(AVAILABILITY_TS),
         )
-        .select(BUCKET_START, BUCKET_END, AVAILABILITY_TS, "o", "h", "l", "c", "volume", "range")
+        .select(
+            BUCKET_START,
+            BUCKET_END,
+            AVAILABILITY_TS,
+            "o",
+            "h",
+            "l",
+            "c",
+            "volume",
+            "buy_volume",
+            "sell_volume",
+            "delta",
+            "range",
+        )
     )
 
 
