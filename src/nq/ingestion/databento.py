@@ -82,10 +82,7 @@ def _scale_price_column(frame: pl.DataFrame) -> pl.DataFrame:
     else:
         scaled = pl.col("price").cast(pl.Int64)
     return frame.with_columns(
-        pl.when(pl.col("price").is_null())
-        .then(0)
-        .otherwise(scaled)
-        .alias("price")
+        pl.when(pl.col("price").is_null()).then(0).otherwise(scaled).alias("price")
     )
 
 

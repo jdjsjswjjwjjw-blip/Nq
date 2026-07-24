@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 from nq.core.determinism import make_generator
-from nq.research.orchestrator import run_research_pipeline
+from nq.research.orchestrator import PipelineConfig, run_research_pipeline
 from nq.research.progress import PipelineProgress
+from nq.simulation.cross_market import cross_market_features
+from nq.simulation.depth_lifecycle import depth_at_bar_close
+from nq.strategies.breakout_hypothesis import (
+    BreakoutHypothesisSpec,
+    materialize_breakout_hypotheses,
+)
 from nq.strategies.fvg_hypothesis import search_fail_fvg_hypotheses
 from tests.test_coverage import _paired_streams
 
@@ -63,6 +70,7 @@ def test_pipeline_progress_fail_marks_step() -> None:
         raise ValueError("boom")
     except ValueError as exc:
         progress.fail(exc)
+    assert isinstance(progress.stream, io.StringIO)
     text = progress.stream.getvalue()
     assert "✗ فشل في الخطوة: خطوة خطرة" in text
     assert "ValueError: boom" in text
@@ -87,7 +95,7 @@ def test_progress_helper_duration_and_notes() -> None:
     assert "انتهى بنجاح: demo" in text
 
 
-def test_pipeline_progress_writes_progress_log(tmp_path) -> None:
+def test_pipeline_progress_writes_progress_log(tmp_path: Path) -> None:
     nq, mnq = _paired_streams(1200, seed=93)
     buf = io.StringIO()
     progress = PipelineProgress(enabled=True, stream=buf)
@@ -152,7 +160,7 @@ def test_pipeline_progress_prints_alpha_and_m9_ops() -> None:
     assert "SSL-tick" in text
 
 
-def test_fvg_search_passes_progress_into_ssl(tmp_path) -> None:
+def test_fvg_search_passes_progress_into_ssl(tmp_path: Path) -> None:
     """بحث FVG يمرّر progress إلى SSL-tick ويكتب progress.log."""
     nq, mnq = _paired_streams(2000, seed=96)
     buf = io.StringIO()
@@ -179,8 +187,6 @@ def test_fvg_search_passes_progress_into_ssl(tmp_path) -> None:
 
 
 def test_bucket_ssl_emits_fold_progress() -> None:
-    from nq.research.orchestrator import PipelineConfig
-
     nq, mnq = _paired_streams(1600, seed=97)
     buf = io.StringIO()
     progress = PipelineProgress(enabled=True, stream=buf)
@@ -220,13 +226,6 @@ def test_progress_channel_prefixes_lines() -> None:
 
 
 def test_depth_and_materialize_emit_heartbeats() -> None:
-    from nq.simulation.depth_lifecycle import depth_at_bar_close
-    from nq.strategies.breakout_hypothesis import (
-        BreakoutHypothesisSpec,
-        materialize_breakout_hypotheses,
-    )
-    from nq.simulation.cross_market import cross_market_features
-
     nq, mnq = _paired_streams(600, seed=101)
     buf = io.StringIO()
     progress = PipelineProgress(enabled=True, stream=buf)

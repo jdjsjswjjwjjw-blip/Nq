@@ -22,6 +22,7 @@ import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.time import sort_causal
+from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_START, add_time_bucket, extract_trades
 from nq.simulation.volume_profile import developing_value_area
 
@@ -36,7 +37,7 @@ def auction_states(
     fraction: float = 0.7,
     balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
     expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يصنّف حالة المزاد لكل نافذة زمنية (متاح عند ``bucket_end``).
 
@@ -127,7 +128,7 @@ def auction_signal_frame(
     fraction: float = 0.7,
     balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
     expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """إشارات بحثية من Volume Profile + المزاد (توازن/اختلال/تمدّد).
 
@@ -143,9 +144,7 @@ def auction_signal_frame(
     * ``vp_flip_to_imbalance`` — انتقال من توازن → اختلال.
     """
     if progress is not None:
-        progress.op(  # type: ignore[union-attr]
-            f"auction_signal_frame: بناء حالات المزاد · interval_ns={interval_ns}"
-        )
+        progress.op(f"auction_signal_frame: بناء حالات المزاد · interval_ns={interval_ns}")
     states = auction_states(
         frame,
         interval_ns=interval_ns,

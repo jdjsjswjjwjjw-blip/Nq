@@ -26,6 +26,7 @@ import polars as pl
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.session import SESSION_DATE, add_session_columns, session_date_from_ns
 from nq.orderbook import reconstruct
+from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket
 from nq.simulation.order_flow import order_flow_summary
 
@@ -38,13 +39,11 @@ def _market_windows(
     frame: pl.DataFrame,
     *,
     interval_ns: int,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
     progress_label: str = "market_windows",
 ) -> pl.DataFrame:
     """يبني سلسلة نافذية لسوق واحد: سعر الإغلاق (mid) والدلتا العدوانية."""
-    tob = reconstruct(
-        frame, progress=progress, progress_label=progress_label
-    ).top_of_book
+    tob = reconstruct(frame, progress=progress, progress_label=progress_label).top_of_book
     both = pl.col("best_bid").is_not_null() & pl.col("best_ask").is_not_null()
     tob = add_time_bucket(
         tob.with_columns(
@@ -129,7 +128,7 @@ def cross_market_features(
     lead_lag_window: int = _DEFAULT_LEAD_LAG_WINDOW,
     min_trap_delta: int = _DEFAULT_MIN_TRAP_DELTA,
     latency_ns: int = 0,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يشتق ميزات عبر السوقين على شبكة زمنية موحّدة (متاحة عند ``bucket_end``)."""
     if lead_lag_window < _MIN_LEAD_LAG_WINDOW:
@@ -138,9 +137,7 @@ def cross_market_features(
         raise ValueError(f"latency_ns must be non-negative, got {latency_ns}")
 
     if progress is not None:
-        progress.op(  # type: ignore[union-attr]
-            f"cross_market: نوافذ NQ ثم MNQ · interval_ns={interval_ns}"
-        )
+        progress.op(f"cross_market: نوافذ NQ ثم MNQ · interval_ns={interval_ns}")
     nq_w = _market_windows(
         nq, interval_ns=interval_ns, progress=progress, progress_label="cross:NQ"
     )

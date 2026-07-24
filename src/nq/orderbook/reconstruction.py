@@ -17,6 +17,7 @@ from nq.contracts.temporal import EVENT_TS, SEQUENCE
 from nq.core.time import assert_sorted_causal
 from nq.orderbook.book import OrderBook
 from nq.orderbook.integrity import IntegrityReport, check_integrity
+from nq.research.progress import ProgressLike
 
 _TOB_SCHEMA: dict[str, pl.DataType] = {
     EVENT_TS: pl.Int64(),
@@ -49,7 +50,7 @@ def _record_loop(
     sizes: list[int],
     order_ids: list[int],
     *,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
     progress_label: str = "reconstruct",
 ) -> tuple[list[int | None], list[int | None], list[int | None], list[int | None]]:
     """يعالج الأحداث ويسجّل top-of-book بعد كل حدث."""
@@ -80,7 +81,7 @@ def _record_loop(
             ba_price.append(None)
             ba_size.append(None)
         if progress is not None and (i % 500 == 0 or i == n):
-            progress.heartbeat(i, n, label=progress_label)  # type: ignore[union-attr]
+            progress.heartbeat(i, n, label=progress_label)
     return bb_price, bb_size, ba_price, ba_size
 
 
@@ -92,7 +93,7 @@ def _plain_loop(
     sizes: list[int],
     order_ids: list[int],
     *,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
     progress_label: str = "reconstruct",
 ) -> None:
     apply = book.apply
@@ -102,14 +103,14 @@ def _plain_loop(
     ):
         apply(action, side, price, size, order_id)
         if progress is not None and (i % 500 == 0 or i == n):
-            progress.heartbeat(i, n, label=progress_label)  # type: ignore[union-attr]
+            progress.heartbeat(i, n, label=progress_label)
 
 
 def reconstruct(
     frame: pl.DataFrame,
     *,
     record_top_of_book: bool = True,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
     progress_label: str = "reconstruct",
 ) -> ReconstructionResult:
     """يُعيد بناء دفتر أوامر أداة واحدة من أحداث MBO.
@@ -129,7 +130,7 @@ def reconstruct(
         return ReconstructionResult(_empty_tob(), book, base_integrity)
 
     if progress is not None:
-        progress.op(f"{progress_label}: إعادة بناء دفتر · أحداث={frame.height:,}")  # type: ignore[union-attr]
+        progress.op(f"{progress_label}: إعادة بناء دفتر · أحداث={frame.height:,}")
 
     actions: list[str] = frame["action"].cast(pl.Utf8).to_list()
     sides: list[str] = frame["side"].cast(pl.Utf8).to_list()
@@ -178,7 +179,7 @@ def reconstruct(
         tob = _empty_tob()
 
     if progress is not None:
-        progress.op(f"{progress_label}: انتهى · tob={tob.height:,}")  # type: ignore[union-attr]
+        progress.op(f"{progress_label}: انتهى · tob={tob.height:,}")
 
     integrity = replace(
         base_integrity,
@@ -192,7 +193,7 @@ def reconstruct_by_instrument(
     frame: pl.DataFrame,
     *,
     record_top_of_book: bool = True,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> dict[int, ReconstructionResult]:
     """يُعيد البناء لكل أداة على حدة ويُعيد قاموسًا ``instrument_id -> نتيجة``."""
     results: dict[int, ReconstructionResult] = {}
@@ -202,9 +203,7 @@ def reconstruct_by_instrument(
     n = len(groups)
     for i, ((instrument_id,), group) in enumerate(groups, start=1):
         if progress is not None:
-            progress.op(  # type: ignore[union-attr]
-                f"reconstruct_by_instrument [{i}/{n}] id={instrument_id}"
-            )
+            progress.op(f"reconstruct_by_instrument [{i}/{n}] id={instrument_id}")
         results[int(instrument_id)] = reconstruct(
             group,
             record_top_of_book=record_top_of_book,

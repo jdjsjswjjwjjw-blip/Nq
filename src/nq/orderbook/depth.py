@@ -113,7 +113,7 @@ def unpack_levels_from_row(
         if sz_i <= 0:
             continue
         # الأعمدة مخزّنة بسعر حقيقي؛ نعيد للنقطة الثابتة للمسح الداخلي
-        levels.append((int(round(px_f / PRICE_SCALE)), sz_i))
+        levels.append((round(px_f / PRICE_SCALE), sz_i))
     return levels
 
 

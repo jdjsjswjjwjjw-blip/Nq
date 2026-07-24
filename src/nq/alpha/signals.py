@@ -16,6 +16,7 @@ import numpy as np
 import numpy.typing as npt
 import polars as pl
 
+from nq.research.progress import ProgressLike
 from nq.simulation.execution.intraday import (
     directional_execution_returns,
     execution_forward_returns,
@@ -82,7 +83,7 @@ def evaluate_signal(
     n_permutations: int = 2000,
     rng: np.random.Generator | None = None,
     min_samples: int = _MIN_EVAL_SAMPLES,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
     progress_label: str | None = None,
 ) -> SignalEvaluation:
     """يقيّم إشارة: IC (Spearman) مع دلالة بالتبديل، ونسبة شارب للاستراتيجية."""
@@ -106,7 +107,7 @@ def evaluate_signal(
     for i in range(n_permutations):
         null[i] = information_coefficient(v, generator.permutation(f), method="spearman")
         if progress is not None:
-            progress.heartbeat(i + 1, n_permutations, label=label)  # type: ignore[union-attr]
+            progress.heartbeat(i + 1, n_permutations, label=label)
     ic_pvalue = (int(np.sum(np.abs(null) >= abs(observed_ic))) + 1) / (n_permutations + 1)
 
     strategy = np.sign(v) * f
@@ -165,7 +166,7 @@ def evaluate_signal_intraday(
     commission_bps: float = 0.0,
     n_permutations: int = 2000,
     rng: np.random.Generator | None = None,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
     progress_label: str | None = None,
 ) -> SignalEvaluation:
     """يقيّم إشارة بعوائد أمامية بعد عبور spread وانزلاق intraday."""

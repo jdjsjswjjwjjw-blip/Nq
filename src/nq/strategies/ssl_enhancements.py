@@ -18,6 +18,7 @@ import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
 
+_MIN_KEEP_COLS = 2
 _SSL_WINDOW = 50
 _SSL_MIN_SAMPLES = 10
 _DEFAULT_QUANTILES = (0.6, 0.7, 0.8)
@@ -55,7 +56,7 @@ def _attach_embeddings(
     z_cols: Sequence[str],
 ) -> pl.DataFrame:
     keep = [c for c in (AVAILABILITY_TS, *z_cols) if c in embeddings.columns]
-    if AVAILABILITY_TS not in keep or len(keep) < 2:
+    if AVAILABILITY_TS not in keep or len(keep) < _MIN_KEEP_COLS:
         return features
     right = embeddings.select(keep).sort(AVAILABILITY_TS)
     left = features.sort(AVAILABILITY_TS)
@@ -65,7 +66,7 @@ def _attach_embeddings(
     return left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
 
 
-def generate_ssl_enhancement_candidates(
+def generate_ssl_enhancement_candidates(  # noqa: PLR0912
     features: pl.DataFrame,
     embeddings: pl.DataFrame,
     base_columns: Sequence[str],
@@ -125,9 +126,7 @@ def generate_ssl_enhancement_candidates(
                 specs.append(spec)
                 new_cols.append(col)
                 # الإشارة تبقى كما هي عند الاتفاق، وإلا 0
-                agree = (
-                    (pl.col(base).fill_null(0.0) * sign_z) > 0.0
-                ).cast(pl.Float64)
+                agree = ((pl.col(base).fill_null(0.0) * sign_z) > 0.0).cast(pl.Float64)
                 exprs.append((pl.col(base).fill_null(0.0) * agree).alias(col))
 
     if include_context:

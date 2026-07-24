@@ -15,6 +15,8 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 
+from nq.research.progress import ProgressLike
+
 FloatArray = npt.NDArray[np.float64]
 Alternative = Literal["two-sided", "greater", "less"]
 
@@ -52,7 +54,7 @@ def permutation_test(
     n_permutations: int = 10_000,
     rng: np.random.Generator | None = None,
     alternative: Alternative = "two-sided",
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
     progress_label: str = "perm_test",
 ) -> TestResult:
     """اختبار تبديل لفرضية عدم وجود فرق بين ``a`` و ``b``.
@@ -74,7 +76,7 @@ def permutation_test(
         perm = generator.permutation(pooled)
         null[i] = statistic(perm[:n_a], perm[n_a:])
         if progress is not None:
-            progress.heartbeat(i + 1, n_permutations, label=progress_label)  # type: ignore[union-attr]
+            progress.heartbeat(i + 1, n_permutations, label=progress_label)
 
     return TestResult(
         statistic=observed,

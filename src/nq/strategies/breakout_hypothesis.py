@@ -24,7 +24,7 @@ from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
-from nq.research.progress import PipelineProgress, resolve_progress
+from nq.research.progress import PipelineProgress, ProgressLike, resolve_progress
 from nq.simulation.breakout import VolMode, failed_breakout_features, failed_breakout_from_bars
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import NS_PER_MIN, build_ohlcv_bars
@@ -37,6 +37,8 @@ from nq.strategies.ssl_enhancements import (
     EnhancementSpec,
     generate_ssl_enhancement_candidates,
 )
+
+_MIN_VOLUME_KEEP = 2
 
 _SSL_GATE_QUANTILE = 0.7
 
@@ -155,11 +157,7 @@ def classic_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
             for rm, vm in thresholds:
                 for use_sma in sma_modes:
                     tag = "sma" if use_sma else "nosma"
-                    name = (
-                        f"s{sig_m}_lb{lb}_"
-                        f"r{_tag_float(rm)}_"
-                        f"v{_tag_float(vm)}_{tag}"
-                    )
+                    name = f"s{sig_m}_lb{lb}_r{_tag_float(rm)}_v{_tag_float(vm)}_{tag}"
                     specs.append(
                         BreakoutHypothesisSpec(
                             name=name,
@@ -283,7 +281,7 @@ def materialize_breakout_hypotheses(
     specs: Sequence[BreakoutHypothesisSpec],
     *,
     clock: pl.DataFrame,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يبني أعمدة فرضيات على ساعة مشتركة (asof خلفي فقط)."""
     if AVAILABILITY_TS not in clock.columns:
@@ -295,7 +293,7 @@ def materialize_breakout_hypotheses(
     log = progress
     n_specs = len(specs)
     if log is not None:
-        log.op(f"تجسيد {n_specs} فرضية FB (كل فرضية تُطبع)")  # type: ignore[union-attr]
+        log.op(f"تجسيد {n_specs} فرضية FB (كل فرضية تُطبع)")
 
     bars_cache: dict[int, pl.DataFrame] = {}
 
@@ -303,17 +301,17 @@ def materialize_breakout_hypotheses(
         cached = bars_cache.get(interval_ns)
         if cached is None:
             if log is not None:
-                log.op(f"بناء OHLCV interval_ns={interval_ns}")  # type: ignore[union-attr]
+                log.op(f"بناء OHLCV interval_ns={interval_ns}")
             cached = build_ohlcv_bars(nq, interval_ns=interval_ns)
             bars_cache[interval_ns] = cached
             if log is not None:
-                log.op(f"OHLCV جاهز: {cached.height:,} شمعة")  # type: ignore[union-attr]
+                log.op(f"OHLCV جاهز: {cached.height:,} شمعة")
         return cached
 
     out = left
     for i, spec in enumerate(specs, start=1):
         if log is not None:
-            log.op(  # type: ignore[union-attr]
+            log.op(
                 f"فرضية [{i}/{n_specs}] {spec.name} · mode={spec.vol_mode} · "
                 f"lb={spec.lookback} · v={spec.vol_mult}"
             )
@@ -335,7 +333,7 @@ def materialize_breakout_hypotheses(
         if raw.height == 0:
             out = out.with_columns(pl.lit(0.0).alias(col))
             if log is not None:
-                log.op(f"  → {col}: 0 إشارات")  # type: ignore[union-attr]
+                log.op(f"  → {col}: 0 إشارات")
         else:
             right = (
                 raw.select(AVAILABILITY_TS, pl.col("fail_breakout").alias(col))
@@ -349,11 +347,11 @@ def materialize_breakout_hypotheses(
             )
             if log is not None:
                 n_sig = int((raw["fail_breakout"] != 0).sum())
-                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف")  # type: ignore[union-attr]
+                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف")
         if log is not None:
-            log.heartbeat(i, n_specs, label="materialize_FB", force=True)  # type: ignore[union-attr]
+            log.heartbeat(i, n_specs, label="materialize_FB", force=True)
     if log is not None:
-        log.op(f"انتهى تجسيد {n_specs} فرضية")  # type: ignore[union-attr]
+        log.op(f"انتهى تجسيد {n_specs} فرضية")
     return out
 
 
@@ -361,17 +359,13 @@ def _attach_volume_context(
     features: pl.DataFrame,
     nq: pl.DataFrame,
     *,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يلحق أعمدة فوليوم سببية افتراضية للتعزيز/السياق (asof خلفي)."""
-    fb = failed_breakout_features(
-        nq, require_sma_filter=False, rth_only=False, progress=progress
-    )
+    fb = failed_breakout_features(nq, require_sma_filter=False, rth_only=False, progress=progress)
     keep = [c for c in (AVAILABILITY_TS, *_VOLUME_FEATURE_COLUMNS) if c in fb.columns]
-    if len(keep) < 2 or features.height == 0:
-        zeros = [
-            pl.lit(0.0).alias(c) for c in _VOLUME_FEATURE_COLUMNS if c not in features.columns
-        ]
+    if len(keep) < _MIN_VOLUME_KEEP or features.height == 0:
+        zeros = [pl.lit(0.0).alias(c) for c in _VOLUME_FEATURE_COLUMNS if c not in features.columns]
         return features.with_columns(zeros) if zeros else features
     right = fb.select(keep).sort(AVAILABILITY_TS)
     left = features.sort(AVAILABILITY_TS)
@@ -383,7 +377,7 @@ def _attach_volume_context(
     return joined.with_columns(fills) if fills else joined
 
 
-def search_fail_breakout_hypotheses(
+def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     nq: pl.DataFrame | str | Path,
     mnq: pl.DataFrame | str | Path | None = None,
     *,

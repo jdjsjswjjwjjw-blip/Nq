@@ -310,7 +310,7 @@ def _attach_auction_vp(
     return joined.with_columns(fills) if fills else joined
 
 
-def _attach_failed_breakout(
+def _attach_failed_breakout(  # noqa: PLR0915
     features: pl.DataFrame,
     nq: pl.DataFrame,
     *,
@@ -329,7 +329,7 @@ def _attach_failed_breakout(
 
     # عمق عند إغلاق شمعة الإشارة (30m) — مسار منفصل عن عمق ساعة البحث
     interval_30m = 30 * 60 * 1_000_000_000
-    log.op(f"مسح عمق FB عند إغلاق 30m (منفصل عن عمق ساعة البحث) · levels=5")
+    log.op("مسح عمق FB عند إغلاق 30m (منفصل عن عمق ساعة البحث) · levels=5")
     depth = depth_at_bar_close(nq, interval_ns=interval_30m, n_levels=5, progress=log)
     if depth.height > 0:
         fb = attach_depth_asof(
@@ -367,7 +367,7 @@ def _attach_failed_breakout(
         levels_ask_px = [f"depth_ask_px_{k}" for k in range(1, 6)]
         levels_ask_sz = [f"depth_ask_sz_{k}" for k in range(1, 6)]
 
-        def _depth_at_break(row: dict) -> float:
+        def _depth_at_break(row: dict[str, float | int | None]) -> float:
             level = float(row.get("fb_break_level") or 0.0)
             signal = float(row.get("fail_breakout") or 0.0)
             if level <= 0 or signal == 0.0:
@@ -503,7 +503,7 @@ def _build_research_features(
     return features
 
 
-def run_ssl_research_pipeline(
+def run_ssl_research_pipeline(  # noqa: PLR0915
     nq: pl.DataFrame,
     mnq: pl.DataFrame,
     features: pl.DataFrame,
@@ -548,13 +548,11 @@ def run_ssl_research_pipeline(
     purge_val = policy.purge_samples()
     columns = _resolve_signal_columns(features, signal_columns)
     log.note(
-        f"إشارات الفرز: {len(columns)} · ssl_mode={ssl_mode} · "
-        f"parallel_m9={parallel_coverage}"
+        f"إشارات الفرز: {len(columns)} · ssl_mode={ssl_mode} · parallel_m9={parallel_coverage}"
     )
     if parallel_coverage:
         log.note(
-            "توازي SSL‖M9 مفعّل — راقب بادئة [SSL]/[M9] "
-            "(للمسار الخطي: parallel_coverage=false)"
+            "توازي SSL‖M9 مفعّل — راقب بادئة [SSL]/[M9] (للمسار الخطي: parallel_coverage=false)"
         )
 
     ssl_assistant = ResearchAssistant(alpha=alpha, language_model=language_model)
@@ -813,9 +811,7 @@ def run_research_pipeline(
 
     log = resolve_progress(progress, quiet=cfg.quiet)
     feature_extra = (
-        int(cfg.include_failed_fvg)
-        + int(cfg.include_auction_vp)
-        + int(cfg.include_failed_breakout)
+        int(cfg.include_failed_fvg) + int(cfg.include_auction_vp) + int(cfg.include_failed_breakout)
     )
     save_step = 1 if output_dir is not None else 0
     llm_step = 1 if language_model is not None else 0

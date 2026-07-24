@@ -16,6 +16,7 @@ import numpy.typing as npt
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.research.progress import ProgressLike
 
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.int64]
@@ -50,7 +51,7 @@ def build_sequences(
     window: int,
     time_col: str = AVAILABILITY_TS,
     stride: int = 1,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> SequenceDataset:
     """يبني ``SequenceDataset`` سببيًا من إطار ميزات مرتّب زمنيًا.
 
@@ -74,16 +75,14 @@ def build_sequences(
     ends_list = list(range(window - 1, n_rows, stride))
     n_ends = len(ends_list)
     if progress is not None:
-        progress.op(  # type: ignore[union-attr]
-            f"build_sequences: {n_ends:,} نافذة · window={window} · rows={n_rows:,}"
-        )
+        progress.op(f"build_sequences: {n_ends:,} نافذة · window={window} · rows={n_rows:,}")
     samples = []
     times = []
     for i, end in enumerate(ends_list, start=1):
         samples.append(values[end - window + 1 : end + 1])
         times.append(times_all[end])
         if progress is not None:
-            progress.heartbeat(i, n_ends, label="sequences")  # type: ignore[union-attr]
+            progress.heartbeat(i, n_ends, label="sequences")
 
     if samples:
         x = np.stack(samples).astype(np.float64)
@@ -115,7 +114,7 @@ def build_tick_sequences(
     window: int,
     time_col: str = AVAILABILITY_TS,
     stride: int = 1,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> TickSequenceDataset:
     """يبني تسلسلات tick/event مع ``mask_path`` و ``market_phase`` لكل عيّنة."""
     base = build_sequences(

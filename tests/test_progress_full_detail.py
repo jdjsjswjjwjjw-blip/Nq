@@ -16,7 +16,6 @@ from nq.simulation.common import BUCKET_END, BUCKET_START
 from nq.simulation.fvg import failed_fvg_from_bars
 from tests.test_coverage import _paired_streams
 
-
 _REQUIRED_MARKERS = (
     "بدء:",
     "تحميل MBO",
@@ -78,10 +77,13 @@ def test_full_pipeline_log_is_sequential_and_detailed() -> None:
     assert "failed_breakout_features" in text
     assert "failed_fvg_features" in text or "fvg_bars" in text
     assert "M9 مقياس:" in text
-    assert any(
-        tag in text
-        for tag in ("mfig-perm", "qduf-perm", "psg-perm", "cer-perm", "crs-perm", "lori-perm")
-    ) or "mfig" in text
+    assert (
+        any(
+            tag in text
+            for tag in ("mfig-perm", "qduf-perm", "psg-perm", "cer-perm", "crs-perm", "lori-perm")
+        )
+        or "mfig" in text
+    )
     assert "M9-NQ-desc:reconstruct" in text
     assert "depth_fill" in text or "depth-walk" in text
 

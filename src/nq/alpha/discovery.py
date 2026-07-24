@@ -26,6 +26,7 @@ from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
 from nq.research.findings import Finding
+from nq.research.progress import ProgressLike
 from nq.simulation.execution import (
     depth_matrices_from_frame,
     directional_execution_returns,
@@ -47,7 +48,7 @@ class AlphaDiscovery:
     report: ResearchReport
 
 
-def discover_alpha_from_features(
+def discover_alpha_from_features(  # noqa: PLR0912, PLR0915
     frame: pl.DataFrame,
     *,
     signal_columns: Sequence[str],
@@ -64,7 +65,7 @@ def discover_alpha_from_features(
     n_permutations: int = 2000,
     rng: np.random.Generator | None = None,
     assistant: ResearchAssistant | None = None,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> AlphaDiscovery:
     """يقيّم ويفرز إشارات مرشّحة من إطار ميزات، ويكتب تقريرًا موثّقًا."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -73,13 +74,13 @@ def discover_alpha_from_features(
 
     if frame.height == 0:
         if log is not None:
-            log.op("ألفا: إطار فارغ — لا إشارات للتقييم")  # type: ignore[union-attr]
+            log.op("ألفا: إطار فارغ — لا إشارات للتقييم")
         empty = screen_signals([], alpha=alpha)
         return AlphaDiscovery(empty, [], research.write_report([], title="Alpha Discovery"))
 
     cols = list(signal_columns)
     if log is not None:
-        log.op(  # type: ignore[union-attr]
+        log.op(
             f"ألفا: تقييم {len(cols)} إشارة · mode={execution_mode} · "
             f"n_perm={n_permutations} · rows={frame.height:,}"
         )
@@ -96,7 +97,7 @@ def discover_alpha_from_features(
         depth_long = depth_short = None
         if use_depth:
             if log is not None:
-                log.op("ألفا: عوائد أمامية بمسح عمق ظاهر (دخول+خروج)")  # type: ignore[union-attr]
+                log.op("ألفا: عوائد أمامية بمسح عمق ظاهر (دخول+خروج)")
             bid_px, bid_sz, ask_px, ask_sz = depth_matrices_from_frame(frame, n_levels=5)
             depth_long, depth_short = execution_forward_returns_depth(
                 bid_px,
@@ -116,7 +117,7 @@ def discover_alpha_from_features(
         for i, col in enumerate(cols, start=1):
             mode_tag = "depth-walk" if use_depth else "intraday"
             if log is not None:
-                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} ({mode_tag})")  # type: ignore[union-attr]
+                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} ({mode_tag})")
             if use_depth and depth_long is not None and depth_short is not None:
                 directional = directional_execution_returns(
                     frame[col].to_numpy().astype(np.float64),
@@ -157,7 +158,7 @@ def discover_alpha_from_features(
         evaluations = []
         for i, col in enumerate(cols, start=1):
             if log is not None:
-                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} (mid)")  # type: ignore[union-attr]
+                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} (mid)")
             evaluations.append(
                 evaluate_signal(
                     col,
@@ -170,7 +171,7 @@ def discover_alpha_from_features(
                 )
             )
     if log is not None:
-        log.op("ألفا: فرز/تصحيح تعدّد (screen_signals)")  # type: ignore[union-attr]
+        log.op("ألفا: فرز/تصحيح تعدّد (screen_signals)")
     screened = screen_signals(evaluations, alpha=alpha)
 
     findings: list[Finding] = []
@@ -193,9 +194,7 @@ def discover_alpha_from_features(
         findings.append(research.generate_hypothesis(claim, evidence, category="alpha"))
 
     if log is not None:
-        log.op(  # type: ignore[union-attr]
-            f"ألفا: selected={selected!r} · evals={screened.height}"
-        )
+        log.op(f"ألفا: selected={selected!r} · evals={screened.height}")
     report = research.write_report(findings, title="Novel Alpha Signals — Research Report")
     return AlphaDiscovery(evaluations=screened, selected=selected, report=report)
 

@@ -14,7 +14,32 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TextIO
+from typing import Protocol, TextIO
+
+
+class ProgressLike(Protocol):
+    """واجهة تقدّم خفيفة — تتجنّب ``object`` في mypy."""
+
+    def op(self, message: str) -> None: ...
+    def note(self, message: str) -> None: ...
+    def step(self, name: str, detail: str = "") -> None: ...
+    def line(self, message: str) -> None: ...
+    def heartbeat(
+        self,
+        done: int,
+        total: int,
+        *,
+        label: str = "",
+        force: bool = False,
+        every: int | None = None,
+    ) -> None: ...
+
+
+_SEC_PER_MIN = 60.0
+_MIN_PER_HOUR = 60
+_RATE_M = 1_000_000
+_RATE_K = 1_000
+_HB_DENSE_MIN_TOTAL = 40
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -22,12 +47,12 @@ def _fmt_duration(seconds: float) -> str:
         seconds = 0.0
     if seconds < 1.0:
         return f"{seconds * 1000:.0f}ms"
-    if seconds < 60.0:
+    if seconds < _SEC_PER_MIN:
         return f"{seconds:.1f}s"
-    minutes, secs = divmod(seconds, 60.0)
-    if minutes < 60:
+    minutes, secs = divmod(seconds, _SEC_PER_MIN)
+    if minutes < _MIN_PER_HOUR:
         return f"{int(minutes)}m{secs:04.1f}s"
-    hours, minutes = divmod(int(minutes), 60)
+    hours, minutes = divmod(int(minutes), _MIN_PER_HOUR)
     return f"{hours}h{minutes:02d}m{secs:02.0f}s"
 
 
@@ -35,10 +60,10 @@ def _fmt_rate(done: int, elapsed: float) -> str:
     if elapsed <= 0:
         return "?"
     rate = done / elapsed
-    if rate >= 1_000_000:
-        return f"{rate / 1_000_000:.2f}M/s"
-    if rate >= 1_000:
-        return f"{rate / 1_000:.1f}k/s"
+    if rate >= _RATE_M:
+        return f"{rate / _RATE_M:.2f}M/s"
+    if rate >= _RATE_K:
+        return f"{rate / _RATE_K:.1f}k/s"
     return f"{rate:.0f}/s"
 
 
@@ -169,9 +194,9 @@ class PipelineProgress:
         # نبض أدق: كل ~2% أو كل ثانية (أو كل عنصر إن كانت الحلقة قصيرة جدًا)
         count_every = every if every is not None else max(1, min(max(total // 50, 1), 5_000))
         # للحلقات المتوسطة: لا تطبع كل عنصر بالعدّ — اعتمد الزمن + عيّنات
-        if every is None and total >= 40:
-            count_every = max(count_every, max(1, total // 25))
-        due_count = done == total or done == 0 or (done % count_every == 0)
+        if every is None and total >= _HB_DENSE_MIN_TOTAL:
+            count_every = max(count_every, 1, total // 25)
+        due_count = done in (0, total) or (done % count_every == 0)
         with self._lock:
             if self._step_t0 <= 0.0:
                 self._step_t0 = now
@@ -281,7 +306,7 @@ def iter_with_progress(
     seq = list(items) if total is None and not hasattr(items, "__len__") else items
     n = total if total is not None else len(seq)  # type: ignore[arg-type]
     log.op(f"بدء {label}: {n:,} عنصر")
-    for i, item in enumerate(seq, start=1):  # type: ignore[arg-type]
+    for i, item in enumerate(seq, start=1):
         yield item
         log.heartbeat(i, n, label=label, every=every)
     if n > 0:
@@ -290,6 +315,7 @@ def iter_with_progress(
 
 __all__ = [
     "PipelineProgress",
+    "ProgressLike",
     "iter_with_progress",
     "resolve_progress",
 ]

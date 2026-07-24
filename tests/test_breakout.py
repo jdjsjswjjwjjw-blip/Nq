@@ -2,26 +2,24 @@
 
 from __future__ import annotations
 
-import numpy as np
 import polars as pl
 
-from nq.contracts.mbo import PRICE_SCALE
-from nq.contracts.temporal import AVAILABILITY_TS
+from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.determinism import make_generator
 from nq.simulation.breakout import (
-    NS_PER_MIN,
     failed_breakout_features,
     failed_breakout_from_bars,
 )
 from nq.simulation.common import BUCKET_END, BUCKET_START
-from nq.simulation.fvg import NS_1H, NS_30M, build_ohlcv_bars
+from nq.simulation.cross_market import cross_market_features
+from nq.simulation.fvg import NS_30M, build_ohlcv_bars
 from nq.strategies.breakout_hypothesis import (
     BreakoutHypothesisSpec,
     default_breakout_grid,
     materialize_breakout_hypotheses,
+    volume_breakout_grid,
 )
 from nq.strategies.fail_breakout import run_fail_breakout_research
-from tests.mbo_factory import make_stream
 from tests.test_coverage import _paired_streams
 
 
@@ -34,15 +32,15 @@ def _synthetic_signal_bars(n: int = 80) -> pl.DataFrame:
         end = start + NS_30M
         # بعد الإحماء: شمعة جهد تكسر لأعلى ثم تغلق تحت المدى
         if i == 60:
-            o, h, l, c = px, px + 8.0, px - 0.5, px + 1.0  # fail break high
+            o, h, low_px, c = px, px + 8.0, px - 0.5, px + 1.0  # fail break high
             vol = 5000.0
         elif i == 61:
-            o, h, l, c = px + 1.0, px + 1.5, px - 8.0, px - 1.0  # fail break low
+            o, h, low_px, c = px + 1.0, px + 1.5, px - 8.0, px - 1.0  # fail break low
             vol = 5000.0
         else:
             o = px
             h = px + 1.0
-            l = px - 1.0
+            low_px = px - 1.0
             c = px + 0.2
             vol = 1000.0
             px = c
@@ -53,10 +51,10 @@ def _synthetic_signal_bars(n: int = 80) -> pl.DataFrame:
                 AVAILABILITY_TS: end,
                 "o": o,
                 "h": h,
-                "l": l,
+                "l": low_px,
                 "c": c,
                 "volume": vol,
-                "range": h - l,
+                "range": h - low_px,
             }
         )
     return pl.DataFrame(rows)
@@ -64,7 +62,6 @@ def _synthetic_signal_bars(n: int = 80) -> pl.DataFrame:
 
 def test_failed_breakout_availability_at_bar_close() -> None:
     bars = _synthetic_signal_bars()
-    trend = bars.gather_every(2)  # rough higher TF stand-in
     # rebuild trend as hourly-ish by taking every other - better build empty sma off
     out = failed_breakout_from_bars(
         bars,
@@ -107,12 +104,10 @@ def test_failed_breakout_past_stable_when_future_perturbed() -> None:
     base = failed_breakout_features(nq, require_sma_filter=False, rth_only=False)
     if base.height == 0:
         return
-    cut = int(base[AVAILABILITY_TS].median())
+    cut = int(float(base[AVAILABILITY_TS].median()))  # type: ignore[arg-type]
     past = base.filter(pl.col(AVAILABILITY_TS) <= cut)
     # شوّش المستقبل فقط
-    future_mask = pl.col("event_ts") > cut if "event_ts" in nq.columns else pl.lit(False)
     # استخدم عمود الزمن المناسب من المصنع
-    from nq.contracts.temporal import EVENT_TS
 
     scrambled = nq.with_columns(
         pl.when(pl.col(EVENT_TS) > cut)
@@ -124,7 +119,8 @@ def test_failed_breakout_past_stable_when_future_perturbed() -> None:
     past2 = again.filter(pl.col(AVAILABILITY_TS) <= cut)
     cols = ["fail_breakout", "fb_entry_ref", "fb_break_level"]
     a = past.select(AVAILABILITY_TS, *[c for c in cols if c in past.columns]).sort(AVAILABILITY_TS)
-    b = past2.select(AVAILABILITY_TS, *[c for c in cols if c in past2.columns]).sort(AVAILABILITY_TS)
+    keep_cols = [c for c in cols if c in past2.columns]
+    b = past2.select(AVAILABILITY_TS, *keep_cols).sort(AVAILABILITY_TS)
     assert a.equals(b)
 
 
@@ -146,8 +142,6 @@ def test_run_fail_breakout_research_uses_unified_pipeline() -> None:
 
 def test_materialize_breakout_hypotheses_asof_backward() -> None:
     nq, mnq = _paired_streams(3000, seed=89)
-    from nq.simulation.cross_market import cross_market_features
-
     clock = cross_market_features(nq, mnq, interval_ns=10_000, lead_lag_window=2)
     tiny = (
         BreakoutHypothesisSpec(
@@ -167,8 +161,6 @@ def test_materialize_breakout_hypotheses_asof_backward() -> None:
 
 
 def test_default_breakout_grid_nonempty() -> None:
-    from nq.strategies.breakout_hypothesis import volume_breakout_grid
-
     grid = default_breakout_grid()
     assert len(grid) >= 100
     modes = {s.vol_mode for s in grid}
@@ -187,7 +179,7 @@ def test_volume_modes_emit_volume_columns() -> None:
             range_mult=1.05,
             vol_mult=1.05,
             result_mult=1.05,
-            vol_mode=mode,  # type: ignore[arg-type]
+            vol_mode=mode,
         )
         for col in (
             "fb_effort_volume_ratio",
@@ -216,7 +208,7 @@ def test_volume_baselines_past_only_stable() -> None:
     )
     if base.height == 0:
         return
-    cut = int(base[AVAILABILITY_TS].median())
+    cut = int(float(base[AVAILABILITY_TS].median()))  # type: ignore[arg-type]
     past = base.filter(pl.col(AVAILABILITY_TS) <= cut)
     scrambled = bars.with_columns(
         pl.when(pl.col(BUCKET_START) > cut)
@@ -245,4 +237,3 @@ def test_ohlcv_bars_include_flow_columns() -> None:
     bars = build_ohlcv_bars(nq, interval_ns=NS_30M)
     for col in ("buy_volume", "sell_volume", "delta", "volume"):
         assert col in bars.columns
-

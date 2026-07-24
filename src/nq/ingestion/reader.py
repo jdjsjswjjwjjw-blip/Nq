@@ -20,6 +20,7 @@ import polars as pl
 from nq.contracts.mbo import MBO_SCHEMA, MboAction, validate_mbo_frame
 from nq.core.time import sort_causal
 from nq.ingestion.databento import is_databento_frame, normalize_databento_frame
+from nq.research.progress import ProgressLike
 
 _CLEAR = MboAction.CLEAR.value
 _NONE = MboAction.NONE.value
@@ -63,8 +64,7 @@ def _read_columnar(path: Path, *, max_rows: int | None = None) -> pl.DataFrame:
         return frame.head(max_rows) if max_rows is not None else frame
 
     raise ValueError(
-        f"unsupported MBO file format {suffix!r}; "
-        "expected .parquet/.arrow/.ipc/.csv/.zst"
+        f"unsupported MBO file format {suffix!r}; expected .parquet/.arrow/.ipc/.csv/.zst"
     )
 
 
@@ -94,7 +94,7 @@ def load_mbo_frame(
     source: pl.DataFrame | str | Path,
     *,
     max_rows: int | None = None,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يُحمّل بيانات MBO ويتحقق من العقد ويرتّبها سبقيًا.
 
@@ -107,26 +107,26 @@ def load_mbo_frame(
     log = progress
     if isinstance(source, pl.DataFrame):
         if log is not None:
-            log.op(f"MBO من DataFrame جاهز: {source.height:,} صف")  # type: ignore[union-attr]
+            log.op(f"MBO من DataFrame جاهز: {source.height:,} صف")
         frame = source
         if max_rows is not None:
             if log is not None:
-                log.op(f"قص DataFrame إلى max_rows={max_rows:,}")  # type: ignore[union-attr]
+                log.op(f"قص DataFrame إلى max_rows={max_rows:,}")
             frame = frame.head(max_rows)
     else:
         path = Path(source)
         if log is not None:
             detail = f" (n_rows={max_rows:,})" if max_rows is not None else ""
-            log.op(f"قراءة ملف MBO: {path.resolve()}{detail}")  # type: ignore[union-attr]
+            log.op(f"قراءة ملف MBO: {path.resolve()}{detail}")
         frame = _read_columnar(path, max_rows=max_rows)
         if log is not None:
-            log.op(f"قُرئ الخام: {frame.height:,} صف × {frame.width} عمود")  # type: ignore[union-attr]
+            log.op(f"قُرئ الخام: {frame.height:,} صف × {frame.width} عمود")
 
     if log is not None:
-        log.op("تطبيع Databento / التحقق من MBO_SCHEMA / ترتيب سببي")  # type: ignore[union-attr]
+        log.op("تطبيع Databento / التحقق من MBO_SCHEMA / ترتيب سببي")
     frame = _prepare_frame(frame)
     if log is not None:
-        log.op(f"جاهز بعد التحضير: {frame.height:,} صف")  # type: ignore[union-attr]
+        log.op(f"جاهز بعد التحضير: {frame.height:,} صف")
     return frame
 
 
