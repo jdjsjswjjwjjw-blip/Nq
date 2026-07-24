@@ -82,6 +82,8 @@ def evaluate_signal(
     n_permutations: int = 2000,
     rng: np.random.Generator | None = None,
     min_samples: int = _MIN_EVAL_SAMPLES,
+    progress: object | None = None,
+    progress_label: str | None = None,
 ) -> SignalEvaluation:
     """يقيّم إشارة: IC (Spearman) مع دلالة بالتبديل، ونسبة شارب للاستراتيجية."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -100,8 +102,11 @@ def evaluate_signal(
 
     observed_ic = information_coefficient(v, f, method="spearman")
     null = np.empty(n_permutations, dtype=np.float64)
+    label = progress_label or f"perm:{name}"
     for i in range(n_permutations):
         null[i] = information_coefficient(v, generator.permutation(f), method="spearman")
+        if progress is not None:
+            progress.heartbeat(i + 1, n_permutations, label=label)  # type: ignore[union-attr]
     ic_pvalue = (int(np.sum(np.abs(null) >= abs(observed_ic))) + 1) / (n_permutations + 1)
 
     strategy = np.sign(v) * f
@@ -160,6 +165,8 @@ def evaluate_signal_intraday(
     commission_bps: float = 0.0,
     n_permutations: int = 2000,
     rng: np.random.Generator | None = None,
+    progress: object | None = None,
+    progress_label: str | None = None,
 ) -> SignalEvaluation:
     """يقيّم إشارة بعوائد أمامية بعد عبور spread وانزلاق intraday."""
     long_fwd, short_fwd = execution_forward_returns(
@@ -177,4 +184,6 @@ def evaluate_signal_intraday(
         directional,
         n_permutations=n_permutations,
         rng=rng,
+        progress=progress,
+        progress_label=progress_label,
     )

@@ -66,3 +66,4 @@ max_rows = 0
 
 [run]
 quiet = false
+parallel_coverage = false

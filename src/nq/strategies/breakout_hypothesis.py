@@ -283,6 +283,7 @@ def materialize_breakout_hypotheses(
     specs: Sequence[BreakoutHypothesisSpec],
     *,
     clock: pl.DataFrame,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """يبني أعمدة فرضيات على ساعة مشتركة (asof خلفي فقط)."""
     if AVAILABILITY_TS not in clock.columns:
@@ -291,17 +292,31 @@ def materialize_breakout_hypotheses(
     if left.height == 0 or not specs:
         return left
 
+    log = progress
+    n_specs = len(specs)
+    if log is not None:
+        log.op(f"تجسيد {n_specs} فرضية FB (كل فرضية تُطبع)")  # type: ignore[union-attr]
+
     bars_cache: dict[int, pl.DataFrame] = {}
 
     def _bars(interval_ns: int) -> pl.DataFrame:
         cached = bars_cache.get(interval_ns)
         if cached is None:
+            if log is not None:
+                log.op(f"بناء OHLCV interval_ns={interval_ns}")  # type: ignore[union-attr]
             cached = build_ohlcv_bars(nq, interval_ns=interval_ns)
             bars_cache[interval_ns] = cached
+            if log is not None:
+                log.op(f"OHLCV جاهز: {cached.height:,} شمعة")  # type: ignore[union-attr]
         return cached
 
     out = left
-    for spec in specs:
+    for i, spec in enumerate(specs, start=1):
+        if log is not None:
+            log.op(  # type: ignore[union-attr]
+                f"فرضية [{i}/{n_specs}] {spec.name} · mode={spec.vol_mode} · "
+                f"lb={spec.lookback} · v={spec.vol_mult}"
+            )
         raw = failed_breakout_from_bars(
             _bars(spec.signal_interval_ns),
             trend_bars=_bars(spec.trend_interval_ns) if spec.require_sma_filter else None,
@@ -318,17 +333,26 @@ def materialize_breakout_hypotheses(
         col = spec.column()
         if raw.height == 0:
             out = out.with_columns(pl.lit(0.0).alias(col))
-            continue
-        right = (
-            raw.select(AVAILABILITY_TS, pl.col("fail_breakout").alias(col))
-            .sort(AVAILABILITY_TS)
-            .unique(subset=[AVAILABILITY_TS], keep="last")
-        )
-        if col in out.columns:
-            out = out.drop(col)
-        out = out.join_asof(right, on=AVAILABILITY_TS, strategy="backward").with_columns(
-            pl.col(col).fill_null(0.0)
-        )
+            if log is not None:
+                log.op(f"  → {col}: 0 إشارات")  # type: ignore[union-attr]
+        else:
+            right = (
+                raw.select(AVAILABILITY_TS, pl.col("fail_breakout").alias(col))
+                .sort(AVAILABILITY_TS)
+                .unique(subset=[AVAILABILITY_TS], keep="last")
+            )
+            if col in out.columns:
+                out = out.drop(col)
+            out = out.join_asof(right, on=AVAILABILITY_TS, strategy="backward").with_columns(
+                pl.col(col).fill_null(0.0)
+            )
+            if log is not None:
+                n_sig = int((raw["fail_breakout"] != 0).sum())
+                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف")  # type: ignore[union-attr]
+        if log is not None:
+            log.heartbeat(i, n_specs, label="materialize_FB", force=True)  # type: ignore[union-attr]
+    if log is not None:
+        log.op(f"انتهى تجسيد {n_specs} فرضية")  # type: ignore[union-attr]
     return out
 
 
@@ -430,7 +454,7 @@ def search_fail_breakout_hypotheses(
             latency_ns=0,
         )
         log.step("تجسيد فرضيات FB الفوليوم", f"specs={len(grid)}")
-        hyp = materialize_breakout_hypotheses(nq_frame, grid, clock=clock)
+        hyp = materialize_breakout_hypotheses(nq_frame, grid, clock=clock, progress=log)
         base = clock.sort(AVAILABILITY_TS)
         hyp_cols = [s.column() for s in grid]
         drop = [c for c in hyp_cols if c in base.columns]
@@ -530,6 +554,7 @@ def search_fail_breakout_hypotheses(
             alpha=alpha,
             n_permutations=n_permutations,
             rng=generator,
+            progress=log,
         )
 
         log.step("تقرير البحث")

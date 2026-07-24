@@ -48,3 +48,7 @@ mnq_path = "data/raw/nq.parquet"
 output_dir = "data/runs/fail_fvg"
 cross_market_mode = "nq_only"
 max_rows = 0
+
+[run]
+quiet = false
+parallel_coverage = false

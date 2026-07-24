@@ -68,5 +68,7 @@ cross_market_mode = "nq_only"
 max_rows = 0
 
 # طباعة تقدّم الخطوات على stderr أثناء التشغيل
+# parallel_coverage=false = مسار خطي مقروء (افتراضي)؛ true = SSL‖M9 مع بادئة [SSL]/[M9]
 [run]
 quiet = false
+parallel_coverage = false

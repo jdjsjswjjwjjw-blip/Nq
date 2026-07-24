@@ -201,3 +201,87 @@ def test_bucket_ssl_emits_fold_progress() -> None:
     assert "SSL-bucket" in text
     assert "ألفا [" in text
     assert "M9 مقياس:" in text
+
+
+def test_progress_channel_prefixes_lines() -> None:
+    buf = io.StringIO()
+    p = PipelineProgress(enabled=True, stream=buf)
+    with p.channel("SSL"):
+        p.op("داخل SSL")
+    with p.channel("M9"):
+        p.op("داخل M9")
+    text = buf.getvalue()
+    assert "[SSL]" in text
+    assert "[M9]" in text
+    assert "داخل SSL" in text
+    assert "داخل M9" in text
+    assert "قناة [SSL] بدأت" in text
+    assert "قناة [M9] انتهت" in text
+
+
+def test_depth_and_materialize_emit_heartbeats() -> None:
+    from nq.simulation.depth_lifecycle import depth_at_bar_close
+    from nq.strategies.breakout_hypothesis import (
+        BreakoutHypothesisSpec,
+        materialize_breakout_hypotheses,
+    )
+    from nq.simulation.cross_market import cross_market_features
+
+    nq, mnq = _paired_streams(600, seed=101)
+    buf = io.StringIO()
+    progress = PipelineProgress(enabled=True, stream=buf)
+    progress.begin("depth+mat", total_steps=2)
+    progress.step("عمق")
+    depth_at_bar_close(nq, interval_ns=10_000, n_levels=3, progress=progress)
+    clock = cross_market_features(nq, mnq, interval_ns=10_000, lead_lag_window=2, latency_ns=0)
+    progress.step("تجسيد")
+    specs = (
+        BreakoutHypothesisSpec(
+            name="t1",
+            signal_interval_ns=10_000,
+            trend_interval_ns=20_000,
+            lookback=3,
+            range_mult=1.0,
+            vol_mode="bar",
+            vol_window=3,
+            vol_mult=1.0,
+            require_sma_filter=False,
+        ),
+        BreakoutHypothesisSpec(
+            name="t2",
+            signal_interval_ns=10_000,
+            trend_interval_ns=20_000,
+            lookback=4,
+            range_mult=1.1,
+            vol_mode="delta",
+            vol_window=3,
+            vol_mult=1.1,
+            require_sma_filter=False,
+        ),
+    )
+    materialize_breakout_hypotheses(nq, specs, clock=clock, progress=progress)
+    progress.done()
+    text = buf.getvalue()
+    assert "depth_bars" in text or "depth_at_bar_close" in text
+    assert "materialize_FB" in text or "فرضية [" in text
+    assert "… " in text
+
+
+def test_pipeline_progress_prints_depth_ops() -> None:
+    nq, mnq = _paired_streams(1600, seed=102)
+    buf = io.StringIO()
+    progress = PipelineProgress(enabled=True, stream=buf)
+    run_research_pipeline(
+        nq,
+        mnq,
+        interval_ns=10_000,
+        n_permutations=30,
+        parallel_coverage=False,
+        rng=make_generator(18),
+        progress=progress,
+    )
+    text = buf.getvalue()
+    assert "depth_at_bar_close" in text or "عمق" in text
+    assert "[SSL]" in text
+    assert "[M9]" in text
+    assert "mfig-perm" in text or "M9 مقياس:" in text

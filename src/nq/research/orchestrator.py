@@ -145,7 +145,7 @@ class PipelineConfig:
     alpha: float = 0.05
     n_permutations: int = 2000
     global_seed: int = 0
-    parallel_coverage: bool = True
+    parallel_coverage: bool = False
     ssl_mode: SslMode = "tick"
     cross_market_mode: CrossMarketMode = "dual"
     max_rows: int | None = None
@@ -197,6 +197,7 @@ class PipelineConfig:
             feature_mode=str(features_cfg.get("mode", signals.get("feature_mode", "streaming"))),  # type: ignore[arg-type]
             signal_columns=tuple(signal_cols) if signal_cols else None,
             quiet=bool(run_cfg.get("quiet", False)),
+            parallel_coverage=bool(run_cfg.get("parallel_coverage", False)),
         )
 
 
@@ -301,17 +302,27 @@ def _attach_auction_vp(
     return joined.with_columns(fills) if fills else joined
 
 
-def _attach_failed_breakout(features: pl.DataFrame, nq: pl.DataFrame) -> pl.DataFrame:
+def _attach_failed_breakout(
+    features: pl.DataFrame,
+    nq: pl.DataFrame,
+    *,
+    progress: PipelineProgress | None = None,
+) -> pl.DataFrame:
     """يلحق Failed Breakout asof خلفي — إشارة + عمق عند مستوى الكسر (سببي)."""
     from nq.contracts.mbo import PRICE_SCALE  # noqa: PLC0415
 
+    log = progress if progress is not None else PipelineProgress(enabled=False)
+    log.op("failed_breakout_features (إشارة فوليوم)")
     fb = failed_breakout_features(nq)
     zero_exprs = [pl.lit(0.0).alias(c) for c in _FB_SIGNAL_COLUMNS]
     if fb.height == 0 or features.height == 0:
+        log.op("Failed Breakout: لا صفوف — أعمدة صفرية")
         return features.with_columns(zero_exprs)
 
-    # عمق عند إغلاق شمعة الإشارة (30m) — لا طمس السلم
-    depth = depth_at_bar_close(nq, interval_ns=30 * 60 * 1_000_000_000, n_levels=5)
+    # عمق عند إغلاق شمعة الإشارة (30m) — مسار منفصل عن عمق ساعة البحث
+    interval_30m = 30 * 60 * 1_000_000_000
+    log.op(f"مسح عمق FB عند إغلاق 30m (منفصل عن عمق ساعة البحث) · levels=5")
+    depth = depth_at_bar_close(nq, interval_ns=interval_30m, n_levels=5, progress=log)
     if depth.height > 0:
         fb = attach_depth_asof(
             fb,
@@ -372,6 +383,7 @@ def _attach_failed_breakout(features: pl.DataFrame, nq: pl.DataFrame) -> pl.Data
                 return best
             return 0.0
 
+        log.op(f"حساب fb_depth_at_break على {fb.height:,} صف")
         at_break = [_depth_at_break(r) for r in fb.iter_rows(named=True)]
         fb = fb.with_columns(
             pl.Series("fb_depth_at_break", at_break),
@@ -379,7 +391,9 @@ def _attach_failed_breakout(features: pl.DataFrame, nq: pl.DataFrame) -> pl.Data
             pl.col("depth_cum_bid").fill_null(0.0).alias("fb_depth_cum_bid"),
             pl.col("depth_cum_ask").fill_null(0.0).alias("fb_depth_cum_ask"),
         )
+        log.op("أعمدة عمق FB جاهزة (at_break / imbalance / cum)")
     else:
+        log.op("عمق 30m فارغ — أعمدة عمق FB صفرية")
         fb = fb.with_columns(
             pl.lit(0.0).alias("fb_depth_at_break"),
             pl.lit(0.0).alias("fb_depth_imbalance"),
@@ -407,8 +421,8 @@ def _attach_causal_depth(
 ) -> pl.DataFrame:
     """يلحق سلم عمق NQ عند إغلاق كل فاصل بحثي (مراقبة + تنفيذ/خروج)."""
     log = progress if progress is not None else PipelineProgress(enabled=False)
-    log.op(f"depth_at_bar_close levels=5 · interval_ns={interval_ns}")
-    depth = depth_at_bar_close(nq, interval_ns=interval_ns, n_levels=5)
+    log.op(f"depth_at_bar_close ساعة البحث · levels=5 · interval_ns={interval_ns}")
+    depth = depth_at_bar_close(nq, interval_ns=interval_ns, n_levels=5, progress=log)
     if depth.height == 0:
         log.op("عمق: لا لقطات — تخطّي")
         return features
@@ -470,8 +484,8 @@ def _build_research_features(
         log.op(f"بعد Auction/VP: {features.height:,} صف")
     if cfg.include_failed_breakout:
         log.step("إلحاق Failed Breakout + عمق عند مستوى الكسر")
-        log.op("failed_breakout_features + depth_at_break + join_asof backward")
-        features = _attach_failed_breakout(features, nq)
+        log.op("failed_breakout_features + depth_at_break(30m) + join_asof backward")
+        features = _attach_failed_breakout(features, nq, progress=log)
         log.op(f"بعد Failed Breakout: {features.height:,} صف")
     return features
 
@@ -495,13 +509,17 @@ def run_ssl_research_pipeline(
     slippage_ticks: float = 0.5,
     tick_size: float = 0.25,
     commission_bps: float = 0.0,
-    parallel_coverage: bool = True,
+    parallel_coverage: bool = False,
     ssl_mode: SslMode = "tick",
     language_model: LanguageModel | None = None,
     rng: np.random.Generator | None = None,
     progress: PipelineProgress | None = None,
 ) -> tuple[SSLPipelineResult, CoverageReport, AlphaDiscovery, UnifiedResearchReport]:
-    """يشغّل SSL + M9 (خلفية) + ألفا → تقرير شامل (الميزات مُبنية مسبقًا)."""
+    """يشغّل SSL + M9 + ألفا → تقرير شامل (الميزات مُبنية مسبقًا).
+
+    افتراضيًا تسلسلي (``parallel_coverage=False``) حتى يبقى اللوج مسارًا خطيًا
+    مقروءًا. عند التوازي تُستخدم بادئات قنوات ``[SSL]`` / ``[M9]``.
+    """
     from nq.alpha.discovery import discover_alpha_from_features  # noqa: PLC0415
 
     log = progress if progress is not None else PipelineProgress(enabled=False)
@@ -520,47 +538,51 @@ def run_ssl_research_pipeline(
         f"إشارات الفرز: {len(columns)} · ssl_mode={ssl_mode} · "
         f"parallel_m9={parallel_coverage}"
     )
+    if parallel_coverage:
+        log.note(
+            "توازي SSL‖M9 مفعّل — راقب بادئة [SSL]/[M9] "
+            "(للمسار الخطي: parallel_coverage=false)"
+        )
 
     ssl_assistant = ResearchAssistant(alpha=alpha, language_model=language_model)
     alpha_assistant = ResearchAssistant(alpha=alpha, language_model=language_model)
 
     def _run_ssl() -> SSLPipelineResult:
-        if ssl_mode == "tick":
-            log.op("استدعاء run_ssl_tick_pipeline")
-            return run_ssl_tick_pipeline(
-                nq,
-                mnq,
+        with log.channel("SSL"):
+            if ssl_mode == "tick":
+                log.op("استدعاء run_ssl_tick_pipeline")
+                return run_ssl_tick_pipeline(
+                    nq,
+                    mnq,
+                    window=ssl_window,
+                    n_components=ssl_components,
+                    n_splits=coverage_splits,
+                    embargo=embargo_val,
+                    purge_samples=purge_val,
+                    alpha=alpha,
+                    rng=generator,
+                    assistant=ssl_assistant,
+                    progress=log,
+                )
+            log.op("استدعاء run_ssl_pipeline (bucket)")
+            return run_ssl_pipeline(
+                features,
+                feature_columns=columns or None,
                 window=ssl_window,
                 n_components=ssl_components,
                 n_splits=coverage_splits,
                 embargo=embargo_val,
                 purge_samples=purge_val,
+                interval_ns=interval_ns,
                 alpha=alpha,
                 rng=generator,
                 assistant=ssl_assistant,
                 progress=log,
             )
-        log.op("استدعاء run_ssl_pipeline (bucket)")
-        return run_ssl_pipeline(
-            features,
-            feature_columns=columns or None,
-            window=ssl_window,
-            n_components=ssl_components,
-            n_splits=coverage_splits,
-            embargo=embargo_val,
-            purge_samples=purge_val,
-            interval_ns=interval_ns,
-            alpha=alpha,
-            rng=generator,
-            assistant=ssl_assistant,
-            progress=log,
-        )
 
-    if parallel_coverage and (features.height > 0 or ssl_mode == "tick"):
-        log.step("تشغيل SSL ‖ M9 بالتوازي", f"mode={ssl_mode}")
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="coverage-m9") as executor:
-            coverage_future = executor.submit(
-                _run_coverage_task,
+    def _run_m9() -> CoverageReport:
+        with log.channel("M9"):
+            return _run_coverage_task(
                 nq,
                 mnq,
                 features,
@@ -573,8 +595,13 @@ def run_ssl_research_pipeline(
                 seed=seed,
                 progress=log,
             )
-            log.note("M9 يعمل في الخلفية")
-            log.note(f"SSL يبدأ الآن (mode={ssl_mode})")
+
+    if parallel_coverage and (features.height > 0 or ssl_mode == "tick"):
+        log.step("تشغيل SSL ‖ M9 بالتوازي", f"mode={ssl_mode}")
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="coverage-m9") as executor:
+            coverage_future = executor.submit(_run_m9)
+            log.note("M9 يعمل في الخلفية (قناة [M9])")
+            log.note(f"SSL يبدأ الآن (قناة [SSL] · mode={ssl_mode})")
             ssl_result = _run_ssl()
             log.note(f"SSL انتهى — metrics={ssl_result.metrics.height}")
             log.step("اكتشاف الألفا (intraday)", f"signals={len(columns)}")
@@ -629,20 +656,7 @@ def run_ssl_research_pipeline(
             f"selected={alpha_result.selected!r}"
         )
         log.step("تشغيل المراقب M9 (تسلسلي)")
-        log.op("run_coverage_on_features")
-        coverage_result = run_coverage_on_features(
-            nq,
-            mnq,
-            features,
-            interval_ns=interval_ns,
-            price_col=price_col,
-            alpha=alpha,
-            n_splits=coverage_splits,
-            embargo=embargo_val,
-            n_permutations=n_permutations,
-            rng=np.random.default_rng(seed),
-            progress=log,
-        )
+        coverage_result = _run_m9()
         log.note(f"M9 انتهى — metrics={coverage_result.metrics.height}")
 
     narrative = ""

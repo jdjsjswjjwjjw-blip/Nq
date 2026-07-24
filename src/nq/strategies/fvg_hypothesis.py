@@ -115,6 +115,7 @@ def materialize_fvg_hypotheses(
     specs: Sequence[FvgHypothesisSpec],
     *,
     clock: pl.DataFrame,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """يبني أعمدة فرضيات على ساعة تقييم مشتركة (asof خلفي فقط)."""
     if AVAILABILITY_TS not in clock.columns:
@@ -123,17 +124,31 @@ def materialize_fvg_hypotheses(
     if left.height == 0 or not specs:
         return left
 
+    log = progress
+    n_specs = len(specs)
+    if log is not None:
+        log.op(f"تجسيد {n_specs} فرضية FVG (كل فرضية تُطبع)")  # type: ignore[union-attr]
+
     bars_cache: dict[int, pl.DataFrame] = {}
 
     def _bars(interval_ns: int) -> pl.DataFrame:
         cached = bars_cache.get(interval_ns)
         if cached is None:
+            if log is not None:
+                log.op(f"بناء OHLCV interval_ns={interval_ns}")  # type: ignore[union-attr]
             cached = build_ohlcv_bars(nq, interval_ns=interval_ns)
             bars_cache[interval_ns] = cached
+            if log is not None:
+                log.op(f"OHLCV جاهز: {cached.height:,} شمعة")  # type: ignore[union-attr]
         return cached
 
     out = left
-    for spec in specs:
+    for i, spec in enumerate(specs, start=1):
+        if log is not None:
+            log.op(  # type: ignore[union-attr]
+                f"فرضية [{i}/{n_specs}] {spec.name} · h1={spec.h1_interval_ns} · "
+                f"sig={spec.signal_interval_ns}"
+            )
         raw = failed_fvg_from_bars(
             _bars(spec.h1_interval_ns),
             _bars(spec.signal_interval_ns),
@@ -144,17 +159,26 @@ def materialize_fvg_hypotheses(
         col = spec.column()
         if raw.height == 0:
             out = out.with_columns(pl.lit(0.0).alias(col))
-            continue
-        right = (
-            raw.select(AVAILABILITY_TS, pl.col("fail_fvg").alias(col))
-            .sort(AVAILABILITY_TS)
-            .unique(subset=[AVAILABILITY_TS], keep="last")
-        )
-        if col in out.columns:
-            out = out.drop(col)
-        out = out.join_asof(right, on=AVAILABILITY_TS, strategy="backward").with_columns(
-            pl.col(col).fill_null(0.0)
-        )
+            if log is not None:
+                log.op(f"  → {col}: 0 إشارات")  # type: ignore[union-attr]
+        else:
+            right = (
+                raw.select(AVAILABILITY_TS, pl.col("fail_fvg").alias(col))
+                .sort(AVAILABILITY_TS)
+                .unique(subset=[AVAILABILITY_TS], keep="last")
+            )
+            if col in out.columns:
+                out = out.drop(col)
+            out = out.join_asof(right, on=AVAILABILITY_TS, strategy="backward").with_columns(
+                pl.col(col).fill_null(0.0)
+            )
+            if log is not None:
+                n_sig = int((raw["fail_fvg"] != 0).sum())
+                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف")  # type: ignore[union-attr]
+        if log is not None:
+            log.heartbeat(i, n_specs, label="materialize_FVG", force=True)  # type: ignore[union-attr]
+    if log is not None:
+        log.op(f"انتهى تجسيد {n_specs} فرضية FVG")  # type: ignore[union-attr]
     return out
 
 
@@ -202,6 +226,7 @@ def _ic_on_slice(
     name: str,
     n_permutations: int,
     rng: np.random.Generator,
+    progress: object | None = None,
 ) -> float:
     if idx.size == 0:
         return 0.0
@@ -211,6 +236,8 @@ def _ic_on_slice(
         forward[idx],
         n_permutations=n_permutations,
         rng=rng,
+        progress=progress,
+        progress_label=f"WF-perm:{name}",
     )
     return float(ev.ic)
 
@@ -286,6 +313,7 @@ def walk_forward_select_hypotheses(
                 name=col,
                 n_permutations=n_permutations,
                 rng=generator,
+                progress=log,
             )
             if abs(ic) > abs(best_ic) or (abs(ic) == abs(best_ic) and ic > best_ic):
                 best_ic = ic
@@ -304,6 +332,7 @@ def walk_forward_select_hypotheses(
             name=best_name,
             n_permutations=n_permutations,
             rng=generator,
+            progress=log,
         )
         oos_values[fold.test_idx] = test_vals[fold.test_idx]
         oos_fwd[fold.test_idx] = forward[fold.test_idx]
@@ -331,6 +360,8 @@ def walk_forward_select_hypotheses(
             oos_fwd[mask],
             n_permutations=n_permutations,
             rng=generator,
+            progress=log,
+            progress_label="WF-oos-perm",
         )
         oos_ic = float(oos_ev.ic)
         oos_p = float(oos_ev.ic_pvalue)
@@ -355,15 +386,21 @@ def exploratory_screen_candidates(
     alpha: float = 0.05,
     n_permutations: int = 200,
     rng: np.random.Generator | None = None,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """فرز BH استكشافي على المرشّحين (ليس أساس اختيار الإعداد على نفس العيّنة)."""
     generator = rng if rng is not None else np.random.default_rng(0)
+    log = progress
     work = features.sort(AVAILABILITY_TS)
     forward = align_forward_returns(work[price_col].to_numpy().astype(np.float64), horizon=horizon)
+    cols = [c for c in candidate_columns if c in work.columns]
+    n_cols = len(cols)
+    if log is not None:
+        log.op(f"شاشة استكشافية: {n_cols} مرشّح · n_perm={n_permutations}")  # type: ignore[union-attr]
     evaluations = []
-    for col in candidate_columns:
-        if col not in work.columns:
-            continue
+    for i, col in enumerate(cols, start=1):
+        if log is not None:
+            log.op(f"استكشاف [{i}/{n_cols}]: {col!r}")  # type: ignore[union-attr]
         evaluations.append(
             evaluate_signal(
                 col,
@@ -371,8 +408,12 @@ def exploratory_screen_candidates(
                 forward,
                 n_permutations=n_permutations,
                 rng=generator,
+                progress=log,
+                progress_label=f"perm:{col}",
             )
         )
+        if log is not None:
+            log.heartbeat(i, n_cols, label="exploratory", force=True)  # type: ignore[union-attr]
     return screen_signals(evaluations, alpha=alpha)
 
 
@@ -440,7 +481,7 @@ def search_fail_fvg_hypotheses(
             latency_ns=0,
         )
         log.step("تجسيد شبكة فرضيات FVG", f"candidates={len(grid)}")
-        hyp = materialize_fvg_hypotheses(nq_frame, grid, clock=clock)
+        hyp = materialize_fvg_hypotheses(nq_frame, grid, clock=clock, progress=log)
         base = clock.sort(AVAILABILITY_TS)
         hyp_cols = [s.column() for s in grid]
         drop = [c for c in hyp_cols if c in base.columns]
@@ -509,6 +550,7 @@ def search_fail_fvg_hypotheses(
             alpha=alpha,
             n_permutations=n_permutations,
             rng=generator,
+            progress=log,
         )
 
         log.step("كتابة تقرير البحث الموثّق")

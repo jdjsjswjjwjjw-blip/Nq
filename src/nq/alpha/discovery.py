@@ -129,6 +129,8 @@ def discover_alpha_from_features(
                         directional,
                         n_permutations=n_permutations,
                         rng=generator,
+                        progress=log,
+                        progress_label=f"ألفا-perm:{col}",
                     )
                 )
             else:
@@ -144,6 +146,8 @@ def discover_alpha_from_features(
                         commission_bps=commission_bps,
                         n_permutations=n_permutations,
                         rng=generator,
+                        progress=log,
+                        progress_label=f"ألفا-perm:{col}",
                     )
                 )
     else:
@@ -160,6 +164,8 @@ def discover_alpha_from_features(
                     forward,
                     n_permutations=n_permutations,
                     rng=generator,
+                    progress=log,
+                    progress_label=f"ألفا-perm:{col}",
                 )
             )
     if log is not None:
