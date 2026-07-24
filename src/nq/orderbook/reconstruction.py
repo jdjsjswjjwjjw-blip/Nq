@@ -48,6 +48,9 @@ def _record_loop(
     prices: list[int],
     sizes: list[int],
     order_ids: list[int],
+    *,
+    progress: object | None = None,
+    progress_label: str = "reconstruct",
 ) -> tuple[list[int | None], list[int | None], list[int | None], list[int | None]]:
     """يعالج الأحداث ويسجّل top-of-book بعد كل حدث."""
     apply = book.apply
@@ -57,8 +60,9 @@ def _record_loop(
     bb_size: list[int | None] = []
     ba_price: list[int | None] = []
     ba_size: list[int | None] = []
-    for action, side, price, size, order_id in zip(
-        actions, sides, prices, sizes, order_ids, strict=True
+    n = len(actions)
+    for i, (action, side, price, size, order_id) in enumerate(
+        zip(actions, sides, prices, sizes, order_ids, strict=True), start=1
     ):
         apply(action, side, price, size, order_id)
         if bids:
@@ -75,6 +79,8 @@ def _record_loop(
         else:
             ba_price.append(None)
             ba_size.append(None)
+        if progress is not None and (i % 500 == 0 or i == n):
+            progress.heartbeat(i, n, label=progress_label)  # type: ignore[union-attr]
     return bb_price, bb_size, ba_price, ba_size
 
 
@@ -85,18 +91,26 @@ def _plain_loop(
     prices: list[int],
     sizes: list[int],
     order_ids: list[int],
+    *,
+    progress: object | None = None,
+    progress_label: str = "reconstruct",
 ) -> None:
     apply = book.apply
-    for action, side, price, size, order_id in zip(
-        actions, sides, prices, sizes, order_ids, strict=True
+    n = len(actions)
+    for i, (action, side, price, size, order_id) in enumerate(
+        zip(actions, sides, prices, sizes, order_ids, strict=True), start=1
     ):
         apply(action, side, price, size, order_id)
+        if progress is not None and (i % 500 == 0 or i == n):
+            progress.heartbeat(i, n, label=progress_label)  # type: ignore[union-attr]
 
 
 def reconstruct(
     frame: pl.DataFrame,
     *,
     record_top_of_book: bool = True,
+    progress: object | None = None,
+    progress_label: str = "reconstruct",
 ) -> ReconstructionResult:
     """يُعيد بناء دفتر أوامر أداة واحدة من أحداث MBO.
 
@@ -114,6 +128,9 @@ def reconstruct(
     if frame.height == 0:
         return ReconstructionResult(_empty_tob(), book, base_integrity)
 
+    if progress is not None:
+        progress.op(f"{progress_label}: إعادة بناء دفتر · أحداث={frame.height:,}")  # type: ignore[union-attr]
+
     actions: list[str] = frame["action"].cast(pl.Utf8).to_list()
     sides: list[str] = frame["side"].cast(pl.Utf8).to_list()
     prices: list[int] = frame["price"].to_list()
@@ -123,7 +140,14 @@ def reconstruct(
     crossed = 0
     if record_top_of_book:
         bb_price, bb_size, ba_price, ba_size = _record_loop(
-            book, actions, sides, prices, sizes, order_ids
+            book,
+            actions,
+            sides,
+            prices,
+            sizes,
+            order_ids,
+            progress=progress,
+            progress_label=progress_label,
         )
         tob = pl.DataFrame(
             {
@@ -141,8 +165,20 @@ def reconstruct(
             & (pl.col("best_bid") >= pl.col("best_ask"))
         ).height
     else:
-        _plain_loop(book, actions, sides, prices, sizes, order_ids)
+        _plain_loop(
+            book,
+            actions,
+            sides,
+            prices,
+            sizes,
+            order_ids,
+            progress=progress,
+            progress_label=progress_label,
+        )
         tob = _empty_tob()
+
+    if progress is not None:
+        progress.op(f"{progress_label}: انتهى · tob={tob.height:,}")  # type: ignore[union-attr]
 
     integrity = replace(
         base_integrity,
@@ -156,11 +192,23 @@ def reconstruct_by_instrument(
     frame: pl.DataFrame,
     *,
     record_top_of_book: bool = True,
+    progress: object | None = None,
 ) -> dict[int, ReconstructionResult]:
     """يُعيد البناء لكل أداة على حدة ويُعيد قاموسًا ``instrument_id -> نتيجة``."""
     results: dict[int, ReconstructionResult] = {}
     if frame.height == 0:
         return results
-    for (instrument_id,), group in frame.group_by(["instrument_id"], maintain_order=True):
-        results[int(instrument_id)] = reconstruct(group, record_top_of_book=record_top_of_book)
+    groups = list(frame.group_by(["instrument_id"], maintain_order=True))
+    n = len(groups)
+    for i, ((instrument_id,), group) in enumerate(groups, start=1):
+        if progress is not None:
+            progress.op(  # type: ignore[union-attr]
+                f"reconstruct_by_instrument [{i}/{n}] id={instrument_id}"
+            )
+        results[int(instrument_id)] = reconstruct(
+            group,
+            record_top_of_book=record_top_of_book,
+            progress=progress,
+            progress_label=f"reconstruct:{instrument_id}",
+        )
     return results

@@ -262,18 +262,28 @@ def failed_fvg_from_bars(
     fvg_window_ns: int = _DEFAULT_FVG_WINDOW_NS,
     vol_price_mult: float = _DEFAULT_VOL_PRICE_MULT,
     vol_volume_mult: float = _DEFAULT_VOL_VOLUME_MULT,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """إشارة Failed FVG من شموع مكتملة مسبقًا (سببي — لإعادة استخدام الكاش)."""
     m30 = _with_effort_features(signal_bars)
     fvgs = detect_h1_fvgs(h1)
     if m30.height == 0:
+        if progress is not None:
+            progress.op("failed_fvg_from_bars: تخطّي — لا شموع إشارة")  # type: ignore[union-attr]
         return _empty_signal_frame()
 
     fvg_rows: list[dict[str, object]] = fvgs.to_dicts() if fvgs.height > 0 else []
     used: set[str] = set()
     out: list[dict[str, float | int | str | None]] = []
+    n_rows = m30.height
+    if progress is not None:
+        progress.op(  # type: ignore[union-attr]
+            f"failed_fvg_from_bars: مسح {n_rows:,} شمعة · fvgs={len(fvg_rows)}"
+        )
 
-    for row in m30.iter_rows(named=True):
+    for i, row in enumerate(m30.iter_rows(named=True), start=1):
+        if progress is not None:
+            progress.heartbeat(i, n_rows, label="fvg_bars")  # type: ignore[union-attr]
         base = _base_signal_row(row)
         atr20 = row["atr20"]
         vol_sma = row["volume_sma20"]
@@ -331,16 +341,27 @@ def failed_fvg_features(
     fvg_window_ns: int = _DEFAULT_FVG_WINDOW_NS,
     vol_price_mult: float = _DEFAULT_VOL_PRICE_MULT,
     vol_volume_mult: float = _DEFAULT_VOL_VOLUME_MULT,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """إطار إشارة Failed FVG سببي من MBO خام."""
+    if progress is not None:
+        progress.op(  # type: ignore[union-attr]
+            f"failed_fvg_features: OHLCV h1={h1_interval_ns} · "
+            f"signal={signal_interval_ns} · أحداث={frame.height:,}"
+        )
     h1 = build_ohlcv_bars(frame, interval_ns=h1_interval_ns)
     signal_bars = build_ohlcv_bars(frame, interval_ns=signal_interval_ns)
+    if progress is not None:
+        progress.op(  # type: ignore[union-attr]
+            f"OHLCV جاهز: h1={h1.height:,} · signal={signal_bars.height:,}"
+        )
     return failed_fvg_from_bars(
         h1,
         signal_bars,
         fvg_window_ns=fvg_window_ns,
         vol_price_mult=vol_price_mult,
         vol_volume_mult=vol_volume_mult,
+        progress=progress,
     )
 
 

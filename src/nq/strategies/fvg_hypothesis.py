@@ -155,6 +155,7 @@ def materialize_fvg_hypotheses(
             fvg_window_ns=spec.fvg_window_ns,
             vol_price_mult=spec.vol_price_mult,
             vol_volume_mult=spec.vol_volume_mult,
+            progress=log,
         )
         col = spec.column()
         if raw.height == 0:

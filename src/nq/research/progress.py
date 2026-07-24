@@ -166,10 +166,17 @@ class PipelineProgress:
             return
         done = min(max(done, 0), total)
         now = time.perf_counter()
-        # نبض أدق: كل 1% أو كل ثانية (أو كل عنصر إن كانت الحلقة قصيرة)
-        count_every = every if every is not None else max(1, min(total // 50, 5_000))
+        # نبض أدق: كل ~2% أو كل ثانية (أو كل عنصر إن كانت الحلقة قصيرة جدًا)
+        count_every = every if every is not None else max(1, min(max(total // 50, 1), 5_000))
+        # للحلقات المتوسطة: لا تطبع كل عنصر بالعدّ — اعتمد الزمن + عيّنات
+        if every is None and total >= 40:
+            count_every = max(count_every, max(1, total // 25))
         due_count = done == total or done == 0 or (done % count_every == 0)
         with self._lock:
+            if self._step_t0 <= 0.0:
+                self._step_t0 = now
+            if self._t0 <= 0.0:
+                self._t0 = now
             due_time = (now - self._last_heartbeat) >= self.heartbeat_seconds
             if not force and not due_count and not due_time:
                 return
@@ -180,9 +187,11 @@ class PipelineProgress:
             self._last_heartbeat = now
             self._last_heartbeat_done = done
 
-        elapsed = now - step_t0 if step_t0 else now - t0
+        elapsed = now - step_t0 if step_t0 > 0 else now - t0
+        if elapsed < 0:
+            elapsed = 0.0
         pct = 100.0 * done / total
-        rate = _fmt_rate(done, elapsed) if done > 0 else "?"
+        rate = _fmt_rate(done, elapsed) if done > 0 and elapsed > 0 else "?"
         remain = "?"
         if done > 0 and elapsed > 0 and done < total:
             eta = (total - done) * (elapsed / done)

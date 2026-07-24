@@ -281,6 +281,7 @@ def measure_psg(
     embargo: int = 0,
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
+    progress: object | None = None,
 ) -> MetricResult:
     """PSG — فجوة الكفاية التنبؤية (World Model surprise)."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -329,6 +330,8 @@ def measure_psg(
 
     surprise_series = np.asarray(surprises, dtype=np.float64)
     baseline_arr = np.asarray(train_surprises, dtype=np.float64)
+    if progress is not None:
+        progress.op("psg: اختبار تبديل surprise")  # type: ignore[union-attr]
     test_result = permutation_test(
         surprise_series,
         baseline_arr if baseline_arr.shape[0] >= _MIN_BLOCK_ROWS else surprise_series * 0.5,
@@ -336,6 +339,8 @@ def measure_psg(
         n_permutations=min(_DEFAULT_N_PERM, 1000),
         rng=generator,
         alternative="greater",
+        progress=progress,
+        progress_label="psg-perm",
     )
     pvalue = test_result.pvalue
     triggered = ratio > _PSG_RATIO_THRESHOLD and pvalue <= alpha
@@ -363,6 +368,7 @@ def measure_crs(
     mask_ratio: float = 0.3,
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
+    progress: object | None = None,
 ) -> list[MetricResult]:
     """CRS — كفاية إعادة البناء المُقنّعة لكل كتلة محاكاة."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -377,7 +383,10 @@ def measure_crs(
     folds = _walk_forward_folds(times, n_splits=n_splits, embargo=embargo)
     results: list[MetricResult] = []
 
-    for block_name, cols in resolved.items():
+    n_blocks = len(resolved)
+    for b_i, (block_name, cols) in enumerate(resolved.items(), start=1):
+        if progress is not None:
+            progress.op(f"crs كتلة [{b_i}/{n_blocks}]: {block_name}")  # type: ignore[union-attr]
         block_idx = [col_index[c] for c in cols]
         block_errors: list[float] = []
         other_errors: list[float] = []
@@ -419,6 +428,8 @@ def measure_crs(
             np.zeros(len(block_errors), dtype=np.intp),
             n_permutations=_DEFAULT_N_PERM,
             rng=generator,
+            progress=progress,
+            progress_label=f"crs-perm:{block_name}",
         )
         pvalue = test_result.pvalue if len(block_errors) >= _MIN_BLOCK_ROWS else 1.0
         triggered = observed > _CRS_RATIO_THRESHOLD and pvalue <= alpha
@@ -449,6 +460,7 @@ def measure_lori(
     embargo: int = 0,
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
+    progress: object | None = None,
 ) -> list[MetricResult]:
     """LORI — مؤشر الأنظمة اليتيمة + Transition Surprise."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -501,6 +513,8 @@ def measure_lori(
                     test_labels,
                     n_permutations=_LORI_PERMUTATIONS,
                     rng=generator,
+                    progress=progress,
+                    progress_label=f"lori-perm:r{int(regime)}",
                 )
                 min_p = min(min_p, result.pvalue)
             orphan = min_p > alpha
@@ -685,6 +699,7 @@ def run_all_metrics(
             embargo=embargo,
             alpha=alpha,
             rng=generator,
+            progress=log,
         )
     )
     _emit("crs")
@@ -695,6 +710,7 @@ def run_all_metrics(
             embargo=embargo,
             alpha=alpha,
             rng=generator,
+            progress=log,
         )
     )
     _emit("lori")
@@ -705,6 +721,7 @@ def run_all_metrics(
             embargo=embargo,
             alpha=alpha,
             rng=generator,
+            progress=log,
         )
     )
     _emit("qduf")

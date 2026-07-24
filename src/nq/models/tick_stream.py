@@ -349,8 +349,8 @@ def build_tick_stream(
     total = len(actions)
     if log is not None:
         log.op(f"بدء آلة الحالة حدث-بحدث: {total:,} حدث")  # type: ignore[union-attr]
-    # نبضة كل ~2% أو على الأقل كل 5k حدث حتى لا يصمت التشغيل
-    hb_every = max(5_000, total // 50) if total else 1
+    # نبضة كثيفة: كل 500 حدث؛ PipelineProgress يحدّ الطباعة زمنيًا (~1s)
+    hb_every = 500 if total else 1
     next_hb = hb_every
 
     prev_nq_mid: float | None = None

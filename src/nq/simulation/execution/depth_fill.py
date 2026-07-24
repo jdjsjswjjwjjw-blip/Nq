@@ -51,6 +51,7 @@ def execution_forward_returns_depth(
     fallback_ask: npt.NDArray[np.floating] | None = None,
     slippage_ticks: float = 0.5,
     tick_size: float = 0.25,
+    progress: object | None = None,
 ) -> tuple[FloatArray, FloatArray]:
     """عوائد أمامية بمسح عمق ظاهر عند الدخول (t) والخروج (t+h).
 
@@ -79,7 +80,12 @@ def execution_forward_returns_depth(
     fb = None if fallback_bid is None else np.asarray(fallback_bid, dtype=np.float64)
     fa = None if fallback_ask is None else np.asarray(fallback_ask, dtype=np.float64)
 
+    n_steps = max(n - horizon, 0)
+    if progress is not None:
+        progress.op(f"depth_fill: مسح عوائد عمق · خطوات={n_steps:,}")  # type: ignore[union-attr]
     for t in range(n - horizon):
+        if progress is not None:
+            progress.heartbeat(t + 1, n_steps, label="depth_fill")  # type: ignore[union-attr]
         e_bids, e_asks = _levels_at(bp, bs, ap, az, t, n_levels=n_levels)
         x_bids, x_asks = _levels_at(bp, bs, ap, az, t + horizon, n_levels=n_levels)
 

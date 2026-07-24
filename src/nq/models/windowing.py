@@ -50,6 +50,7 @@ def build_sequences(
     window: int,
     time_col: str = AVAILABILITY_TS,
     stride: int = 1,
+    progress: object | None = None,
 ) -> SequenceDataset:
     """يبني ``SequenceDataset`` سببيًا من إطار ميزات مرتّب زمنيًا.
 
@@ -70,9 +71,19 @@ def build_sequences(
     values = frame.select(feature_columns).to_numpy().astype(np.float64)
     n_rows = values.shape[0]
 
-    ends = range(window - 1, n_rows, stride)
-    samples = [values[end - window + 1 : end + 1] for end in ends]
-    times = [times_all[end] for end in ends]
+    ends_list = list(range(window - 1, n_rows, stride))
+    n_ends = len(ends_list)
+    if progress is not None:
+        progress.op(  # type: ignore[union-attr]
+            f"build_sequences: {n_ends:,} نافذة · window={window} · rows={n_rows:,}"
+        )
+    samples = []
+    times = []
+    for i, end in enumerate(ends_list, start=1):
+        samples.append(values[end - window + 1 : end + 1])
+        times.append(times_all[end])
+        if progress is not None:
+            progress.heartbeat(i, n_ends, label="sequences")  # type: ignore[union-attr]
 
     if samples:
         x = np.stack(samples).astype(np.float64)
@@ -104,6 +115,7 @@ def build_tick_sequences(
     window: int,
     time_col: str = AVAILABILITY_TS,
     stride: int = 1,
+    progress: object | None = None,
 ) -> TickSequenceDataset:
     """يبني تسلسلات tick/event مع ``mask_path`` و ``market_phase`` لكل عيّنة."""
     base = build_sequences(
@@ -112,6 +124,7 @@ def build_tick_sequences(
         window=window,
         time_col=time_col,
         stride=stride,
+        progress=progress,
     )
     if base.x.shape[0] == 0:
         return TickSequenceDataset(

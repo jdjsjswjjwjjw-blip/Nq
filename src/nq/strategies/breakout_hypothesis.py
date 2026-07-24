@@ -329,6 +329,7 @@ def materialize_breakout_hypotheses(
             vol_mode=spec.vol_mode,
             sma_period=spec.sma_period,
             require_sma_filter=spec.require_sma_filter,
+            progress=log,
         )
         col = spec.column()
         if raw.height == 0:
@@ -356,9 +357,16 @@ def materialize_breakout_hypotheses(
     return out
 
 
-def _attach_volume_context(features: pl.DataFrame, nq: pl.DataFrame) -> pl.DataFrame:
+def _attach_volume_context(
+    features: pl.DataFrame,
+    nq: pl.DataFrame,
+    *,
+    progress: object | None = None,
+) -> pl.DataFrame:
     """يلحق أعمدة فوليوم سببية افتراضية للتعزيز/السياق (asof خلفي)."""
-    fb = failed_breakout_features(nq, require_sma_filter=False, rth_only=False)
+    fb = failed_breakout_features(
+        nq, require_sma_filter=False, rth_only=False, progress=progress
+    )
     keep = [c for c in (AVAILABILITY_TS, *_VOLUME_FEATURE_COLUMNS) if c in fb.columns]
     if len(keep) < 2 or features.height == 0:
         zeros = [
@@ -470,7 +478,7 @@ def search_fail_breakout_hypotheses(
                 features = features.with_columns(pl.col(col).fill_null(0.0))
 
         log.step("إلحاق سياق فوليوم سببي (asof خلفي)")
-        features = _attach_volume_context(features, nq_frame)
+        features = _attach_volume_context(features, nq_frame, progress=log)
         log.note(f"أعمدة فوليوم: {[c for c in _VOLUME_FEATURE_COLUMNS if c in features.columns]}")
 
         ssl_result: SSLPipelineResult | None = None

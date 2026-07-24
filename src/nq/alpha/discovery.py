@@ -111,6 +111,7 @@ def discover_alpha_from_features(
                 fallback_ask=ask,
                 slippage_ticks=slippage_ticks,
                 tick_size=tick_size,
+                progress=log,
             )
         for i, col in enumerate(cols, start=1):
             mode_tag = "depth-walk" if use_depth else "intraday"

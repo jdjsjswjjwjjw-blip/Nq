@@ -43,6 +43,8 @@ def regime_difference_test(
     *,
     n_permutations: int = 10_000,
     rng: np.random.Generator | None = None,
+    progress: object | None = None,
+    progress_label: str = "regime_perm",
 ) -> TestResult:
     """اختبار تبديل لفرضية تساوي متوسّط ``values`` عبر الحالات ``labels``.
 
@@ -61,6 +63,8 @@ def regime_difference_test(
     null = np.empty(n_permutations, dtype=np.float64)
     for i in range(n_permutations):
         null[i] = _f_statistic(vals, generator.permutation(labs))
+        if progress is not None:
+            progress.heartbeat(i + 1, n_permutations, label=progress_label)  # type: ignore[union-attr]
     pvalue = (int(np.sum(null >= observed)) + 1) / (n_permutations + 1)
     return TestResult(
         statistic=observed, pvalue=pvalue, n_resamples=n_permutations, alternative="greater"

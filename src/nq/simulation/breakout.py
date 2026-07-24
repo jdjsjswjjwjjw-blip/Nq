@@ -186,6 +186,7 @@ def failed_breakout_from_bars(
     sma_period: int = _DEFAULT_SMA_PERIOD,
     require_sma_filter: bool = True,
     rth_only: bool = True,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """يبني إشارة Failed Breakout من شموع مكتملة (سببي + فوليوم).
 
@@ -201,6 +202,10 @@ def failed_breakout_from_bars(
     if vol_mode not in ("bar", "cum", "delta", "effort_result"):
         raise ValueError(f"unknown vol_mode: {vol_mode!r}")
     if signal_bars.height < max(_MIN_BARS, lookback + atr_window):
+        if progress is not None:
+            progress.op(  # type: ignore[union-attr]
+                f"failed_breakout_from_bars: تخطّي — شموع غير كافية ({signal_bars.height})"
+            )
         return pl.DataFrame(schema=_EMPTY_FB_SCHEMA)
 
     work = _with_volume_baselines(
@@ -239,7 +244,15 @@ def failed_breakout_from_bars(
     avails = work[AVAILABILITY_TS].to_list()
 
     rows: list[dict[str, float | int]] = []
+    n_scan = len(closes) - lookback
+    if progress is not None:
+        progress.op(  # type: ignore[union-attr]
+            f"failed_breakout_from_bars: مسح {n_scan:,} شمعة · mode={vol_mode}"
+        )
     for j in range(lookback, len(closes)):
+        if progress is not None:
+            done = j - lookback + 1
+            progress.heartbeat(done, max(n_scan, 1), label="fb_bars")  # type: ignore[union-attr]
         atr = atrs[j]
         vol_sma = vol_smas[j]
         if atr is None or vol_sma is None:
@@ -374,14 +387,24 @@ def failed_breakout_features(
     sma_period: int = _DEFAULT_SMA_PERIOD,
     require_sma_filter: bool = True,
     rth_only: bool = True,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """يستخرج Failed Breakout من شريط MBO (صفقات → شموع → إشارة فوليوم)."""
+    if progress is not None:
+        progress.op(  # type: ignore[union-attr]
+            f"failed_breakout_features: OHLCV signal={signal_interval_ns} · "
+            f"trend={trend_interval_ns} · أحداث={frame.height:,}"
+        )
     signal_bars = build_ohlcv_bars(frame, interval_ns=signal_interval_ns)
+    if progress is not None:
+        progress.op(f"OHLCV إشارة: {signal_bars.height:,} شمعة")  # type: ignore[union-attr]
     trend_bars = (
         build_ohlcv_bars(frame, interval_ns=trend_interval_ns)
         if require_sma_filter
         else None
     )
+    if progress is not None and trend_bars is not None:
+        progress.op(f"OHLCV اتجاه: {trend_bars.height:,} شمعة")  # type: ignore[union-attr]
     return failed_breakout_from_bars(
         signal_bars,
         trend_bars=trend_bars,
@@ -396,6 +419,7 @@ def failed_breakout_features(
         sma_period=sma_period,
         require_sma_filter=require_sma_filter,
         rth_only=rth_only,
+        progress=progress,
     )
 
 

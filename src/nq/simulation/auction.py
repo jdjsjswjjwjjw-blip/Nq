@@ -36,6 +36,7 @@ def auction_states(
     fraction: float = 0.7,
     balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
     expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """يصنّف حالة المزاد لكل نافذة زمنية (متاح عند ``bucket_end``).
 
@@ -43,7 +44,9 @@ def auction_states(
     ``range``, ``in_value_fraction``, ``is_balanced``, ``expansion_ratio``,
     ``is_expansion``, ``made_new_high``, ``made_new_low``, ``pullback_defended``.
     """
-    dva = developing_value_area(frame, interval_ns=interval_ns, fraction=fraction)
+    dva = developing_value_area(
+        frame, interval_ns=interval_ns, fraction=fraction, progress=progress
+    )
     if dva.height == 0:
         return dva.with_columns(
             pl.lit(None, dtype=pl.Int64).alias("high"),
@@ -124,6 +127,7 @@ def auction_signal_frame(
     fraction: float = 0.7,
     balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
     expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
+    progress: object | None = None,
 ) -> pl.DataFrame:
     """إشارات بحثية من Volume Profile + المزاد (توازن/اختلال/تمدّد).
 
@@ -138,12 +142,17 @@ def auction_signal_frame(
     * ``vp_poc_migration`` — إزاحة POC عن النافذة السابقة (سببي).
     * ``vp_flip_to_imbalance`` — انتقال من توازن → اختلال.
     """
+    if progress is not None:
+        progress.op(  # type: ignore[union-attr]
+            f"auction_signal_frame: بناء حالات المزاد · interval_ns={interval_ns}"
+        )
     states = auction_states(
         frame,
         interval_ns=interval_ns,
         fraction=fraction,
         balance_threshold=balance_threshold,
         expansion_threshold=expansion_threshold,
+        progress=progress,
     )
     if states.height == 0:
         return pl.DataFrame(

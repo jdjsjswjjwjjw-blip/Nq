@@ -246,9 +246,15 @@ def _resolve_signal_columns(
     return [c for c in ordered if c in features.columns]
 
 
-def _attach_failed_fvg(features: pl.DataFrame, nq: pl.DataFrame) -> pl.DataFrame:
+def _attach_failed_fvg(
+    features: pl.DataFrame,
+    nq: pl.DataFrame,
+    *,
+    progress: PipelineProgress | None = None,
+) -> pl.DataFrame:
     """يلحق إشارة Failed FVG بإطار البحث الموحّد (asof خلفي — بلا تسريب)."""
-    fvg = failed_fvg_features(nq)
+    log = progress if progress is not None else PipelineProgress(enabled=False)
+    fvg = failed_fvg_features(nq, progress=log)
     if fvg.height == 0 or features.height == 0:
         return features.with_columns(
             pl.lit(0.0).alias("fail_fvg"),
@@ -284,9 +290,11 @@ def _attach_auction_vp(
     nq: pl.DataFrame,
     *,
     interval_ns: int,
+    progress: PipelineProgress | None = None,
 ) -> pl.DataFrame:
     """يلحق إشارات Volume Profile / المزاد (توازن·اختلال·تمدّد) asof خلفي."""
-    signals = auction_signal_frame(nq, interval_ns=interval_ns)
+    log = progress if progress is not None else PipelineProgress(enabled=False)
+    signals = auction_signal_frame(nq, interval_ns=interval_ns, progress=log)
     zero_exprs = [pl.lit(0.0).alias(c) for c in _VP_AUCTION_SIGNAL_COLUMNS]
     if signals.height == 0 or features.height == 0:
         return features.with_columns(zero_exprs)
@@ -313,7 +321,7 @@ def _attach_failed_breakout(
 
     log = progress if progress is not None else PipelineProgress(enabled=False)
     log.op("failed_breakout_features (إشارة فوليوم)")
-    fb = failed_breakout_features(nq)
+    fb = failed_breakout_features(nq, progress=log)
     zero_exprs = [pl.lit(0.0).alias(c) for c in _FB_SIGNAL_COLUMNS]
     if fb.height == 0 or features.height == 0:
         log.op("Failed Breakout: لا صفوف — أعمدة صفرية")
@@ -384,7 +392,11 @@ def _attach_failed_breakout(
             return 0.0
 
         log.op(f"حساب fb_depth_at_break على {fb.height:,} صف")
-        at_break = [_depth_at_break(r) for r in fb.iter_rows(named=True)]
+        at_break = []
+        n_fb = fb.height
+        for i, r in enumerate(fb.iter_rows(named=True), start=1):
+            at_break.append(_depth_at_break(r))
+            log.heartbeat(i, n_fb, label="fb_depth_at_break")
         fb = fb.with_columns(
             pl.Series("fb_depth_at_break", at_break),
             pl.col("depth_imbalance").fill_null(0.0).alias("fb_depth_imbalance"),
@@ -468,6 +480,7 @@ def _build_research_features(
             interval_ns=cfg.interval_ns,
             lead_lag_window=cfg.lead_lag_window,
             latency_ns=cfg.latency_ns,
+            progress=log,
         )
     log.note(f"إطار الميزات الأساسي: {features.height:,} صف × {features.width} عمود")
     log.step("إلحاق عمق الدفتر السببي (دخول/مراقبة/تنفيذ/خروج)")
@@ -475,12 +488,12 @@ def _build_research_features(
     if cfg.include_failed_fvg:
         log.step("إلحاق Failed FVG (asof خلفي)")
         log.op("failed_fvg_features + join_asof backward")
-        features = _attach_failed_fvg(features, nq)
+        features = _attach_failed_fvg(features, nq, progress=log)
         log.op(f"بعد FVG: {features.height:,} صف")
     if cfg.include_auction_vp:
         log.step("إلحاق Volume Profile / Auction (asof خلفي)")
         log.op("auction_signal_frame + join_asof backward")
-        features = _attach_auction_vp(features, nq, interval_ns=cfg.interval_ns)
+        features = _attach_auction_vp(features, nq, interval_ns=cfg.interval_ns, progress=log)
         log.op(f"بعد Auction/VP: {features.height:,} صف")
     if cfg.include_failed_breakout:
         log.step("إلحاق Failed Breakout + عمق عند مستوى الكسر")

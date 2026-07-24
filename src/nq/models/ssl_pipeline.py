@@ -236,7 +236,9 @@ def run_ssl_pipeline(
     for col in cols:
         work = work.with_columns(pl.col(col).fill_null(0).alias(col))
 
-    sequences = build_sequences(work, feature_columns=cols, window=window)
+    sequences = build_sequences(
+        work, feature_columns=cols, window=window, progress=progress
+    )
     if len(sequences) < _MIN_SSL_SAMPLES:
         if log is not None:
             log.op(f"SSL-bucket: عيّنات غير كافية ({len(sequences)})")  # type: ignore[union-attr]
@@ -410,6 +412,7 @@ def run_ssl_tick_pipeline(
         stream.frame,
         feature_columns=list(TICK_FEATURE_NAMES),
         window=window,
+        progress=progress,
     )
     if len(sequences) < _MIN_SSL_SAMPLES:
         if log is not None:
