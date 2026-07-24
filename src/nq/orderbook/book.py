@@ -8,7 +8,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from nq.contracts.mbo import MboAction, MboSide
+
+if TYPE_CHECKING:
+    from nq.orderbook.depth import DepthSnapshot
 
 _ADD = MboAction.ADD.value
 _CANCEL = MboAction.CANCEL.value

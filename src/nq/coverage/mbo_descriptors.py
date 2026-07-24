@@ -12,6 +12,7 @@ import polars as pl
 from nq.contracts.mbo import MboAction
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.orderbook import reconstruct
+from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 
 _ADD = MboAction.ADD.value
@@ -32,7 +33,13 @@ _DESCRIPTOR_COLUMNS = (
 )
 
 
-def mbo_window_descriptors(frame: pl.DataFrame, *, interval_ns: int) -> pl.DataFrame:
+def mbo_window_descriptors(
+    frame: pl.DataFrame,
+    *,
+    interval_ns: int,
+    progress: ProgressLike | None = None,
+    progress_label: str = "mbo_desc",
+) -> pl.DataFrame:
     """يبني واصفات MBO لكل نافذة زمنية سبقية (متاحة عند ``bucket_end``)."""
     if frame.height == 0:
         return pl.DataFrame(
@@ -64,7 +71,13 @@ def mbo_window_descriptors(frame: pl.DataFrame, *, interval_ns: int) -> pl.DataF
     else:
         event_stats = event_stats.with_columns(pl.lit(0).alias("trade_volume"))
 
-    tob = reconstruct(frame).top_of_book
+    if progress is not None:
+        progress.op(
+            f"{progress_label}: واصفات نوافذ · أحداث={frame.height:,} · interval_ns={interval_ns}"
+        )
+    tob = reconstruct(
+        frame, progress=progress, progress_label=f"{progress_label}:reconstruct"
+    ).top_of_book
     tob_bucketed = add_time_bucket(tob, interval_ns=interval_ns)
     both = pl.col("best_bid").is_not_null() & pl.col("best_ask").is_not_null()
     tob_bucketed = tob_bucketed.with_columns(

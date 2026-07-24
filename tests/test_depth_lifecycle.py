@@ -65,7 +65,7 @@ def test_depth_event_series_causal_past_stable() -> None:
     base = depth_event_series(nq, n_levels=3)
     if base.height < 20:
         return
-    cut = int(base[AVAILABILITY_TS].median())
+    cut = int(float(base[AVAILABILITY_TS].median()))  # type: ignore[arg-type]
     past = base.filter(pl.col(AVAILABILITY_TS) <= cut)
     scrambled = nq.with_columns(
         pl.when(pl.col(EVENT_TS) > cut)

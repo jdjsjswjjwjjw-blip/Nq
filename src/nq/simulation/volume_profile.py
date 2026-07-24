@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 
 _DEFAULT_VALUE_AREA_FRACTION = 0.7
@@ -164,6 +165,7 @@ def developing_value_area(
     *,
     interval_ns: int,
     fraction: float = _DEFAULT_VALUE_AREA_FRACTION,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يحسب منطقة القيمة لكل نافذة زمنية ويقيس هجرة القيمة عبرها (سببي).
 
@@ -192,7 +194,13 @@ def developing_value_area(
     )
 
     rows: list[dict[str, int]] = []
-    for (bucket_start,), group in per_price.group_by([BUCKET_START], maintain_order=True):
+    groups = list(per_price.group_by([BUCKET_START], maintain_order=True))
+    n_buckets = len(groups)
+    if progress is not None:
+        progress.op(f"developing_value_area: {n_buckets:,} نافذة · interval_ns={interval_ns}")
+    for i, ((bucket_start,), group) in enumerate(groups, start=1):
+        if progress is not None:
+            progress.heartbeat(i, n_buckets, label="value_area")
         va = value_area(group.sort("price"), fraction=fraction)
         if va is None:  # pragma: no cover - group is always non-empty here
             continue

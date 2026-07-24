@@ -2,16 +2,44 @@
 
 كل عملية تُطبع فورًا على stderr (وإلى ``progress.log`` إن وُجد مسار مخرجات).
 داخل الحلقات الطويلة يُطبع نبض تقدّم (نسبة + سرعة + ETA) حتى لا يحدث صمت.
+آمن للخيوط: قفل واحد على الكتابة حتى لا يتداخل SSL ‖ M9 كـ «دائرة».
 """
 
 from __future__ import annotations
 
 import sys
+import threading
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TextIO
+from typing import Protocol, TextIO
+
+
+class ProgressLike(Protocol):
+    """واجهة تقدّم خفيفة — تتجنّب ``object`` في mypy."""
+
+    def op(self, message: str) -> None: ...
+    def note(self, message: str) -> None: ...
+    def step(self, name: str, detail: str = "") -> None: ...
+    def line(self, message: str) -> None: ...
+    def heartbeat(
+        self,
+        done: int,
+        total: int,
+        *,
+        label: str = "",
+        force: bool = False,
+        every: int | None = None,
+    ) -> None: ...
+
+
+_SEC_PER_MIN = 60.0
+_MIN_PER_HOUR = 60
+_RATE_M = 1_000_000
+_RATE_K = 1_000
+_HB_DENSE_MIN_TOTAL = 40
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -19,12 +47,12 @@ def _fmt_duration(seconds: float) -> str:
         seconds = 0.0
     if seconds < 1.0:
         return f"{seconds * 1000:.0f}ms"
-    if seconds < 60.0:
+    if seconds < _SEC_PER_MIN:
         return f"{seconds:.1f}s"
-    minutes, secs = divmod(seconds, 60.0)
-    if minutes < 60:
+    minutes, secs = divmod(seconds, _SEC_PER_MIN)
+    if minutes < _MIN_PER_HOUR:
         return f"{int(minutes)}m{secs:04.1f}s"
-    hours, minutes = divmod(int(minutes), 60)
+    hours, minutes = divmod(int(minutes), _MIN_PER_HOUR)
     return f"{hours}h{minutes:02d}m{secs:02.0f}s"
 
 
@@ -32,16 +60,16 @@ def _fmt_rate(done: int, elapsed: float) -> str:
     if elapsed <= 0:
         return "?"
     rate = done / elapsed
-    if rate >= 1_000_000:
-        return f"{rate / 1_000_000:.2f}M/s"
-    if rate >= 1_000:
-        return f"{rate / 1_000:.1f}k/s"
+    if rate >= _RATE_M:
+        return f"{rate / _RATE_M:.2f}M/s"
+    if rate >= _RATE_K:
+        return f"{rate / _RATE_K:.1f}k/s"
     return f"{rate:.0f}/s"
 
 
 @dataclass
 class PipelineProgress:
-    """مسجّل تقدّم تفاعلي — كل سطر يُFLUSH فورًا.
+    """مسجّل تقدّم تفاعلي — كل سطر يُFLUSH فورًا (thread-safe).
 
     Parameters
     ----------
@@ -58,7 +86,7 @@ class PipelineProgress:
     enabled: bool = True
     stream: TextIO = field(default_factory=lambda: sys.stderr)
     log_path: Path | None = None
-    heartbeat_seconds: float = 2.0
+    heartbeat_seconds: float = 1.0
     _title: str = field(default="", init=False, repr=False)
     _total: int | None = field(default=None, init=False, repr=False)
     _index: int = field(default=0, init=False, repr=False)
@@ -68,49 +96,72 @@ class PipelineProgress:
     _log_file: TextIO | None = field(default=None, init=False, repr=False)
     _last_heartbeat: float = field(default=0.0, init=False, repr=False)
     _last_heartbeat_done: int = field(default=-1, init=False, repr=False)
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    _channel: str = field(default="", init=False, repr=False)
+    _local: threading.local = field(default_factory=threading.local, init=False, repr=False)
 
     def attach_log(self, path: Path | str) -> None:
         """يفتح ملف لوج إضافي ويكتب فيه كل السطور."""
         if not self.enabled:
             return
-        log = Path(path)
-        log.parent.mkdir(parents=True, exist_ok=True)
-        if self._log_file is not None:
-            self._log_file.close()
-        self.log_path = log
-        self._log_file = log.open("w", encoding="utf-8")
+        with self._lock:
+            log = Path(path)
+            log.parent.mkdir(parents=True, exist_ok=True)
+            if self._log_file is not None:
+                self._log_file.close()
+            self.log_path = log
+            self._log_file = log.open("w", encoding="utf-8")
         self.line(f"ملف التقدّم: {log.resolve()}")
 
     def close(self) -> None:
-        if self._log_file is not None:
-            self._log_file.close()
-            self._log_file = None
+        with self._lock:
+            if self._log_file is not None:
+                self._log_file.close()
+                self._log_file = None
+
+    @contextmanager
+    def channel(self, name: str) -> Iterator[PipelineProgress]:
+        """يضبط بادئة قناة للخيط الحالي (مثل SSL / M9) حتى لا يبدو اللوج دائرة."""
+        prev = getattr(self._local, "channel", "")
+        self._local.channel = name
+        try:
+            self.line(f"▣ قناة [{name}] بدأت")
+            yield self
+        finally:
+            self.line(f"▣ قناة [{name}] انتهت")
+            self._local.channel = prev
 
     def begin(self, title: str, *, total_steps: int | None = None) -> None:
-        self._title = title
-        self._total = total_steps
-        self._index = 0
-        self._t0 = time.perf_counter()
-        self._step_t0 = self._t0
-        self._current = ""
-        self._last_heartbeat = self._t0
-        self._last_heartbeat_done = -1
+        with self._lock:
+            self._title = title
+            self._total = total_steps
+            self._index = 0
+            self._t0 = time.perf_counter()
+            self._step_t0 = self._t0
+            self._current = ""
+            self._last_heartbeat = self._t0
+            self._last_heartbeat_done = -1
         self.line(f"========== بدء: {title} ==========")
         if total_steps is not None:
             self.line(f"عدد الخطوات المتوقعة: {total_steps}")
+        self.line("المسار خطي — كل حلقة طويلة تطبع نبضًا حيًّا (لا صمت)")
 
     def step(self, name: str, detail: str = "") -> None:
         """يعلن بدء خطوة جديدة (ويُغلق زمنيًا الخطوة السابقة إن وُجدت)."""
-        now = time.perf_counter()
-        if self._current:
-            elapsed = now - self._step_t0
-            self.line(f"  ✓ انتهى: {self._current} ({_fmt_duration(elapsed)})")
-        self._index += 1
-        self._current = name
-        self._step_t0 = now
-        self._last_heartbeat = now
-        self._last_heartbeat_done = -1
-        prefix = self._prefix()
+        with self._lock:
+            now = time.perf_counter()
+            prev = self._current
+            prev_elapsed = now - self._step_t0 if prev else 0.0
+            self._index += 1
+            self._current = name
+            self._step_t0 = now
+            self._last_heartbeat = now
+            self._last_heartbeat_done = -1
+            index = self._index
+            total = self._total
+        if prev:
+            self.line(f"  ✓ انتهى: {prev} ({_fmt_duration(prev_elapsed)})")
+        prefix = f"[{index}/{total}]" if total is not None and total > 0 else f"[{index}]"
         msg = f"{prefix} {name}"
         if detail:
             msg = f"{msg} — {detail}"
@@ -140,17 +191,32 @@ class PipelineProgress:
             return
         done = min(max(done, 0), total)
         now = time.perf_counter()
-        count_every = every if every is not None else max(1, total // 100)
-        due_count = done == total or done == 0 or (done % count_every == 0)
-        due_time = (now - self._last_heartbeat) >= self.heartbeat_seconds
-        if not force and not due_count and not due_time:
-            return
-        if done == self._last_heartbeat_done and not force and done != total:
-            return
+        # نبض أدق: كل ~2% أو كل ثانية (أو كل عنصر إن كانت الحلقة قصيرة جدًا)
+        count_every = every if every is not None else max(1, min(max(total // 50, 1), 5_000))
+        # للحلقات المتوسطة: لا تطبع كل عنصر بالعدّ — اعتمد الزمن + عيّنات
+        if every is None and total >= _HB_DENSE_MIN_TOTAL:
+            count_every = max(count_every, 1, total // 25)
+        due_count = done in (0, total) or (done % count_every == 0)
+        with self._lock:
+            if self._step_t0 <= 0.0:
+                self._step_t0 = now
+            if self._t0 <= 0.0:
+                self._t0 = now
+            due_time = (now - self._last_heartbeat) >= self.heartbeat_seconds
+            if not force and not due_count and not due_time:
+                return
+            if done == self._last_heartbeat_done and not force and done != total:
+                return
+            step_t0 = self._step_t0
+            t0 = self._t0
+            self._last_heartbeat = now
+            self._last_heartbeat_done = done
 
-        elapsed = now - self._step_t0 if self._step_t0 else now - self._t0
+        elapsed = now - step_t0 if step_t0 > 0 else now - t0
+        if elapsed < 0:
+            elapsed = 0.0
         pct = 100.0 * done / total
-        rate = _fmt_rate(done, elapsed) if done > 0 else "?"
+        rate = _fmt_rate(done, elapsed) if done > 0 and elapsed > 0 else "?"
         remain = "?"
         if done > 0 and elapsed > 0 and done < total:
             eta = (total - done) * (elapsed / done)
@@ -162,45 +228,51 @@ class PipelineProgress:
             f"  … {tag}{done:,}/{total:,} ({pct:5.1f}%) "
             f"· {rate} · مرّ {_fmt_duration(elapsed)} · متبقي ~{remain}"
         )
-        self._last_heartbeat = now
-        self._last_heartbeat_done = done
 
     def done(self, detail: str = "") -> None:
-        now = time.perf_counter()
-        if self._current:
-            elapsed = now - self._step_t0
-            self.line(f"  ✓ انتهى: {self._current} ({_fmt_duration(elapsed)})")
+        with self._lock:
+            now = time.perf_counter()
+            current = self._current
+            step_elapsed = now - self._step_t0 if current else 0.0
+            total = now - self._t0 if self._t0 else 0.0
+            title = self._title
             self._current = ""
-        total = now - self._t0 if self._t0 else 0.0
+        if current:
+            self.line(f"  ✓ انتهى: {current} ({_fmt_duration(step_elapsed)})")
         suffix = f" — {detail}" if detail else ""
         self.line(
-            f"========== انتهى بنجاح: {self._title or 'pipeline'} "
+            f"========== انتهى بنجاح: {title or 'pipeline'} "
             f"({_fmt_duration(total)}){suffix} =========="
         )
         self.close()
 
     def fail(self, error: BaseException) -> None:
-        now = time.perf_counter()
-        step = self._current or "(قبل أي خطوة)"
-        step_elapsed = now - self._step_t0 if self._step_t0 else 0.0
-        total = now - self._t0 if self._t0 else 0.0
+        with self._lock:
+            now = time.perf_counter()
+            step = self._current or "(قبل أي خطوة)"
+            step_elapsed = now - self._step_t0 if self._step_t0 else 0.0
+            total = now - self._t0 if self._t0 else 0.0
+            title = self._title
         self.line(
             f"✗ فشل في الخطوة: {step} "
             f"({type(error).__name__}: {error}) "
             f"[خطوة {_fmt_duration(step_elapsed)} | إجمالي {_fmt_duration(total)}]"
         )
-        self.line(f"========== توقف بخطأ: {self._title or 'pipeline'} ==========")
+        self.line(f"========== توقف بخطأ: {title or 'pipeline'} ==========")
         self.close()
 
     def line(self, message: str) -> None:
         """طباعة سطر واحد فورية (stderr + ملف اللوج)."""
         if not self.enabled:
             return
-        text = f"[nq] {message}"
-        print(text, file=self.stream, flush=True)
-        if self._log_file is not None:
-            self._log_file.write(text + "\n")
-            self._log_file.flush()
+        channel = getattr(self._local, "channel", "") or ""
+        chan = f"[{channel}] " if channel else ""
+        text = f"[nq] {chan}{message}"
+        with self._lock:
+            print(text, file=self.stream, flush=True)
+            if self._log_file is not None:
+                self._log_file.write(text + "\n")
+                self._log_file.flush()
 
     def _prefix(self) -> str:
         if self._total is not None and self._total > 0:
@@ -234,7 +306,7 @@ def iter_with_progress(
     seq = list(items) if total is None and not hasattr(items, "__len__") else items
     n = total if total is not None else len(seq)  # type: ignore[arg-type]
     log.op(f"بدء {label}: {n:,} عنصر")
-    for i, item in enumerate(seq, start=1):  # type: ignore[arg-type]
+    for i, item in enumerate(seq, start=1):
         yield item
         log.heartbeat(i, n, label=label, every=every)
     if n > 0:
@@ -243,6 +315,7 @@ def iter_with_progress(
 
 __all__ = [
     "PipelineProgress",
+    "ProgressLike",
     "iter_with_progress",
     "resolve_progress",
 ]

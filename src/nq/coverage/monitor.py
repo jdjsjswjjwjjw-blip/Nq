@@ -16,6 +16,7 @@ from nq.coverage.types import CoverageAlert, CoverageReport
 from nq.research.assistant import ResearchAssistant
 from nq.research.evidence import Evidence
 from nq.research.findings import Finding
+from nq.research.progress import ProgressLike
 from nq.simulation.cross_market import cross_market_features
 from nq.statistics.hypothesis import verify_hypotheses
 
@@ -100,13 +101,13 @@ def run_coverage_on_features(
     n_permutations: int = 2000,
     rng: np.random.Generator | None = None,
     assistant: ResearchAssistant | None = None,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> CoverageReport:
     """يشغّل مراقب التغطية على ميزات مُسبَقة البناء (بدون إعادة حساب المحاكيات)."""
     log = progress
     if features.height == 0:
         if log is not None:
-            log.op("M9: إطار ميزات فارغ — تخطّي")  # type: ignore[union-attr]
+            log.op("M9: إطار ميزات فارغ — تخطّي")
         research = assistant if assistant is not None else ResearchAssistant(alpha=alpha)
         empty_report = research.write_report([], title="Structural Coverage — Blind-Spot Report")
         return CoverageReport(
@@ -126,18 +127,22 @@ def run_coverage_on_features(
         )
 
     if log is not None:
-        log.op(  # type: ignore[union-attr]
+        log.op(
             f"M9: أوصاف نوافذ MBO · NQ={nq.height:,} · MNQ={mnq.height:,} · "
             f"features={features.height:,}"
         )
-    nq_desc = mbo_window_descriptors(nq, interval_ns=interval_ns)
-    mnq_desc = mbo_window_descriptors(mnq, interval_ns=interval_ns)
+    nq_desc = mbo_window_descriptors(
+        nq, interval_ns=interval_ns, progress=log, progress_label="M9-NQ-desc"
+    )
+    mnq_desc = mbo_window_descriptors(
+        mnq, interval_ns=interval_ns, progress=log, progress_label="M9-MNQ-desc"
+    )
     _time_cols = {AVAILABILITY_TS, "bucket_start", "bucket_end"}
     mnq_renamed = mnq_desc.rename({c: f"mnq_{c}" for c in mnq_desc.columns if c not in _time_cols})
     combined_desc = nq_desc.join(mnq_renamed, on=AVAILABILITY_TS, how="left")
 
     if log is not None:
-        log.op("M9: تشغيل المقاييس الستة (mfig/cer/psg/crs/lori/qduf)")  # type: ignore[union-attr]
+        log.op("M9: تشغيل المقاييس الستة (mfig/cer/psg/crs/lori/qduf)")
     results = run_all_metrics(
         features,
         combined_desc,
@@ -150,7 +155,7 @@ def run_coverage_on_features(
         progress=progress,
     )
     if log is not None:
-        log.op("M9: بناء تقرير التغطية")  # type: ignore[union-attr]
+        log.op("M9: بناء تقرير التغطية")
     return build_coverage_report(results, assistant=assistant, alpha=alpha)
 
 

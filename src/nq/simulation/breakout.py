@@ -28,6 +28,7 @@ import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.session import SessionPhase, session_phase_from_ns
+from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START
 from nq.simulation.fvg import NS_1H, NS_30M, NS_PER_MIN, build_ohlcv_bars
 
@@ -75,9 +76,7 @@ def _ensure_flow_columns(bars: pl.DataFrame) -> pl.DataFrame:
     if "sell_volume" not in work.columns:
         work = work.with_columns(pl.lit(0.0).alias("sell_volume"))
     if "delta" not in work.columns:
-        work = work.with_columns(
-            (pl.col("buy_volume") - pl.col("sell_volume")).alias("delta")
-        )
+        work = work.with_columns((pl.col("buy_volume") - pl.col("sell_volume")).alias("delta"))
     return work
 
 
@@ -100,9 +99,7 @@ def _with_volume_baselines(
         .shift(1)
         .rolling_mean(window_size=vol_window, min_samples=max(3, vol_window // 2))
         .alias("vol_sma_past"),
-        pl.col("volume")
-        .rolling_sum(window_size=cum_w, min_samples=1)
-        .alias("cum_volume"),
+        pl.col("volume").rolling_sum(window_size=cum_w, min_samples=1).alias("cum_volume"),
         pl.col("delta").cum_sum().alias("cum_delta"),
         (pl.col("volume") / (pl.col("range").abs() + _EPS)).alias("absorption"),
         pl.col("delta").abs().alias("abs_delta"),
@@ -139,7 +136,7 @@ def _sma_frame(higher: pl.DataFrame, *, period: int) -> pl.DataFrame:
     )
 
 
-def _volume_gate(
+def _volume_gate(  # noqa: PLR0911
     *,
     mode: VolMode,
     effort_v: float,
@@ -165,13 +162,11 @@ def _volume_gate(
         if signal_side == SIGNAL_FB_LONG:
             return delta < 0.0
         return False
-    if mode == "effort_result":
-        # جهد حجم عالٍ + امتصاص عالٍ (نتيجة سعرية ضعيفة مقابل الحجم)
-        return effort_v > vol_mult and result_effort > result_mult
-    return effort_v > vol_mult
+    # mode == "effort_result"
+    return effort_v > vol_mult and result_effort > result_mult
 
 
-def failed_breakout_from_bars(
+def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
     signal_bars: pl.DataFrame,
     *,
     trend_bars: pl.DataFrame | None = None,
@@ -186,6 +181,7 @@ def failed_breakout_from_bars(
     sma_period: int = _DEFAULT_SMA_PERIOD,
     require_sma_filter: bool = True,
     rth_only: bool = True,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يبني إشارة Failed Breakout من شموع مكتملة (سببي + فوليوم).
 
@@ -201,6 +197,8 @@ def failed_breakout_from_bars(
     if vol_mode not in ("bar", "cum", "delta", "effort_result"):
         raise ValueError(f"unknown vol_mode: {vol_mode!r}")
     if signal_bars.height < max(_MIN_BARS, lookback + atr_window):
+        if progress is not None:
+            progress.op(f"failed_breakout_from_bars: تخطّي — شموع غير كافية ({signal_bars.height})")
         return pl.DataFrame(schema=_EMPTY_FB_SCHEMA)
 
     work = _with_volume_baselines(
@@ -239,7 +237,13 @@ def failed_breakout_from_bars(
     avails = work[AVAILABILITY_TS].to_list()
 
     rows: list[dict[str, float | int]] = []
+    n_scan = len(closes) - lookback
+    if progress is not None:
+        progress.op(f"failed_breakout_from_bars: مسح {n_scan:,} شمعة · mode={vol_mode}")
     for j in range(lookback, len(closes)):
+        if progress is not None:
+            done = j - lookback + 1
+            progress.heartbeat(done, max(n_scan, 1), label="fb_bars")
         atr = atrs[j]
         vol_sma = vol_smas[j]
         if atr is None or vol_sma is None:
@@ -273,9 +277,7 @@ def failed_breakout_from_bars(
             abs(delta_j) / float(d_sma) if d_sma is not None and float(d_sma) > 0 else 0.0
         )
         a_sma = absorption_smas[j]
-        result_effort = (
-            absorp_j / float(a_sma) if a_sma is not None and float(a_sma) > 0 else 0.0
-        )
+        result_effort = absorp_j / float(a_sma) if a_sma is not None and float(a_sma) > 0 else 0.0
 
         if effort_r <= range_mult:
             continue
@@ -284,7 +286,7 @@ def failed_breakout_from_bars(
         prior_h = max(float(highs[k]) for k in range(j - lookback, j))
         prior_l = min(float(lows[k]) for k in range(j - lookback, j))
         h = float(highs[j])
-        l = float(lows[j])
+        low_j = float(lows[j])
         c = float(closes[j])
         sma = smas[j]
 
@@ -293,8 +295,8 @@ def failed_breakout_from_bars(
         risk = 0.0
 
         # كسر لأعلى وفشل → SHORT
-        if h > prior_h and c < prior_h:
-            if (not require_sma_filter) or (sma is not None and c < float(sma)):
+        if h > prior_h and c < prior_h:  # noqa: SIM102
+            if (not require_sma_filter) or (sma is not None and c < float(sma)):  # noqa: SIM102
                 if _volume_gate(
                     mode=vol_mode,
                     effort_v=effort_v,
@@ -311,8 +313,8 @@ def failed_breakout_from_bars(
                     risk = max(1.5, h - prior_h)
 
         # كسر لأسفل وفشل → LONG
-        if signal == 0.0 and l < prior_l and c > prior_l:
-            if (not require_sma_filter) or (sma is not None and c > float(sma)):
+        if signal == 0.0 and low_j < prior_l and c > prior_l:  # noqa: SIM102
+            if (not require_sma_filter) or (sma is not None and c > float(sma)):  # noqa: SIM102
                 if _volume_gate(
                     mode=vol_mode,
                     effort_v=effort_v,
@@ -326,7 +328,7 @@ def failed_breakout_from_bars(
                 ):
                     signal = SIGNAL_FB_LONG
                     level = prior_l
-                    risk = max(1.5, prior_l - l)
+                    risk = max(1.5, prior_l - low_j)
 
         if signal == 0.0:
             continue
@@ -374,14 +376,22 @@ def failed_breakout_features(
     sma_period: int = _DEFAULT_SMA_PERIOD,
     require_sma_filter: bool = True,
     rth_only: bool = True,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يستخرج Failed Breakout من شريط MBO (صفقات → شموع → إشارة فوليوم)."""
+    if progress is not None:
+        progress.op(
+            f"failed_breakout_features: OHLCV signal={signal_interval_ns} · "
+            f"trend={trend_interval_ns} · أحداث={frame.height:,}"
+        )
     signal_bars = build_ohlcv_bars(frame, interval_ns=signal_interval_ns)
+    if progress is not None:
+        progress.op(f"OHLCV إشارة: {signal_bars.height:,} شمعة")
     trend_bars = (
-        build_ohlcv_bars(frame, interval_ns=trend_interval_ns)
-        if require_sma_filter
-        else None
+        build_ohlcv_bars(frame, interval_ns=trend_interval_ns) if require_sma_filter else None
     )
+    if progress is not None and trend_bars is not None:
+        progress.op(f"OHLCV اتجاه: {trend_bars.height:,} شمعة")
     return failed_breakout_from_bars(
         signal_bars,
         trend_bars=trend_bars,
@@ -396,6 +406,7 @@ def failed_breakout_features(
         sma_period=sma_period,
         require_sma_filter=require_sma_filter,
         rth_only=rth_only,
+        progress=progress,
     )
 
 

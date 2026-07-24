@@ -25,6 +25,7 @@ from nq.contracts.mbo import MboAction
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS, SEQUENCE
 from nq.core.time import sort_causal
 from nq.orderbook.book import OrderBook
+from nq.research.progress import ProgressLike
 from nq.simulation.volume_profile import DevelopingVolumeProfile, ValueArea
 from nq.states.regimes import CausalRegimeTracker
 
@@ -310,7 +311,7 @@ def build_tick_stream(
     *,
     nq_instrument_id: int = 1,
     mnq_instrument_id: int = 2,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> TickStream:
     """يبني تسلسل tick موحّد من MBO خام (NQ + MNQ) مع دفتر حي وميزات inline.
 
@@ -318,10 +319,7 @@ def build_tick_stream(
     """
     log = progress
     if log is not None:
-        log.op(  # type: ignore[union-attr]
-            f"دمج NQ+MNQ وترتيب سببي "
-            f"(NQ={nq.height:,} · MNQ={mnq.height:,})"
-        )
+        log.op(f"دمج NQ+MNQ وترتيب سببي (NQ={nq.height:,} · MNQ={mnq.height:,})")
     nq_sorted = sort_causal(nq.with_columns(pl.lit(nq_instrument_id).alias("instrument_id")))
     mnq_sorted = sort_causal(mnq.with_columns(pl.lit(mnq_instrument_id).alias("instrument_id")))
     combined = pl.concat([nq_sorted, mnq_sorted], how="vertical").sort([EVENT_TS, SEQUENCE])
@@ -348,9 +346,9 @@ def build_tick_stream(
 
     total = len(actions)
     if log is not None:
-        log.op(f"بدء آلة الحالة حدث-بحدث: {total:,} حدث")  # type: ignore[union-attr]
-    # نبضة كل ~2% أو على الأقل كل 5k حدث حتى لا يصمت التشغيل
-    hb_every = max(5_000, total // 50) if total else 1
+        log.op(f"بدء آلة الحالة حدث-بحدث: {total:,} حدث")
+    # نبضة كثيفة: كل 500 حدث؛ PipelineProgress يحدّ الطباعة زمنيًا (~1s)
+    hb_every = 500 if total else 1
     next_hb = hb_every
 
     prev_nq_mid: float | None = None
@@ -392,19 +390,19 @@ def build_tick_stream(
         )
         rows.append(row)
         if log is not None and (i >= next_hb or i == total):
-            log.heartbeat(i, total, label="tick_stream", force=True, every=hb_every)  # type: ignore[union-attr]
+            log.heartbeat(i, total, label="tick_stream", force=True, every=hb_every)
             next_hb = i + hb_every
 
     if not rows:
         if log is not None:
-            log.op("آلة الحالة: لا أحداث — إطار فارغ")  # type: ignore[union-attr]
+            log.op("آلة الحالة: لا أحداث — إطار فارغ")
         return TickStream(frame=pl.DataFrame(schema=_TICK_SCHEMA))
 
     if log is not None:
-        log.op(f"تجميع DataFrame من {len(rows):,} صف tick")  # type: ignore[union-attr]
+        log.op(f"تجميع DataFrame من {len(rows):,} صف tick")
     frame = pl.DataFrame(rows)
     if log is not None:
-        log.op(f"اكتمل tick_stream: {frame.height:,} صف")  # type: ignore[union-attr]
+        log.op(f"اكتمل tick_stream: {frame.height:,} صف")
     return TickStream(frame=frame)
 
 

@@ -27,6 +27,7 @@ from nq.models.world_model import NextStatePredictor, r2_score
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
 from nq.research.findings import Finding
+from nq.research.progress import ProgressLike
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -212,7 +213,7 @@ def run_ssl_pipeline(
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
     assistant: ResearchAssistant | None = None,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> SSLPipelineResult:
     """يشغّل SSL walk-forward على إطار ميزات ويكتب تقريرًا موثّقًا."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -222,13 +223,13 @@ def run_ssl_pipeline(
     cols = list(feature_columns) if feature_columns is not None else _feature_columns(features)
     if not cols or features.height < window:
         if log is not None:
-            log.op(  # type: ignore[union-attr]
+            log.op(
                 f"SSL-bucket: تخطّي (cols={len(cols)} · rows={features.height} · window={window})"
             )
         return _empty_ssl_result(research)
 
     if log is not None:
-        log.op(  # type: ignore[union-attr]
+        log.op(
             f"SSL-bucket: تحضير نوافذ window={window} من {features.height:,} صف · "
             f"features={len(cols)}"
         )
@@ -236,10 +237,10 @@ def run_ssl_pipeline(
     for col in cols:
         work = work.with_columns(pl.col(col).fill_null(0).alias(col))
 
-    sequences = build_sequences(work, feature_columns=cols, window=window)
+    sequences = build_sequences(work, feature_columns=cols, window=window, progress=progress)
     if len(sequences) < _MIN_SSL_SAMPLES:
         if log is not None:
-            log.op(f"SSL-bucket: عيّنات غير كافية ({len(sequences)})")  # type: ignore[union-attr]
+            log.op(f"SSL-bucket: عيّنات غير كافية ({len(sequences)})")
         return _empty_ssl_result(research)
 
     policy = TemporalPolicy.for_run(
@@ -265,15 +266,13 @@ def run_ssl_pipeline(
         purge_samples=purge_val,
     )
     if log is not None:
-        log.op(  # type: ignore[union-attr]
-            f"SSL-bucket: walk-forward {len(folds)} طيّات · sequences={len(sequences):,}"
-        )
+        log.op(f"SSL-bucket: walk-forward {len(folds)} طيّات · sequences={len(sequences):,}")
     fold_rows: list[dict[str, float | int]] = []
     embedding_rows: list[dict[str, float | int]] = []
 
     for fold_idx, fold in enumerate(folds):
         if log is not None:
-            log.op(  # type: ignore[union-attr]
+            log.op(
                 f"SSL-bucket fold {fold_idx + 1}/{len(folds)} "
                 f"(train={len(fold.train_idx):,} · test={len(fold.test_idx):,})"
             )
@@ -288,7 +287,7 @@ def run_ssl_pipeline(
         )
         if result is None:
             if log is not None:
-                log.op(f"SSL-bucket fold {fold_idx + 1}: تخطّي (نتيجة فارغة)")  # type: ignore[union-attr]
+                log.op(f"SSL-bucket fold {fold_idx + 1}: تخطّي (نتيجة فارغة)")
             continue
         fold_rows.append(
             {
@@ -307,7 +306,7 @@ def run_ssl_pipeline(
         else pl.DataFrame({AVAILABILITY_TS: pl.Series([], dtype=pl.Int64())})
     )
     if log is not None:
-        log.op(f"SSL-bucket انتهى — folds={metrics.height} · emb={embeddings.height:,}")  # type: ignore[union-attr]
+        log.op(f"SSL-bucket انتهى — folds={metrics.height} · emb={embeddings.height:,}")
     findings = _ssl_findings(metrics, research)
     report = research.write_report(findings, title="SSL Foundation Model — Research Report")
     return SSLPipelineResult(metrics=metrics, embeddings=embeddings, report=report)
@@ -385,7 +384,7 @@ def run_ssl_tick_pipeline(
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
     assistant: ResearchAssistant | None = None,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> SSLPipelineResult:
     """SSL على tick/event: دفتر حي + ميزات inline + إخفاء هيكلي (الأبعاد 1–6).
 
@@ -397,23 +396,24 @@ def run_ssl_tick_pipeline(
     log = progress
 
     if log is not None:
-        log.op("SSL-tick: بناء tick_stream للتمثيلات")  # type: ignore[union-attr]
+        log.op("SSL-tick: بناء tick_stream للتمثيلات")
     stream = build_tick_stream(nq, mnq, progress=progress)
     if stream.height < window:
         if log is not None:
-            log.op(f"SSL-tick: أحداث غير كافية ({stream.height} < window={window})")  # type: ignore[union-attr]
+            log.op(f"SSL-tick: أحداث غير كافية ({stream.height} < window={window})")
         return _empty_ssl_result(research)
 
     if log is not None:
-        log.op(f"SSL-tick: بناء نوافذ window={window} من {stream.height:,} حدث")  # type: ignore[union-attr]
+        log.op(f"SSL-tick: بناء نوافذ window={window} من {stream.height:,} حدث")
     sequences: TickSequenceDataset = build_tick_sequences(
         stream.frame,
         feature_columns=list(TICK_FEATURE_NAMES),
         window=window,
+        progress=progress,
     )
     if len(sequences) < _MIN_SSL_SAMPLES:
         if log is not None:
-            log.op(f"SSL-tick: عيّنات غير كافية ({len(sequences)})")  # type: ignore[union-attr]
+            log.op(f"SSL-tick: عيّنات غير كافية ({len(sequences)})")
         return _empty_ssl_result(research)
 
     policy = TemporalPolicy.for_run(interval_ns=1, window=window)
@@ -432,13 +432,13 @@ def run_ssl_tick_pipeline(
         purge_samples=purge_val,
     )
     if log is not None:
-        log.op(f"SSL-tick: walk-forward {len(folds)} طيّات · sequences={len(sequences):,}")  # type: ignore[union-attr]
+        log.op(f"SSL-tick: walk-forward {len(folds)} طيّات · sequences={len(sequences):,}")
     fold_rows: list[dict[str, float | int]] = []
     embedding_rows: list[dict[str, float | int]] = []
 
     for fold_idx, fold in enumerate(folds):
         if log is not None:
-            log.op(  # type: ignore[union-attr]
+            log.op(
                 f"SSL-tick fold {fold_idx + 1}/{len(folds)} "
                 f"(train={len(fold.train_idx):,} · test={len(fold.test_idx):,})"
             )
@@ -455,7 +455,7 @@ def run_ssl_tick_pipeline(
         )
         if result is None:
             if log is not None:
-                log.op(f"SSL-tick fold {fold_idx + 1}: تخطّي (نتيجة فارغة)")  # type: ignore[union-attr]
+                log.op(f"SSL-tick fold {fold_idx + 1}: تخطّي (نتيجة فارغة)")
             continue
         fold_rows.append(
             {

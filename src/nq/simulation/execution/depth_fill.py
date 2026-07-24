@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 import numpy as np
 import numpy.typing as npt
+import polars as pl
 
 from nq.contracts.mbo import PRICE_SCALE
 from nq.orderbook.depth import walk_buy_vwap, walk_sell_vwap
+from nq.research.progress import ProgressLike
 from nq.simulation.execution.costs import commission_rate
 
 FloatArray = npt.NDArray[np.float64]
+_MATRIX_NDIM = 2
 
 
 def _levels_at(
@@ -26,14 +27,14 @@ def _levels_at(
     bids: list[tuple[int, int]] = []
     asks: list[tuple[int, int]] = []
     for k in range(n_levels):
-        bp = float(bid_px[index, k]) if bid_px.ndim == 2 else float(bid_px[index])
-        bs = float(bid_sz[index, k]) if bid_sz.ndim == 2 else float(bid_sz[index])
-        ap = float(ask_px[index, k]) if ask_px.ndim == 2 else float(ask_px[index])
-        asz = float(ask_sz[index, k]) if ask_sz.ndim == 2 else float(ask_sz[index])
+        bp = float(bid_px[index, k]) if bid_px.ndim == _MATRIX_NDIM else float(bid_px[index])
+        bs = float(bid_sz[index, k]) if bid_sz.ndim == _MATRIX_NDIM else float(bid_sz[index])
+        ap = float(ask_px[index, k]) if ask_px.ndim == _MATRIX_NDIM else float(ask_px[index])
+        asz = float(ask_sz[index, k]) if ask_sz.ndim == _MATRIX_NDIM else float(ask_sz[index])
         if np.isfinite(bp) and np.isfinite(bs) and bs > 0:
-            bids.append((int(round(bp / PRICE_SCALE)), int(bs)))
+            bids.append((round(bp / PRICE_SCALE), int(bs)))
         if np.isfinite(ap) and np.isfinite(asz) and asz > 0:
-            asks.append((int(round(ap / PRICE_SCALE)), int(asz)))
+            asks.append((round(ap / PRICE_SCALE), int(asz)))
     return bids, asks
 
 
@@ -51,6 +52,7 @@ def execution_forward_returns_depth(
     fallback_ask: npt.NDArray[np.floating] | None = None,
     slippage_ticks: float = 0.5,
     tick_size: float = 0.25,
+    progress: ProgressLike | None = None,
 ) -> tuple[FloatArray, FloatArray]:
     """عوائد أمامية بمسح عمق ظاهر عند الدخول (t) والخروج (t+h).
 
@@ -79,7 +81,12 @@ def execution_forward_returns_depth(
     fb = None if fallback_bid is None else np.asarray(fallback_bid, dtype=np.float64)
     fa = None if fallback_ask is None else np.asarray(fallback_ask, dtype=np.float64)
 
+    n_steps = max(n - horizon, 0)
+    if progress is not None:
+        progress.op(f"depth_fill: مسح عوائد عمق · خطوات={n_steps:,}")
     for t in range(n - horizon):
+        if progress is not None:
+            progress.heartbeat(t + 1, n_steps, label="depth_fill")
         e_bids, e_asks = _levels_at(bp, bs, ap, az, t, n_levels=n_levels)
         x_bids, x_asks = _levels_at(bp, bs, ap, az, t + horizon, n_levels=n_levels)
 
@@ -106,7 +113,7 @@ def execution_forward_returns_depth(
 
 
 def stack_depth_levels(
-    frame,
+    frame: pl.DataFrame,
     *,
     n_levels: int = 5,
     side: str,
@@ -124,7 +131,7 @@ def stack_depth_levels(
 
 
 def depth_matrices_from_frame(
-    frame,
+    frame: pl.DataFrame,
     *,
     n_levels: int = 5,
 ) -> tuple[

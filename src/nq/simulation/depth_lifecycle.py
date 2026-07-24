@@ -21,6 +21,7 @@ from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.time import sort_causal
 from nq.orderbook.book import OrderBook
 from nq.orderbook.depth import DepthSnapshot
+from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START
 
 _DEFAULT_LEVELS: Final = 5
@@ -98,6 +99,7 @@ def depth_event_series(
     frame: pl.DataFrame,
     *,
     n_levels: int = _DEFAULT_LEVELS,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """لقطات عمق بعد كل حدث — للمراقبة (``availability_ts = event_ts``)."""
     if n_levels < 1:
@@ -113,13 +115,21 @@ def depth_event_series(
     sizes = work["size"].to_list()
     order_ids = work["order_id"].to_list()
     event_ts = work[EVENT_TS].to_list()
+    n = len(actions)
+    log = progress
+    if log is not None:
+        log.op(f"depth_event_series: مسح {n:,} حدث MBO → لقطات L1–L{n_levels}")
 
     rows: list[dict[str, float | int | None]] = []
-    for i in range(len(actions)):
+    for i in range(n):
         book.apply(str(actions[i]), str(sides[i]), int(prices[i]), int(sizes[i]), int(order_ids[i]))
         ts = int(event_ts[i])
         snap = book.snapshot(n_levels, availability_ts=ts)
         rows.append(snapshot_to_row(snap, event_ts=ts))
+        if log is not None:
+            log.heartbeat(i + 1, n, label="depth_events")
+    if log is not None:
+        log.op(f"depth_event_series انتهى: {len(rows):,} لقطة")
     return pl.DataFrame(rows).sort(AVAILABILITY_TS)
 
 
@@ -128,6 +138,7 @@ def depth_at_bar_close(
     *,
     interval_ns: int,
     n_levels: int = _DEFAULT_LEVELS,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """لقطة عمق عند إغلاق كل شمعة — للدخول/القرار.
 
@@ -152,6 +163,10 @@ def depth_at_bar_close(
     sizes = work["size"].to_list()
     order_ids = work["order_id"].to_list()
     event_ts = work[EVENT_TS].to_list()
+    n = len(actions)
+    log = progress
+    if log is not None:
+        log.op(f"depth_at_bar_close: {n:,} حدث → شموع interval_ns={interval_ns} · L1–L{n_levels}")
 
     rows: list[dict[str, float | int | None]] = []
     current_bucket: int | None = None
@@ -166,7 +181,7 @@ def depth_at_bar_close(
         row[BUCKET_END] = bucket_end
         rows.append(row)
 
-    for i in range(len(actions)):
+    for i in range(n):
         ts = int(event_ts[i])
         bucket = (ts // interval_ns) * interval_ns
         if current_bucket is None:
@@ -176,10 +191,14 @@ def depth_at_bar_close(
             current_bucket = bucket
         book.apply(str(actions[i]), str(sides[i]), int(prices[i]), int(sizes[i]), int(order_ids[i]))
         last_event_in_bucket = ts
+        if log is not None:
+            log.heartbeat(i + 1, n, label="depth_bars")
 
     if current_bucket is not None:
         _emit(current_bucket)
 
+    if log is not None:
+        log.op(f"depth_at_bar_close انتهى: {len(rows):,} شمعة بعمق")
     if not rows:
         return pl.DataFrame(schema=empty_schema)
     return pl.DataFrame(rows).sort(AVAILABILITY_TS)

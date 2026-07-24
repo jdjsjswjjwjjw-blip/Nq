@@ -114,9 +114,7 @@ def run_fail_breakout_research(
         output_dir=output_dir,
         rng=rng,
     )
-    return FailBreakoutResearchResult.from_unified(
-        result, signal_columns=_FAIL_BREAKOUT_FOCUS
-    )
+    return FailBreakoutResearchResult.from_unified(result, signal_columns=_FAIL_BREAKOUT_FOCUS)
 
 
 __all__ = [

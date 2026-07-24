@@ -29,7 +29,7 @@ from nq.models.splitting import purged_walk_forward_split
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
-from nq.research.progress import PipelineProgress, resolve_progress
+from nq.research.progress import PipelineProgress, ProgressLike, resolve_progress
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import (
     NS_PER_MIN,
@@ -115,6 +115,7 @@ def materialize_fvg_hypotheses(
     specs: Sequence[FvgHypothesisSpec],
     *,
     clock: pl.DataFrame,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يبني أعمدة فرضيات على ساعة تقييم مشتركة (asof خلفي فقط)."""
     if AVAILABILITY_TS not in clock.columns:
@@ -123,38 +124,62 @@ def materialize_fvg_hypotheses(
     if left.height == 0 or not specs:
         return left
 
+    log = progress
+    n_specs = len(specs)
+    if log is not None:
+        log.op(f"تجسيد {n_specs} فرضية FVG (كل فرضية تُطبع)")
+
     bars_cache: dict[int, pl.DataFrame] = {}
 
     def _bars(interval_ns: int) -> pl.DataFrame:
         cached = bars_cache.get(interval_ns)
         if cached is None:
+            if log is not None:
+                log.op(f"بناء OHLCV interval_ns={interval_ns}")
             cached = build_ohlcv_bars(nq, interval_ns=interval_ns)
             bars_cache[interval_ns] = cached
+            if log is not None:
+                log.op(f"OHLCV جاهز: {cached.height:,} شمعة")
         return cached
 
     out = left
-    for spec in specs:
+    for i, spec in enumerate(specs, start=1):
+        if log is not None:
+            log.op(
+                f"فرضية [{i}/{n_specs}] {spec.name} · h1={spec.h1_interval_ns} · "
+                f"sig={spec.signal_interval_ns}"
+            )
         raw = failed_fvg_from_bars(
             _bars(spec.h1_interval_ns),
             _bars(spec.signal_interval_ns),
             fvg_window_ns=spec.fvg_window_ns,
             vol_price_mult=spec.vol_price_mult,
             vol_volume_mult=spec.vol_volume_mult,
+            progress=log,
         )
         col = spec.column()
         if raw.height == 0:
             out = out.with_columns(pl.lit(0.0).alias(col))
-            continue
-        right = (
-            raw.select(AVAILABILITY_TS, pl.col("fail_fvg").alias(col))
-            .sort(AVAILABILITY_TS)
-            .unique(subset=[AVAILABILITY_TS], keep="last")
-        )
-        if col in out.columns:
-            out = out.drop(col)
-        out = out.join_asof(right, on=AVAILABILITY_TS, strategy="backward").with_columns(
-            pl.col(col).fill_null(0.0)
-        )
+            if log is not None:
+                log.op(f"  → {col}: 0 إشارات")
+        else:
+            right = (
+                raw.select(AVAILABILITY_TS, pl.col("fail_fvg").alias(col))
+                .sort(AVAILABILITY_TS)
+                .unique(subset=[AVAILABILITY_TS], keep="last")
+            )
+            if col in out.columns:
+                out = out.drop(col)
+            out = out.join_asof(right, on=AVAILABILITY_TS, strategy="backward").with_columns(
+                pl.col(col).fill_null(0.0)
+            )
+            if log is not None:
+                n_sig = int((raw["fail_fvg"] != 0).sum())
+                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف")
+        if log is not None:
+            log.heartbeat(i, n_specs, label="materialize_FVG", force=True)
+    if log is not None:
+        log.op(f"انتهى تجسيد {n_specs} فرضية FVG")
     return out
 
 
@@ -202,6 +227,7 @@ def _ic_on_slice(
     name: str,
     n_permutations: int,
     rng: np.random.Generator,
+    progress: ProgressLike | None = None,
 ) -> float:
     if idx.size == 0:
         return 0.0
@@ -211,6 +237,8 @@ def _ic_on_slice(
         forward[idx],
         n_permutations=n_permutations,
         rng=rng,
+        progress=progress,
+        progress_label=f"WF-perm:{name}",
     )
     return float(ev.ic)
 
@@ -226,7 +254,7 @@ def walk_forward_select_hypotheses(
     purge_samples: int = 0,
     n_permutations: int = 200,
     rng: np.random.Generator | None = None,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> tuple[pl.DataFrame, float, float, int, str | None]:
     """اختيار فرضية على التدريب فقط؛ قياس IC خارج العينة على الاختبار.
 
@@ -249,9 +277,7 @@ def walk_forward_select_hypotheses(
     )
     if not cols or work.height < _MIN_ROWS_FOR_SEARCH:
         if log is not None:
-            log.op(  # type: ignore[union-attr]
-                f"walk-forward: تخطّي (cols={len(cols)} · rows={work.height})"
-            )
+            log.op(f"walk-forward: تخطّي (cols={len(cols)} · rows={work.height})")
         return empty, 0.0, 1.0, 0, None
 
     folds = purged_walk_forward_split(
@@ -262,16 +288,15 @@ def walk_forward_select_hypotheses(
         min_train_size=max(10, work.height // (n_splits + 2)),
     )
     if log is not None:
-        log.op(  # type: ignore[union-attr]
-            f"walk-forward: {len(folds)} طيّات · candidates={len(cols)} · "
-            f"n_perm={n_permutations}"
+        log.op(
+            f"walk-forward: {len(folds)} طيّات · candidates={len(cols)} · n_perm={n_permutations}"
         )
     rows: list[dict[str, float | int | str]] = []
     oos_values = np.full(work.height, np.nan, dtype=np.float64)
     oos_fwd = np.full(work.height, np.nan, dtype=np.float64)
     for fold_i, fold in enumerate(folds):
         if log is not None:
-            log.op(  # type: ignore[union-attr]
+            log.op(
                 f"WF fold {fold_i + 1}/{len(folds)} "
                 f"(train={len(fold.train_idx):,} · test={len(fold.test_idx):,})"
             )
@@ -286,12 +311,13 @@ def walk_forward_select_hypotheses(
                 name=col,
                 n_permutations=n_permutations,
                 rng=generator,
+                progress=log,
             )
             if abs(ic) > abs(best_ic) or (abs(ic) == abs(best_ic) and ic > best_ic):
                 best_ic = ic
                 best_name = col
             if log is not None:
-                log.heartbeat(  # type: ignore[union-attr]
+                log.heartbeat(
                     col_i,
                     len(cols),
                     label=f"WF fold {fold_i + 1} candidates",
@@ -304,6 +330,7 @@ def walk_forward_select_hypotheses(
             name=best_name,
             n_permutations=n_permutations,
             rng=generator,
+            progress=log,
         )
         oos_values[fold.test_idx] = test_vals[fold.test_idx]
         oos_fwd[fold.test_idx] = forward[fold.test_idx]
@@ -316,7 +343,7 @@ def walk_forward_select_hypotheses(
             }
         )
         if log is not None:
-            log.op(  # type: ignore[union-attr]
+            log.op(
                 f"WF fold {fold_i + 1}: selected={best_name!r} · "
                 f"train_ic={best_ic:.4g} · test_ic={test_ic:.4g}"
             )
@@ -331,6 +358,8 @@ def walk_forward_select_hypotheses(
             oos_fwd[mask],
             n_permutations=n_permutations,
             rng=generator,
+            progress=log,
+            progress_label="WF-oos-perm",
         )
         oos_ic = float(oos_ev.ic)
         oos_p = float(oos_ev.ic_pvalue)
@@ -355,15 +384,21 @@ def exploratory_screen_candidates(
     alpha: float = 0.05,
     n_permutations: int = 200,
     rng: np.random.Generator | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """فرز BH استكشافي على المرشّحين (ليس أساس اختيار الإعداد على نفس العيّنة)."""
     generator = rng if rng is not None else np.random.default_rng(0)
+    log = progress
     work = features.sort(AVAILABILITY_TS)
     forward = align_forward_returns(work[price_col].to_numpy().astype(np.float64), horizon=horizon)
+    cols = [c for c in candidate_columns if c in work.columns]
+    n_cols = len(cols)
+    if log is not None:
+        log.op(f"شاشة استكشافية: {n_cols} مرشّح · n_perm={n_permutations}")
     evaluations = []
-    for col in candidate_columns:
-        if col not in work.columns:
-            continue
+    for i, col in enumerate(cols, start=1):
+        if log is not None:
+            log.op(f"استكشاف [{i}/{n_cols}]: {col!r}")
         evaluations.append(
             evaluate_signal(
                 col,
@@ -371,12 +406,16 @@ def exploratory_screen_candidates(
                 forward,
                 n_permutations=n_permutations,
                 rng=generator,
+                progress=log,
+                progress_label=f"perm:{col}",
             )
         )
+        if log is not None:
+            log.heartbeat(i, n_cols, label="exploratory", force=True)
     return screen_signals(evaluations, alpha=alpha)
 
 
-def search_fail_fvg_hypotheses(
+def search_fail_fvg_hypotheses(  # noqa: PLR0915
     nq: pl.DataFrame | str | Path,
     mnq: pl.DataFrame | str | Path | None = None,
     *,
@@ -440,7 +479,7 @@ def search_fail_fvg_hypotheses(
             latency_ns=0,
         )
         log.step("تجسيد شبكة فرضيات FVG", f"candidates={len(grid)}")
-        hyp = materialize_fvg_hypotheses(nq_frame, grid, clock=clock)
+        hyp = materialize_fvg_hypotheses(nq_frame, grid, clock=clock, progress=log)
         base = clock.sort(AVAILABILITY_TS)
         hyp_cols = [s.column() for s in grid]
         drop = [c for c in hyp_cols if c in base.columns]
@@ -509,6 +548,7 @@ def search_fail_fvg_hypotheses(
             alpha=alpha,
             n_permutations=n_permutations,
             rng=generator,
+            progress=log,
         )
 
         log.step("كتابة تقرير البحث الموثّق")

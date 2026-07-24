@@ -20,7 +20,9 @@ def test_generate_ssl_enhancements_creates_columns() -> None:
     features = pl.DataFrame(
         {
             AVAILABILITY_TS: list(range(n)),
-            "fail_breakout__base": [1.0 if i % 7 == 0 else (-1.0 if i % 11 == 0 else 0.0) for i in range(n)],
+            "fail_breakout__base": [
+                1.0 if i % 7 == 0 else (-1.0 if i % 11 == 0 else 0.0) for i in range(n)
+            ],
             "trap_setup": [1.0 if i % 5 == 0 else 0.0 for i in range(n)],
             "phase_balance": [1.0 if i % 3 == 0 else 0.0 for i in range(n)],
         }

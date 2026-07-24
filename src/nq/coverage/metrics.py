@@ -23,6 +23,7 @@ from nq.models.preprocessing import CausalStandardScaler
 from nq.models.splitting import WalkForwardFold, purged_walk_forward_split
 from nq.models.world_model import NextStatePredictor, r2_score
 from nq.research.evidence import Evidence
+from nq.research.progress import ProgressLike
 from nq.states.regimes import KMeansRegimes, transition_matrix
 from nq.statistics.regime_tests import regime_difference_test
 from nq.statistics.resampling import TestResult, permutation_test
@@ -140,6 +141,7 @@ def measure_mfig(
     n_permutations: int = _DEFAULT_N_PERM,
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
+    progress: ProgressLike | None = None,
 ) -> MetricResult:
     """MFIG — فجوة المعلومات الشرطية (MBO vs Features → Price)."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -169,6 +171,8 @@ def measure_mfig(
     for i in range(n_permutations):
         perm = generator.permutation(returns)
         null[i] = _information_gap_stat(desc_mat, feat_mat, perm)
+        if progress is not None:
+            progress.heartbeat(i + 1, n_permutations, label="mfig-perm")
     pvalue = (int(np.sum(null >= observed)) + 1) / (n_permutations + 1)
     triggered = pvalue <= alpha and observed > 0
     detail = (
@@ -204,6 +208,7 @@ def measure_cer(
     n_permutations: int = _DEFAULT_N_PERM,
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
+    progress: ProgressLike | None = None,
 ) -> list[MetricResult]:
     """CER — بقايا التعرّض السببي لكل كتلة محاكاة."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -216,8 +221,11 @@ def measure_cer(
     times = features["availability_ts"].to_numpy().astype(np.int64)
     folds = _walk_forward_folds(times, n_splits=n_splits, embargo=embargo)
     results: list[MetricResult] = []
+    n_blocks = len(resolved)
 
-    for block_name, cols in resolved.items():
+    for b_i, (block_name, cols) in enumerate(resolved.items(), start=1):
+        if progress is not None:
+            progress.op(f"cer كتلة [{b_i}/{n_blocks}]: {block_name}")
         block = features.select(cols).fill_null(0).to_numpy().astype(np.float64)
         feat_delta = _block_delta_norm(block)
         cer_series = price_delta / (feat_delta + 1e-9)
@@ -243,6 +251,8 @@ def measure_cer(
                 null[i] = float(np.median(perm[len(train_cer) :]))
             else:
                 null[i] = float(np.median(perm))
+            if progress is not None:
+                progress.heartbeat(i + 1, n_permutations, label=f"cer-perm:{block_name}")
         pvalue = (int(np.sum(null >= observed)) + 1) / (n_permutations + 1)
         triggered = pvalue <= alpha and ratio > _CER_RATIO_THRESHOLD
         results.append(
@@ -270,6 +280,7 @@ def measure_psg(
     embargo: int = 0,
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
+    progress: ProgressLike | None = None,
 ) -> MetricResult:
     """PSG — فجوة الكفاية التنبؤية (World Model surprise)."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -318,6 +329,8 @@ def measure_psg(
 
     surprise_series = np.asarray(surprises, dtype=np.float64)
     baseline_arr = np.asarray(train_surprises, dtype=np.float64)
+    if progress is not None:
+        progress.op("psg: اختبار تبديل surprise")
     test_result = permutation_test(
         surprise_series,
         baseline_arr if baseline_arr.shape[0] >= _MIN_BLOCK_ROWS else surprise_series * 0.5,
@@ -325,6 +338,8 @@ def measure_psg(
         n_permutations=min(_DEFAULT_N_PERM, 1000),
         rng=generator,
         alternative="greater",
+        progress=progress,
+        progress_label="psg-perm",
     )
     pvalue = test_result.pvalue
     triggered = ratio > _PSG_RATIO_THRESHOLD and pvalue <= alpha
@@ -352,6 +367,7 @@ def measure_crs(
     mask_ratio: float = 0.3,
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
+    progress: ProgressLike | None = None,
 ) -> list[MetricResult]:
     """CRS — كفاية إعادة البناء المُقنّعة لكل كتلة محاكاة."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -366,7 +382,10 @@ def measure_crs(
     folds = _walk_forward_folds(times, n_splits=n_splits, embargo=embargo)
     results: list[MetricResult] = []
 
-    for block_name, cols in resolved.items():
+    n_blocks = len(resolved)
+    for b_i, (block_name, cols) in enumerate(resolved.items(), start=1):
+        if progress is not None:
+            progress.op(f"crs كتلة [{b_i}/{n_blocks}]: {block_name}")
         block_idx = [col_index[c] for c in cols]
         block_errors: list[float] = []
         other_errors: list[float] = []
@@ -408,6 +427,8 @@ def measure_crs(
             np.zeros(len(block_errors), dtype=np.intp),
             n_permutations=_DEFAULT_N_PERM,
             rng=generator,
+            progress=progress,
+            progress_label=f"crs-perm:{block_name}",
         )
         pvalue = test_result.pvalue if len(block_errors) >= _MIN_BLOCK_ROWS else 1.0
         triggered = observed > _CRS_RATIO_THRESHOLD and pvalue <= alpha
@@ -438,6 +459,7 @@ def measure_lori(
     embargo: int = 0,
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
+    progress: ProgressLike | None = None,
 ) -> list[MetricResult]:
     """LORI — مؤشر الأنظمة اليتيمة + Transition Surprise."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -490,6 +512,8 @@ def measure_lori(
                     test_labels,
                     n_permutations=_LORI_PERMUTATIONS,
                     rng=generator,
+                    progress=progress,
+                    progress_label=f"lori-perm:r{int(regime)}",
                 )
                 min_p = min(min_p, result.pvalue)
             orphan = min_p > alpha
@@ -537,6 +561,7 @@ def measure_qduf(
     n_permutations: int = _DEFAULT_N_PERM,
     alpha: float = 0.05,
     rng: np.random.Generator | None = None,
+    progress: ProgressLike | None = None,
 ) -> MetricResult:
     """QDUF — نسبة ديناميكية الطابور غير المفسَّرة."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -584,6 +609,8 @@ def measure_qduf(
             else:
                 perm_vals.append(1.0 - r2_feat / max(r2_mbo, 1e-9))
         null[i] = float(np.mean(perm_vals)) if perm_vals else 0.0
+        if progress is not None:
+            progress.heartbeat(i + 1, n_permutations, label="qduf-perm")
 
     pvalue = (int(np.sum(null >= observed)) + 1) / (n_permutations + 1)
     triggered = pvalue <= alpha and observed > _QDUF_THRESHOLD
@@ -625,7 +652,7 @@ def run_all_metrics(
     alpha: float = 0.05,
     n_permutations: int = _DEFAULT_N_PERM,
     rng: np.random.Generator | None = None,
-    progress: object | None = None,
+    progress: ProgressLike | None = None,
 ) -> list[MetricResult]:
     """يشغّل كل مقاييس التغطية الستة."""
     generator = rng if rng is not None else np.random.default_rng(0)
@@ -634,7 +661,7 @@ def run_all_metrics(
 
     def _emit(name: str) -> None:
         if log is not None:
-            log.op(f"M9 مقياس: {name}")  # type: ignore[union-attr]
+            log.op(f"M9 مقياس: {name}")
 
     _emit("mfig")
     results.append(
@@ -647,6 +674,7 @@ def run_all_metrics(
             n_permutations=n_permutations,
             alpha=alpha,
             rng=generator,
+            progress=log,
         )
     )
     _emit("cer")
@@ -659,6 +687,7 @@ def run_all_metrics(
             n_permutations=n_permutations,
             alpha=alpha,
             rng=generator,
+            progress=log,
         )
     )
     _emit("psg")
@@ -669,6 +698,7 @@ def run_all_metrics(
             embargo=embargo,
             alpha=alpha,
             rng=generator,
+            progress=log,
         )
     )
     _emit("crs")
@@ -679,6 +709,7 @@ def run_all_metrics(
             embargo=embargo,
             alpha=alpha,
             rng=generator,
+            progress=log,
         )
     )
     _emit("lori")
@@ -689,6 +720,7 @@ def run_all_metrics(
             embargo=embargo,
             alpha=alpha,
             rng=generator,
+            progress=log,
         )
     )
     _emit("qduf")
@@ -702,9 +734,10 @@ def run_all_metrics(
             n_permutations=n_permutations,
             alpha=alpha,
             rng=generator,
+            progress=log,
         )
     )
     if log is not None:
         triggered = sum(1 for r in results if r.triggered)
-        log.op(f"M9 انتهى — metrics={len(results)} · triggered={triggered}")  # type: ignore[union-attr]
+        log.op(f"M9 انتهى — metrics={len(results)} · triggered={triggered}")
     return results

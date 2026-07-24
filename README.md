@@ -139,10 +139,13 @@ python scripts/run_week.py \
 | `coverage_metrics.parquet` | مقاييس M9 |
 | `alpha_evaluations.parquet` | فرز الإشارات |
 
-**تقدّم التشغيل (stderr + `progress.log`):** كل خطوة وكل عملية داخلها تُطبع سطرًا بسطر
-(`→` للخطوات، `-` للعمليات، `…` لنسبة التقدّم داخل الحلقات الطويلة مثل tick_stream / walk-forward / M9).
-يغطي: تحميل MBO، الميزات، SSL (tick أو bucket) طيّةً بطِيّة، اكتشاف الألفا إشارةً بإشارة،
-مقاييس M9، وبحث فرضيات FVG/Breakout. عند تحديد `--output` يُكتب نفس اللوج إلى `progress.log`.
+**تقدّم التشغيل (stderr + `progress.log`):** مسار خطي — كل خطوة وكل عملية داخلها تُطبع فورًا
+(`→` للخطوات، `-` للعمليات، `…` لنسبة التقدّم + سرعة + ETA داخل الحلقات الطويلة).
+يغطي بالتفصيل: تحميل MBO، الميزات، إعادة بناء الدفتر (`reconstruct`)، مسح العمق (ساعة البحث + FB 30m)،
+FVG/Auction/VP شموعًا بشموع، تجسيد فرضيات FB/FVG، بناء نوافذ SSL، tick_stream،
+ألفا (عمق + تبديلات)، مقاييس M9 الستة مع نبض التبديل، والشاشة الاستكشافية.
+الكتابة thread-safe؛ عند `parallel_coverage=true` تظهر بادئة `[SSL]` / `[M9]`.
+الافتراضي تسلسلي (`parallel_coverage=false`) حتى لا يبدو اللوج «دائرة» متداخلة.
 عطّل بـ `--quiet` أو `[run] quiet = true`.
 
 **الإعدادات:** `configs/research.toml`
@@ -153,7 +156,7 @@ python scripts/run_week.py \
 | `[ssl]` | `mode` = `tick` \| `bucket`, `window`, `n_components` |
 | `[features]` | `mode` = `streaming` (افتراضي) \| `batch` |
 | `[signals]` | `include_failed_fvg`, `include_auction_vp`, قائمة `columns` للفرز |
-| `[run]` | `quiet` = تعطيل طباعة التقدّم |
+| `[run]` | `quiet` = تعطيل التقدّم · `parallel_coverage` = SSL‖M9 (افتراضي `false`) |
 | `[execution]` | `mode` = `intraday` \| `mid`, slippage |
 | `[temporal]` | `interval_ns`, `horizon` |
 
