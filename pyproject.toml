@@ -50,6 +50,7 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "PL", "NPY"]
 ignore = [
     "PLR0913",              # allow explicit multi-arg scientific signatures
+    "PLR0917",              # same: scientific helpers often need >5 positional args
     "RUF001", "RUF002", "RUF003",  # Arabic docs + math symbols (×, Σ) are intentional
 ]
 
@@ -57,7 +58,7 @@ ignore = [
 # الاختبارات تقارن بقيم متوقّعة حرفية (idiomatic)؛ لا داعي لثوابت مسمّاة لها.
 "tests/**" = ["PLR2004"]
 # استيراد اختياري لـ deap/gplearn داخل الدوال (extras = nq[gp])
-"src/nq/alpha/symbolic_gp.py" = ["PLC0415"]
+"src/nq/alpha/symbolic_gp.py" = ["PLC0415", "PLR0912"]
 "tests/test_symbolic_gp.py" = ["PLC0415", "E402"]
 
 [tool.mypy]

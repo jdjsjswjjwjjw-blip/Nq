@@ -343,7 +343,7 @@ def materialize_programs_on_frame(
     return frame.with_columns(exprs)
 
 
-def discover_symbolic_on_train(
+def discover_symbolic_on_train(  # noqa: PLR0912
     frame: pl.DataFrame,
     feature_columns: Sequence[str],
     *,
@@ -356,9 +356,14 @@ def discover_symbolic_on_train(
     seed: int = 0,
     n_programs: int = 3,
     train_idx: npt.NDArray[np.int_] | None = None,
+    label_cutoff_idx: int | None = None,
     progress: ProgressLike | None = None,
 ) -> list[SymbolicProgram]:
-    """يكتشف معادلات على شريحة تدريب فقط، ثم يطبّقها على كل الصفوف."""
+    """يكتشف معادلات على شريحة تدريب فقط، ثم يطبّقها على كل الصفوف.
+
+    ``label_cutoff_idx``: أقصى فهرس مسموح لهدف العائد الأمامي (عادة بداية الاختبار).
+    أي صف تدريب يحتاج ``t+horizon >= cutoff`` يُستبعَد من اللياقة — يمنع تسرّب التسمية.
+    """
     require_gp_deps()
     work = frame.sort(AVAILABILITY_TS)
     x_all, names = feature_matrix(work, feature_columns)
@@ -366,6 +371,9 @@ def discover_symbolic_on_train(
     if train_idx is None:
         train_idx = np.arange(work.height, dtype=np.int64)
     tr = np.asarray(train_idx, dtype=np.int64)
+    if label_cutoff_idx is not None:
+        # العائد الأمامي عند t يستخدم السعر حتى t+horizon — يجب أن يبقى داخل الماضي
+        tr = tr[tr + int(horizon) < int(label_cutoff_idx)]
     if tr.size < _MIN_ROWS:
         if progress is not None:
             progress.op(f"symbolic: تخطّي — train rows={tr.size} < {_MIN_ROWS}")
@@ -498,6 +506,8 @@ def search_symbolic_hypotheses(
 
     لكل طيّة يُكتشف برنامج/برامج على التدريب فقط، تُلصق كأعمدة، ثم يُختار
     الأفضل بـ |IC| تدريب ويُقاس على الاختبار (نفس فلسفة شبكة FVG/Breakout).
+
+    افتراضيًا ``purge_samples >= horizon`` لعزل أهداف العائد الأمامي عن كتلة الاختبار.
     """
     require_gp_deps()
     work = frame.sort(AVAILABILITY_TS)
@@ -514,12 +524,14 @@ def search_symbolic_hypotheses(
     if work.height < _MIN_ROWS or price_col not in work.columns:
         return SymbolicSearchResult((), work, empty_folds, 0.0, 1.0, 0, None)
 
+    # عزل تسمية العائد الأمامي عن المستقبل (الحد الأدنى = أفق التقييم)
+    effective_purge = max(int(purge_samples), int(horizon))
     times = work[AVAILABILITY_TS].to_numpy()
     folds = purged_walk_forward_split(
         times,
         n_splits=n_splits,
         embargo=embargo,
-        purge_samples=purge_samples,
+        purge_samples=effective_purge,
         min_train_size=max(20, work.height // (n_splits + 2)),
     )
     if progress is not None:
@@ -552,6 +564,7 @@ def search_symbolic_hypotheses(
             seed=seed + fold_i * 101,
             n_programs=n_programs,
             train_idx=fold.train_idx,
+            label_cutoff_idx=int(fold.test_idx.min()),
             progress=progress,
         )
         if not programs:
