@@ -99,12 +99,14 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 | `run_fail_fvg --search` | شبكة تايم فريم/إعدادات FVG + بوابة SSL | نعم — walk-forward بلا تسريب | تقرير بحث + folds + screen |
 | `run_fail_breakout` | Failed Breakout (فوليوم + عمق دفتر) | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
 | `run_fail_breakout --search` | شبكة فوليوم (~144) / نواة+SSL | نعم — walk-forward بلا تسريب | تقرير بحث + folds + screen |
+| `run_symbolic_search` | DEAP + gplearn (معادلات بلا `if`) | نعم — WF فوق ميزات الخط · يحتاج `nq[gp]` | programs.json + folds + signals |
 | `run_vp_auction` + `configs/vp_auction.toml` | VP + توازن/اختلال | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
 
 > لو عايز الكل شغّال → `run_week`.  
 > لو عايز فرضية واحدة للفرز → الأمر المنفصل المناسب (نفس المعالجة والمخرجات).  
 > لو عايز **أفضل تايم فريم/إعدادات** لـ FVG → `run_fail_fvg --search`.  
-> لو عايز Failed Breakout (فوليوم + عمق) → `run_fail_breakout` أو `--search`.
+> لو عايز Failed Breakout (فوليوم + عمق) → `run_fail_breakout` أو `--search`.  
+> لو عايز **معادلات رمزية بلا if** → `pip install 'nq[gp]'` ثم `run_symbolic_search`.
 
 ---
 
@@ -460,6 +462,7 @@ Nq/
 │   ├── run_week.py            # الخط الموحّد MBO → تقرير
 │   ├── run_fail_fvg.py        # FVG منفصل (+ --search للشبكة/SSL gate)
 │   ├── run_fail_breakout.py   # FB منفصل (+ --search فوليوم/SSL)
+│   ├── run_symbolic_search.py # DEAP + gplearn (معادلات بلا if · nq[gp])
 │   └── run_vp_auction.py      # أمر منفصل VP / توازن·اختلال (داخل المنظومة)
 ├── docs/
 │   ├── architecture.md

@@ -57,6 +57,15 @@ columns = [
 alpha = 0.05
 n_permutations = 2000
 
+# بحث رمزي بلا if (اختياري — يتطلب: pip install 'nq[gp]')
+# scripts/run_symbolic_search.py --backend both|deap|gplearn
+[hypothesis_search]
+backend = "grid"                 # grid | deap | gplearn | both
+population_size = 60
+generations = 8
+max_depth = 3
+n_programs = 2
+
 [data]
 # مسارات MBO (Parquet/Arrow/CSV/.zst) — أو مرّر --nq / --mnq من CLI
 nq_path = "data/raw/nq.parquet"

@@ -22,6 +22,11 @@ dev = [
 data = [
     "zstandard>=0.22",
 ]
+gp = [
+    "deap>=1.4",
+    "gplearn>=0.4.2",
+    "scikit-learn>=1.3",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -45,12 +50,16 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "PL", "NPY"]
 ignore = [
     "PLR0913",              # allow explicit multi-arg scientific signatures
+    "PLR0917",              # same: scientific helpers often need >5 positional args
     "RUF001", "RUF002", "RUF003",  # Arabic docs + math symbols (×, Σ) are intentional
 ]
 
 [tool.ruff.lint.per-file-ignores]
 # الاختبارات تقارن بقيم متوقّعة حرفية (idiomatic)؛ لا داعي لثوابت مسمّاة لها.
 "tests/**" = ["PLR2004"]
+# استيراد اختياري لـ deap/gplearn داخل الدوال (extras = nq[gp])
+"src/nq/alpha/symbolic_gp.py" = ["PLC0415", "PLR0912"]
+"tests/test_symbolic_gp.py" = ["PLC0415", "E402"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -62,6 +71,10 @@ disallow_untyped_defs = true
 disallow_any_generics = true
 no_implicit_optional = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["deap", "deap.*", "gplearn", "gplearn.*", "sklearn", "sklearn.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
