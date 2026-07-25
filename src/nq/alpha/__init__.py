@@ -6,6 +6,7 @@
 
 * ``signals``   — ``AlphaSignal``، العوائد الأمامية، وتقييم الإشارة (IC، Sharpe، دلالة).
 * ``discovery`` — فرز الإشارات مع تصحيح التعدّد، وخط بحثي من MBO خام إلى مخرجات.
+* ``symbolic_gp`` — DEAP + gplearn لاكتشاف معادلات بلا ``if`` (اختياري: ``nq[gp]``).
 """
 
 from __future__ import annotations
@@ -26,6 +27,12 @@ from nq.alpha.signals import (
     evaluate_signal_intraday,
     screen_signals,
 )
+from nq.alpha.symbolic_gp import (
+    SymbolicProgram,
+    SymbolicSearchResult,
+    default_symbolic_feature_columns,
+    search_symbolic_hypotheses,
+)
 
 __all__ = [
     "AlphaDiscovery",
@@ -33,11 +40,15 @@ __all__ = [
     "ExecutionMode",
     "FullResearchResult",
     "SignalEvaluation",
+    "SymbolicProgram",
+    "SymbolicSearchResult",
     "align_forward_returns",
+    "default_symbolic_feature_columns",
     "discover_alpha_from_features",
     "evaluate_signal",
     "evaluate_signal_intraday",
     "run_full_research_pipeline",
     "run_research_pipeline",
     "screen_signals",
+    "search_symbolic_hypotheses",
 ]
