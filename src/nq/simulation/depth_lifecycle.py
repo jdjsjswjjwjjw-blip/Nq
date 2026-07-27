@@ -37,6 +37,16 @@ DEPTH_MONITOR_COLUMNS: Final[tuple[str, ...]] = (
     "depth_l1_spread",
 )
 
+# مقاييس مسار أحداث العمق داخل الشمعة (تُنشر عند bucket_end فقط)
+DEPTH_PATH_COLUMNS: Final[tuple[str, ...]] = (
+    "depth_path_imbalance",
+    "depth_path_imbalance_delta",
+    "depth_path_bid_drain",
+    "depth_path_ask_drain",
+    "depth_path_pressure",
+    "depth_path_n_events",
+)
+
 
 def _empty_depth_schema(*, n_levels: int) -> dict[str, pl.DataType]:
     schema: dict[str, pl.DataType] = {
@@ -204,6 +214,126 @@ def depth_at_bar_close(
     return pl.DataFrame(rows).sort(AVAILABILITY_TS)
 
 
+def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915
+    frame: pl.DataFrame,
+    *,
+    interval_ns: int,
+    n_levels: int = _DEFAULT_LEVELS,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
+    """يتتبّع مسار أحداث العمق **داخل** كل شمعة وينشر المقاييس عند ``bucket_end``.
+
+    لا يستخدم أحداثًا بعد إغلاق الشمعة. المقاييس:
+    * ``depth_path_imbalance`` / ``_delta`` — اختلال الإغلاق وتغيّره منذ أول حدث
+    * ``depth_path_bid/ask_drain`` — سحب سيولة نسبي من افتتاح المسار إلى الإغلاق
+    * ``depth_path_pressure`` — ``ask_drain - bid_drain`` (موجب ≈ ضغط صاعد سببيًا)
+    * ``depth_path_n_events`` — عدد أحداث MBO داخل الشمعة
+    """
+    if interval_ns < 1:
+        raise ValueError(f"interval_ns must be >= 1, got {interval_ns}")
+    if n_levels < 1:
+        raise ValueError(f"n_levels must be >= 1, got {n_levels}")
+
+    schema: dict[str, pl.DataType] = {
+        AVAILABILITY_TS: pl.Int64(),
+        EVENT_TS: pl.Int64(),
+        BUCKET_START: pl.Int64(),
+        BUCKET_END: pl.Int64(),
+        **{c: pl.Float64() for c in DEPTH_PATH_COLUMNS},
+    }
+    if frame.height == 0:
+        return pl.DataFrame(schema=schema)
+
+    work = sort_causal(frame)
+    book = OrderBook()
+    actions = work["action"].to_list()
+    sides = work["side"].to_list()
+    prices = work["price"].to_list()
+    sizes = work["size"].to_list()
+    order_ids = work["order_id"].to_list()
+    event_ts = work[EVENT_TS].to_list()
+    n = len(actions)
+    log = progress
+    if log is not None:
+        log.op(f"depth_event_path: {n:,} حدث → مسار داخل الشمعة · interval_ns={interval_ns}")
+
+    rows: list[dict[str, float | int]] = []
+    current_bucket: int | None = None
+    last_event = -1
+    n_events = 0
+    open_imb = 0.0
+    open_bid = 0.0
+    open_ask = 0.0
+    close_imb = 0.0
+    close_bid = 0.0
+    close_ask = 0.0
+    opened = False
+
+    def _emit(bucket_start: int) -> None:
+        nonlocal opened
+        if not opened:
+            return
+        bucket_end = bucket_start + interval_ns
+        bid_base = max(open_bid, 1.0)
+        ask_base = max(open_ask, 1.0)
+        bid_drain = max(0.0, (open_bid - close_bid) / bid_base)
+        ask_drain = max(0.0, (open_ask - close_ask) / ask_base)
+        rows.append(
+            {
+                AVAILABILITY_TS: bucket_end,
+                EVENT_TS: last_event,
+                BUCKET_START: bucket_start,
+                BUCKET_END: bucket_end,
+                "depth_path_imbalance": float(close_imb),
+                "depth_path_imbalance_delta": float(close_imb - open_imb),
+                "depth_path_bid_drain": float(bid_drain),
+                "depth_path_ask_drain": float(ask_drain),
+                "depth_path_pressure": float(ask_drain - bid_drain),
+                "depth_path_n_events": float(n_events),
+            }
+        )
+        opened = False
+
+    for i in range(n):
+        ts = int(event_ts[i])
+        bucket = (ts // interval_ns) * interval_ns
+        if current_bucket is None:
+            current_bucket = bucket
+        elif bucket != current_bucket:
+            _emit(current_bucket)
+            current_bucket = bucket
+            n_events = 0
+            opened = False
+
+        book.apply(str(actions[i]), str(sides[i]), int(prices[i]), int(sizes[i]), int(order_ids[i]))
+        snap = book.snapshot(n_levels, availability_ts=ts)
+        last_event = ts
+        n_events += 1
+        imb = float(snap.imbalance)
+        bid = float(snap.cum_bid)
+        ask = float(snap.cum_ask)
+        if not opened:
+            open_imb = close_imb = imb
+            open_bid = close_bid = bid
+            open_ask = close_ask = ask
+            opened = True
+        else:
+            close_imb = imb
+            close_bid = bid
+            close_ask = ask
+        if log is not None:
+            log.heartbeat(i + 1, n, label="depth_path")
+
+    if current_bucket is not None:
+        _emit(current_bucket)
+
+    if log is not None:
+        log.op(f"depth_event_path انتهى: {len(rows):,} شمعة")
+    if not rows:
+        return pl.DataFrame(schema=schema)
+    return pl.DataFrame(rows).sort(AVAILABILITY_TS)
+
+
 def attach_depth_asof(
     features: pl.DataFrame,
     depth: pl.DataFrame,
@@ -243,8 +373,10 @@ def attach_depth_asof(
 
 __all__ = [
     "DEPTH_MONITOR_COLUMNS",
+    "DEPTH_PATH_COLUMNS",
     "attach_depth_asof",
     "depth_at_bar_close",
+    "depth_event_path_at_bar_close",
     "depth_event_series",
     "snapshot_to_row",
 ]

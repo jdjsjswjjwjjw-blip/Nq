@@ -401,10 +401,14 @@ load_mbo_frame (Databento normalize + null-price sanitize + max_rows)
 MBO
   → شبكة فرضيات (تايم فريم + عتبات / أوضاع فوليوم)
   → asof على ساعة التقييم            # خلفي فقط
+  → مسار أحداث العمق داخل الشمعة     # depth_path_* عند bucket_end فقط
+  → مرشّحو __depth__*                 # إشارة × بوابة ماضية (كمّية/اتفاق إشارة)
   → بوابة/تعزيزات SSL اختيارية       # z* asof + كمّية ماضية + سياق/فوليوم
   → walk-forward purged              # اختيار على train → IC على test
   → تقرير + fold_selections + screen
 ```
+
+فلتر العمق **لا يغيّر** قاعدة FB/FVG؛ يضيف مرشّحين فقط. عطّله بـ `--no-depth-filter`.
 
 **SSL**
 
@@ -418,6 +422,7 @@ MBO
 | مرحلة | المصدر | `availability_ts` |
 |--------|--------|-------------------|
 | دخول | `depth_at_bar_close` + `fb_depth_at_break` | `bucket_end` |
+| مسار أحداث (فلتر فرضيات) | `depth_event_path_at_bar_close` → `__depth__*` | `bucket_end` |
 | مراقبة | tick_stream / streaming `depth_*` + trail | `event_ts` ثم عيّنة `bucket_end` |
 | تنفيذ | `execution_forward_returns_depth` (مسح L1–L5) | لقطة عند `t` |
 | خروج | نفس المسح على لقطة `t+horizon` | تسمية فقط (ليس ميزة) |

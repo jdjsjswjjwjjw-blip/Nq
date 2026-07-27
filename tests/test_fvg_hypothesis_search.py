@@ -103,6 +103,7 @@ def test_search_fail_fvg_hypotheses_smoke() -> None:
         specs=tiny,
         interval_ns=10_000,
         use_ssl_gate=False,
+        use_depth_filter=False,
         n_splits=2,
         n_permutations=50,
         rng=make_generator(7),

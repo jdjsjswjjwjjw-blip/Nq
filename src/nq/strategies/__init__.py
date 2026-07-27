@@ -15,6 +15,7 @@ from nq.strategies.breakout_hypothesis import (
     BreakoutHypothesisSpec,
     search_fail_breakout_hypotheses,
 )
+from nq.strategies.depth_entry_filter import DepthEntrySpec, generate_depth_entry_candidates
 from nq.strategies.fail_breakout import FailBreakoutResearchResult, run_fail_breakout_research
 from nq.strategies.fail_fvg import FailFvgResearchResult, run_fail_fvg_research
 from nq.strategies.fvg_hypothesis import (
@@ -28,12 +29,14 @@ from nq.strategies.vp_auction import VpAuctionResearchResult, run_vp_auction_res
 __all__ = [
     "BreakoutHypothesisSearchResult",
     "BreakoutHypothesisSpec",
+    "DepthEntrySpec",
     "EnhancementSpec",
     "FailBreakoutResearchResult",
     "FailFvgResearchResult",
     "FvgHypothesisSearchResult",
     "FvgHypothesisSpec",
     "VpAuctionResearchResult",
+    "generate_depth_entry_candidates",
     "generate_ssl_enhancement_candidates",
     "run_fail_breakout_research",
     "run_fail_fvg_research",

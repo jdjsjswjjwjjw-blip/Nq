@@ -36,6 +36,11 @@ from nq.simulation.fvg import (
     build_ohlcv_bars,
     failed_fvg_from_bars,
 )
+from nq.strategies.depth_entry_filter import (
+    DepthEntrySpec,
+    attach_depth_path_to_features,
+    generate_depth_entry_candidates,
+)
 
 _MIN_ROWS_FOR_SEARCH = 20
 _MIN_OOS_SAMPLES = 8
@@ -415,7 +420,7 @@ def exploratory_screen_candidates(
     return screen_signals(evaluations, alpha=alpha)
 
 
-def search_fail_fvg_hypotheses(  # noqa: PLR0915
+def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
     nq: pl.DataFrame | str | Path,
     mnq: pl.DataFrame | str | Path | None = None,
     *,
@@ -423,6 +428,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0915
     interval_ns: int = 1_000_000_000,
     horizon: int = 1,
     use_ssl_gate: bool = True,
+    use_depth_filter: bool = True,
     ssl_window: int = 5,
     ssl_components: int = 4,
     n_splits: int = 3,
@@ -435,17 +441,22 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0915
     progress: PipelineProgress | bool | None = None,
     quiet: bool = False,
 ) -> FvgHypothesisSearchResult:
-    """يبحث أفضل إعداد/تايم فريم Failed FVG بـ walk-forward + بوابة SSL اختيارية."""
+    """يبحث أفضل إعداد/تايم فريم Failed FVG بـ walk-forward + بوابة SSL اختيارية.
+
+    ``use_depth_filter`` (افتراضي): مسار أحداث العمق داخل شمعة القرار → مرشّحي
+    ``__depth__*`` فوق نفس قواعد FVG — بلا إعادة كتابة الإشارة.
+    """
     log = resolve_progress(progress, quiet=quiet)
     save_step = 1 if output_dir is not None else 0
     gate_step = 1 if use_ssl_gate else 0
+    depth_step = 1 if use_depth_filter else 0
     if output_dir is not None:
         out_early = Path(output_dir)
         out_early.mkdir(parents=True, exist_ok=True)
         log.attach_log(out_early / "progress.log")
     log.begin(
         "بحث فرضيات Failed FVG (walk-forward)",
-        total_steps=6 + gate_step + save_step,
+        total_steps=6 + gate_step + depth_step + save_step,
     )
     log.line("كل عملية تُطبع سطرًا بسطر — راقب progress.log أو stderr")
     try:
@@ -496,7 +507,17 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0915
         log.note(f"features={features.height:,} صف × {features.width} عمود")
 
         ssl_result: SSLPipelineResult | None = None
-        candidates: tuple[str, ...] = tuple(hyp_cols)
+        candidate_list: list[str] = list(hyp_cols)
+        depth_specs: tuple[DepthEntrySpec, ...] = ()
+        if use_depth_filter:
+            log.step("مسار أحداث العمق داخل الشمعة → مرشّحي دخول", f"interval_ns={interval_ns}")
+            features = attach_depth_path_to_features(
+                features, nq_frame, interval_ns=interval_ns, progress=log
+            )
+            features, depth_cols, depth_specs = generate_depth_entry_candidates(features, hyp_cols)
+            candidate_list.extend(list(depth_cols))
+            log.note(f"مرشّحو عمق: {len(depth_cols)}")
+
         if use_ssl_gate:
             log.step("تشغيل SSL tick + بوابة سببية", f"window={ssl_window}")
             ssl_result = run_ssl_tick_pipeline(
@@ -516,8 +537,16 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0915
                 z_col="z0",
                 quantile=_SSL_GATE_QUANTILE,
             )
-            candidates = gated
-            log.note(f"مرشّحون بعد البوابة: {len(candidates)} / {len(hyp_cols)}")
+            candidate_list = [*list(gated), *[c for c in candidate_list if "__depth__" in c]]
+            log.note(f"مرشّحون بعد البوابة+عمق: {len(candidate_list)}")
+
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for c in candidate_list:
+            if c in features.columns and c not in seen:
+                seen.add(c)
+                uniq.append(c)
+        candidates = tuple(uniq)
 
         policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window)
         embargo = policy.embargo_time_units(interval_ns=interval_ns)
@@ -560,7 +589,10 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0915
             value=oos_ic,
             pvalue=oos_p,
             sample_size=oos_n,
-            detail=f"best_oos_spec={best!r}; walk-forward nested selection",
+            detail=(
+                f"best_oos_spec={best!r}; depth_filters={len(depth_specs)}; "
+                f"walk-forward nested selection"
+            ),
         )
         claim = (
             f"فرضية Failed FVG المختارة بـ walk-forward "
@@ -576,7 +608,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0915
         ]
         report = assistant.write_report(
             findings,
-            title="Failed FVG Hypothesis Search — Walk-Forward + SSL Gate",
+            title="Failed FVG Hypothesis Search — Walk-Forward + SSL/Depth Gates",
         )
 
         result = FvgHypothesisSearchResult(
@@ -599,6 +631,15 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0915
             features.write_parquet(out / "features.parquet")
             fold_df.write_parquet(out / "fold_selections.parquet")
             explor.write_parquet(out / "exploratory_screen.parquet")
+            if depth_specs:
+                pl.DataFrame(
+                    {
+                        "column": [s.column() for s in depth_specs],
+                        "base": [s.base_column for s in depth_specs],
+                        "name": [s.name for s in depth_specs],
+                        "kind": [s.kind for s in depth_specs],
+                    }
+                ).write_parquet(out / "depth_entry_specs.parquet")
             if ssl_result is not None and ssl_result.metrics.height > 0:
                 ssl_result.metrics.write_parquet(out / "ssl_metrics.parquet")
             log.note(f"كُتبت الملفات في {out.resolve()}")

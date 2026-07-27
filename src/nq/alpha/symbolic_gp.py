@@ -136,7 +136,7 @@ def _unique_name(prefix: str, expression: str, used: set[str]) -> str:
     return name
 
 
-def evolve_deap(  # noqa: PLR0912, PLR0915
+def evolve_deap(  # noqa: PLR0915
     x: FloatArray,
     y: FloatArray,
     feature_names: Sequence[str],
@@ -343,7 +343,7 @@ def materialize_programs_on_frame(
     return frame.with_columns(exprs)
 
 
-def discover_symbolic_on_train(  # noqa: PLR0912
+def discover_symbolic_on_train(
     frame: pl.DataFrame,
     feature_columns: Sequence[str],
     *,
