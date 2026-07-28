@@ -97,8 +97,10 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 | `run_week` + `configs/research.toml` | **الكل مع بعض** | نعم | كاملة |
 | `run_fail_fvg` | Failed FVG (فرضية افتراضية) | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
 | `run_fail_fvg --search` | شبكة تايم فريم/إعدادات FVG + بوابة SSL | نعم — walk-forward بلا تسريب | تقرير بحث + folds + screen |
+| `run_fail_fvg --search --understand` | نفس البحث + طبقات فهم كمية (OOS) | نعم — تشخيص بعد الاختيار فقط | + `understanding/` |
 | `run_fail_breakout` | Failed Breakout (فوليوم + عمق دفتر) | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
 | `run_fail_breakout --search` | شبكة فوليوم (~144) / نواة+SSL | نعم — walk-forward بلا تسريب | تقرير بحث + folds + screen |
+| `run_fail_breakout --search --understand` | نفس البحث + طبقات فهم كمية (OOS) | نعم — تشخيص بعد الاختيار فقط | + `understanding/` |
 | `run_symbolic_search` | DEAP + gplearn (معادلات بلا `if`) | نعم — WF فوق ميزات الخط · يحتاج `nq[gp]` | programs.json + folds + signals |
 | `run_vp_auction` + `configs/vp_auction.toml` | VP + توازن/اختلال | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
 
@@ -106,6 +108,7 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 > لو عايز فرضية واحدة للفرز → الأمر المنفصل المناسب (نفس المعالجة والمخرجات).  
 > لو عايز **أفضل تايم فريم/إعدادات** لـ FVG → `run_fail_fvg --search`.  
 > لو عايز Failed Breakout (فوليوم + عمق) → `run_fail_breakout` أو `--search`.  
+> لو عايز **تفسير كمي بعد الاختيار** (لماذا فازت الإشارة؟) → أضف `--understand` مع `--search`.  
 > لو عايز **معادلات رمزية بلا if** → `pip install 'nq[gp]'` ثم `run_symbolic_search`.
 
 ---
@@ -183,6 +186,13 @@ python scripts/run_fail_fvg.py \
   --max-rows 500000 \
   --output data/runs/fail_fvg_search
 
+# نفس البحث + طبقات فهم كمية بعد الاختيار (OOS فقط — لا تغيّر best)
+python scripts/run_fail_fvg.py \
+  --nq /path/to/nq.parquet \
+  --search --understand \
+  --max-rows 500000 \
+  --output data/runs/fail_fvg_search
+
 # أو عبر run_week + إعداد مركّز (الفرضية الافتراضية فقط)
 python scripts/run_week.py \
   --config configs/fail_fvg.toml \
@@ -214,10 +224,37 @@ SSL هنا **بوابة ظرف** (`z0` + كمّية ماضية)، مش مولّ�
 | `understanding/` | مع `--understand`: ablation / regime / attribution / stability / depth CF / SSL link (OOS فقط) |
 
 > **`--understand`**: طبقات فهم كمية **بعد** اختيار walk-forward. لا تغيّر `best_oos_spec`
-> ولا تضيف مرشّحين — كل المقاييس على طيّات الاختبار (purged) فقط.
+> ولا تضيف مرشّحين — كل المقاييس على طيّات الاختبار (purged) فقط. التفاصيل في القسم 2b.
 
 > في الخط العام: `include_failed_fvg = true` يُلحق `fail_fvg` **مع** باقي الإشارات.  
 > `run_fail_fvg` = جولة فرز مركّزة؛ `--search` = بحث إعدادات/تايم فريم فوق نفس المحرك.
+
+---
+
+### 2b) طبقات الفهم الكمي (`--understand`)
+
+تشخيص **بعد** `--search` فقط. الهدف: تفسير كمي/رياضي للإشارة المختارة — **ليس** بحث ألفا جديد.
+
+| طبقة | المقياس | قيد التسريب |
+|------|---------|-------------|
+| Ablation | Δ IC بعد نزع `__ssl` / `__depth__*` / `__enh__*` + BH داخل العائلة | OOS test folds فقط |
+| Regime map | Spearman IC حسب `session_phase` | OOS فقط |
+| Gate attribution | pass-rate + \|selected\|↔\|base\| معاصر | OOS فقط (ليس عائد أمامي) |
+| Temporal stability | mean/std/`positive_rate` لـ `test_ic` من الطيّات | الطيّات نفسها purged |
+| Depth counterfactual | IC مع/بدون عمق + permutation على تسميات OOS | خلط labels داخل OOS فقط |
+| SSL state link | \|z\| ↔ \|signal\| معاصر | ارتباط حالة — **ليس** forward alpha |
+
+**مخرجات** تحت `--output/understanding/`:
+
+| ملف | المحتوى |
+|-----|---------|
+| `report.md` | ملخص النتائج + ملاحظات القيود |
+| `ablation.parquet` / `regimes.parquet` / `attribution.parquet` | جداول الطبقات |
+| `stability.parquet` | `test_ic` لكل طيّة |
+| `depth_counterfactual.parquet` / `ssl_state_link.parquet` | عند انطباق الطبقة |
+| `summary.parquet` | ملخص عددي سريع |
+
+الوحدة: `nq.research.understanding` (`run_understanding_layers`, `write_understanding_outputs`).
 
 ---
 
@@ -261,6 +298,13 @@ python scripts/run_fail_breakout.py \
   --max-rows 500000 \
   --output data/runs/fail_breakout_search
 
+# نفس البحث + فهم كمي بعد الاختيار
+python scripts/run_fail_breakout.py \
+  --nq /path/to/nq.parquet \
+  --search --understand \
+  --max-rows 500000 \
+  --output data/runs/fail_breakout_search
+
 # شبكة فوليوم كاملة (~144 فرضية) بلا مولّد تعزيزات
 python scripts/run_fail_breakout.py \
   --nq /path/to/nq.parquet \
@@ -271,8 +315,7 @@ python scripts/run_fail_breakout.py \
 مع `--search` (افتراضي): SSL يولّد **مرشّحي تعزيز** (`ssl_abs_q*`, `ssl_sign_*`, `ctx_*` بما فيها فلاتر فوليوم)
 فوق نواة Failed Breakout، ثم walk-forward يختار الأفضل خارج العينة.
 
-`--understand` (اختياري مع `--search`): طبقات فهم كمية بعد الاختيار (ablation / regime /
-attribution / stability / depth CF / SSL link) على OOS فقط — **لا تغيّر** `best_oos_spec`.
+`--understand` (اختياري مع `--search`): طبقات فهم كمية بعد الاختيار — انظر **§2b**. لا تغيّر `best_oos_spec`.
 
 | عمود | المعنى |
 |------|--------|
@@ -472,8 +515,8 @@ Nq/
 │   └── vp_auction.toml        # أمر VP منفصل (فرز مركّز، مخرجات كاملة)
 ├── scripts/
 │   ├── run_week.py            # الخط الموحّد MBO → تقرير
-│   ├── run_fail_fvg.py        # FVG منفصل (+ --search للشبكة/SSL gate)
-│   ├── run_fail_breakout.py   # FB منفصل (+ --search فوليوم/SSL)
+│   ├── run_fail_fvg.py        # FVG منفصل (+ --search / --understand)
+│   ├── run_fail_breakout.py   # FB منفصل (+ --search فوليوم/SSL / --understand)
 │   ├── run_symbolic_search.py # DEAP + gplearn (معادلات بلا if · nq[gp])
 │   └── run_vp_auction.py      # أمر منفصل VP / توازن·اختلال (داخل المنظومة)
 ├── docs/
@@ -490,9 +533,9 @@ Nq/
 │   ├── models/                # SSL tick/bucket + masking
 │   ├── states/                # Regimes / CausalRegimeTracker
 │   ├── statistics/            # اختبارات + تصحيح تعدّد
-│   ├── research/              # orchestrator + assistant + progress
+│   ├── research/              # orchestrator + assistant + progress + understanding
 │   ├── alpha/                 # اكتشاف/فرز (intraday أو depth-walk)
-│   ├── strategies/            # fail_fvg + fail_breakout + vp_auction + search
+│   ├── strategies/            # fail_fvg + fail_breakout + vp_auction + search + depth filter
 │   ├── coverage/              # مراقب M9 (+ كتلة order_book_depth)
 │   └── validation/            # leakage tests
 ├── tests/
@@ -517,6 +560,8 @@ Nq/
 | 9 | مراقب التغطية M9 | ✅ |
 | — | عمق سببي دخول/مراقبة/تنفيذ/خروج (L1–L5) | ✅ |
 | — | فرضيات فوليوم FB (bar/cum/delta/effort_result) | ✅ |
+| — | فلتر دخول مسار أحداث العمق (`__depth__*`) | ✅ |
+| — | طبقات فهم كمية OOS (`--understand`) | ✅ |
 
 ---
 
@@ -527,11 +572,14 @@ Nq/
 * `nq.orderbook` — `OrderBook` (+ `snapshot`/`top_n`/`cum_depth`), `DepthSnapshot`, `walk_buy_vwap`/`walk_sell_vwap`, `reconstruct`
 * `nq.features` — Feature Store PIT + **`build_streaming_research_features`** (آلة حالة + عمق كامل)
 * `nq.models` — `run_ssl_pipeline`, `run_ssl_tick_pipeline`, `build_tick_stream`, `structural_mask_*`
-* `nq.research` — **`run_research_pipeline`**, `PipelineProgress`, `ResearchAssistant`
+* `nq.research` — **`run_research_pipeline`**, `PipelineProgress`, `ResearchAssistant`؛
+  فهم كمي: `nq.research.understanding` (`run_understanding_layers`)
 * `nq.alpha` — `evaluate_signal` / `evaluate_signal_intraday`؛ depth-walk تلقائي إن وُجد سلم
-* `nq.simulation` — `failed_breakout_*`, `depth_at_bar_close`, `execution_forward_returns_depth`
+* `nq.simulation` — `failed_breakout_*`, `depth_at_bar_close`, `depth_event_path_at_bar_close`,
+  `execution_forward_returns_depth`
 * `nq.strategies` — `run_fail_fvg_research` / `search_fail_fvg_hypotheses` /
-  `run_fail_breakout_research` / `search_fail_breakout_hypotheses` / `run_vp_auction_research`
+  `run_fail_breakout_research` / `search_fail_breakout_hypotheses` /
+  `generate_depth_entry_candidates` / `run_vp_auction_research`
 * `nq.coverage` — MFIG/CER/PSG/CRS/LORI/QDUF؛ كتل `failed_breakout` + `order_book_depth` + VP
 * `nq.validation` — `detect_leakage_by_perturbation`, `assert_availability_not_before_event`
 
