@@ -73,7 +73,16 @@ no_implicit_optional = true
 files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["deap", "deap.*", "gplearn", "gplearn.*", "sklearn", "sklearn.*"]
+module = [
+    "deap",
+    "deap.*",
+    "gplearn",
+    "gplearn.*",
+    "sklearn",
+    "sklearn.*",
+    "zstandard",
+    "zstandard.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
