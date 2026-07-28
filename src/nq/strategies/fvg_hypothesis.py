@@ -28,6 +28,11 @@ from nq.ingestion.reader import load_mbo_frame
 from nq.models.splitting import purged_walk_forward_split
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
 from nq.research.assistant import ResearchAssistant, ResearchReport
+from nq.research.capacity import (
+    LEAN_GATE_QUANTILES,
+    SEARCH_N_PERMUTATIONS,
+    UNDERSTAND_N_PERMUTATIONS,
+)
 from nq.research.evidence import Evidence
 from nq.research.progress import PipelineProgress, ProgressLike, resolve_progress
 from nq.research.understanding import (
@@ -41,6 +46,7 @@ from nq.simulation.fvg import (
     build_ohlcv_bars,
     failed_fvg_from_bars,
 )
+from nq.statistics.metrics import information_coefficient
 from nq.strategies.depth_entry_filter import (
     DepthEntrySpec,
     attach_depth_path_to_features,
@@ -86,7 +92,7 @@ class FvgHypothesisSearchResult:
 
 
 def default_fvg_grid() -> tuple[FvgHypothesisSpec, ...]:
-    """شبكة صغيرة حتمية: أطر إشارة/FVG + نوافذ + عتبات جهد."""
+    """شبكة كاملة (~84): أطر إشارة/FVG + نوافذ + عتبات جهد."""
     pairs = (
         (15, 30),
         (15, 60),
@@ -106,6 +112,32 @@ def default_fvg_grid() -> tuple[FvgHypothesisSpec, ...]:
             for vp, vv in thresholds:
                 name = (
                     f"s{sig_m}_f{fvg_m}_w{win_m}_"
+                    f"p{str(vp).replace('.', 'p')}_v{str(vv).replace('.', 'p')}"
+                )
+                specs.append(
+                    FvgHypothesisSpec(
+                        name=name,
+                        h1_interval_ns=fvg_m * NS_PER_MIN,
+                        signal_interval_ns=sig_m * NS_PER_MIN,
+                        fvg_window_ns=win_m * NS_PER_MIN,
+                        vol_price_mult=vp,
+                        vol_volume_mult=vv,
+                    )
+                )
+    return tuple(specs)
+
+
+def core_fvg_grid() -> tuple[FvgHypothesisSpec, ...]:
+    """نواة مضغوطة (~16) للبحث ضمن القدرة — نفس القواعد السببية."""
+    pairs = ((15, 30), (15, 60), (30, 60), (30, 120))
+    windows = (60, 120)
+    thresholds = ((1.2, 1.3), (1.5, 1.8))
+    specs: list[FvgHypothesisSpec] = []
+    for sig_m, fvg_m in pairs:
+        for win_m in windows:
+            for vp, vv in thresholds:
+                name = (
+                    f"core_s{sig_m}_f{fvg_m}_w{win_m}_"
                     f"p{str(vp).replace('.', 'p')}_v{str(vv).replace('.', 'p')}"
                 )
                 specs.append(
@@ -234,24 +266,17 @@ def _ic_on_slice(
     values: np.ndarray,
     forward: np.ndarray,
     idx: np.ndarray,
-    *,
-    name: str,
-    n_permutations: int,
-    rng: np.random.Generator,
-    progress: ProgressLike | None = None,
 ) -> float:
+    """Spearman IC on a fold slice — ranking only (no permutation cost)."""
     if idx.size == 0:
         return 0.0
-    ev = evaluate_signal(
-        name,
-        values[idx],
-        forward[idx],
-        n_permutations=n_permutations,
-        rng=rng,
-        progress=progress,
-        progress_label=f"WF-perm:{name}",
-    )
-    return float(ev.ic)
+    v = np.asarray(values[idx], dtype=np.float64)
+    f = np.asarray(forward[idx], dtype=np.float64)
+    mask = np.isfinite(v) & np.isfinite(f)
+    v, f = v[mask], f[mask]
+    if v.shape[0] < _MIN_OOS_SAMPLES or float(np.std(v)) == 0.0:
+        return 0.0
+    return float(information_coefficient(v, f, method="spearman"))
 
 
 def walk_forward_select_hypotheses(
@@ -263,11 +288,14 @@ def walk_forward_select_hypotheses(
     n_splits: int = 3,
     embargo: int = 0,
     purge_samples: int = 0,
-    n_permutations: int = 200,
+    n_permutations: int = SEARCH_N_PERMUTATIONS,
     rng: np.random.Generator | None = None,
     progress: ProgressLike | None = None,
 ) -> tuple[pl.DataFrame, float, float, int, str | None]:
     """اختيار فرضية على التدريب فقط؛ قياس IC خارج العينة على الاختبار.
+
+    ترتيب المرشّحين داخل كل طيّة = Spearman IC فقط (بلا تبديلات).
+    الدلالة الإحصائية تُحسب مرة واحدة على العوائد المجمّعة خارج العينة.
 
     يُعيد: (fold_df, oos_ic, oos_pvalue, oos_n, best_name)
     """
@@ -300,7 +328,8 @@ def walk_forward_select_hypotheses(
     )
     if log is not None:
         log.op(
-            f"walk-forward: {len(folds)} طيّات · candidates={len(cols)} · n_perm={n_permutations}"
+            f"walk-forward: {len(folds)} طيّات · candidates={len(cols)} · "
+            f"rank=IC · oos_perm={n_permutations}"
         )
     rows: list[dict[str, float | int | str]] = []
     oos_values = np.full(work.height, np.nan, dtype=np.float64)
@@ -315,15 +344,7 @@ def walk_forward_select_hypotheses(
         best_ic = -1e18
         for col_i, col in enumerate(cols, start=1):
             vals = work[col].to_numpy().astype(np.float64)
-            ic = _ic_on_slice(
-                vals,
-                forward,
-                fold.train_idx,
-                name=col,
-                n_permutations=n_permutations,
-                rng=generator,
-                progress=log,
-            )
+            ic = _ic_on_slice(vals, forward, fold.train_idx)
             if abs(ic) > abs(best_ic) or (abs(ic) == abs(best_ic) and ic > best_ic):
                 best_ic = ic
                 best_name = col
@@ -334,15 +355,7 @@ def walk_forward_select_hypotheses(
                     label=f"WF fold {fold_i + 1} candidates",
                 )
         test_vals = work[best_name].to_numpy().astype(np.float64)
-        test_ic = _ic_on_slice(
-            test_vals,
-            forward,
-            fold.test_idx,
-            name=best_name,
-            n_permutations=n_permutations,
-            rng=generator,
-            progress=log,
-        )
+        test_ic = _ic_on_slice(test_vals, forward, fold.test_idx)
         oos_values[fold.test_idx] = test_vals[fold.test_idx]
         oos_fwd[fold.test_idx] = forward[fold.test_idx]
         rows.append(
@@ -439,7 +452,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
     ssl_components: int = 4,
     n_splits: int = 3,
     alpha: float = 0.05,
-    n_permutations: int = 200,
+    n_permutations: int = SEARCH_N_PERMUTATIONS,
     max_rows: int | None = None,
     global_seed: int = 0,
     output_dir: Path | str | None = None,
@@ -447,27 +460,32 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
     progress: PipelineProgress | bool | None = None,
     quiet: bool = False,
     understand: bool = False,
+    full_grid: bool = False,
+    lean_filters: bool = True,
+    exploratory: bool = False,
+    understand_n_permutations: int = UNDERSTAND_N_PERMUTATIONS,
 ) -> FvgHypothesisSearchResult:
     """يبحث أفضل إعداد/تايم فريم Failed FVG بـ walk-forward + بوابة SSL اختيارية.
 
-    ``use_depth_filter`` (افتراضي): مسار أحداث العمق داخل شمعة القرار → مرشّحي
-    ``__depth__*`` فوق نفس قواعد FVG — بلا إعادة كتابة الإشارة.
+    افتراضيًا: نواة مضغوطة (``core_fvg_grid``) + فلاتر عمق lean + بلا شاشة استكشافية.
+    ``full_grid=True`` يستخدم الشبكة الكاملة (~84). ``lean_filters=False`` يوسّع
+    كمّيات العمق. الدلالة permutation على OOS المجمّع فقط.
 
-    ``understand`` (اختياري): طبقات فهم كمية بعد الاختيار — OOS فقط، بلا تغيير
-    ``best_oos_spec``.
+    ``understand``: طبقات فهم كمية بعد الاختيار — OOS فقط، بلا تغيير ``best_oos_spec``.
     """
     log = resolve_progress(progress, quiet=quiet)
     save_step = 1 if output_dir is not None else 0
     gate_step = 1 if use_ssl_gate else 0
     depth_step = 1 if use_depth_filter else 0
     understand_step = 1 if understand else 0
+    explor_step = 1 if exploratory else 0
     if output_dir is not None:
         out_early = Path(output_dir)
         out_early.mkdir(parents=True, exist_ok=True)
         log.attach_log(out_early / "progress.log")
     log.begin(
         "بحث فرضيات Failed FVG (walk-forward)",
-        total_steps=6 + gate_step + depth_step + save_step + understand_step,
+        total_steps=5 + gate_step + depth_step + save_step + understand_step + explor_step,
     )
     log.line("كل عملية تُطبع سطرًا بسطر — راقب progress.log أو stderr")
     try:
@@ -491,7 +509,14 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
             )
             log.note(f"NQ={nq_frame.height:,} · MNQ={mnq_frame.height:,}")
 
-        grid = tuple(specs) if specs is not None else default_fvg_grid()
+        if specs is not None:
+            grid = tuple(specs)
+        elif full_grid:
+            grid = default_fvg_grid()
+            log.note(f"شبكة FVG كاملة: {len(grid)}")
+        else:
+            grid = core_fvg_grid()
+            log.note(f"نواة FVG مضغوطة: {len(grid)} (capacity-correct)")
         log.step("بناء ساعة البحث cross-market", f"interval_ns={interval_ns}")
         clock = cross_market_features(
             nq_frame,
@@ -525,9 +550,16 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
             features = attach_depth_path_to_features(
                 features, nq_frame, interval_ns=interval_ns, progress=log
             )
-            features, depth_cols, depth_specs = generate_depth_entry_candidates(features, hyp_cols)
+            depth_kwargs: dict[str, object] = {}
+            if lean_filters:
+                depth_kwargs["quantiles"] = LEAN_GATE_QUANTILES
+            features, depth_cols, depth_specs = generate_depth_entry_candidates(
+                features,
+                hyp_cols,
+                **depth_kwargs,  # type: ignore[arg-type]
+            )
             candidate_list.extend(list(depth_cols))
-            log.note(f"مرشّحو عمق: {len(depth_cols)}")
+            log.note(f"مرشّحو عمق: {len(depth_cols)} · lean={lean_filters}")
 
         if use_ssl_gate:
             log.step("تشغيل SSL tick + بوابة سببية", f"window={ssl_window}")
@@ -579,17 +611,31 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
         )
         log.note(f"best_oos={best!r} · oos_ic={oos_ic:.4g} · p={oos_p:.4g} · n={oos_n}")
 
-        log.step("شاشة استكشافية للمرشّحين")
-        explor = exploratory_screen_candidates(
-            features,
-            candidates,
-            price_col="nq_close",
-            horizon=horizon,
-            alpha=alpha,
-            n_permutations=n_permutations,
-            rng=generator,
-            progress=log,
-        )
+        if exploratory:
+            log.step("شاشة استكشافية للمرشّحين")
+            explor = exploratory_screen_candidates(
+                features,
+                candidates,
+                price_col="nq_close",
+                horizon=horizon,
+                alpha=alpha,
+                n_permutations=n_permutations,
+                rng=generator,
+                progress=log,
+            )
+        else:
+            explor = pl.DataFrame(
+                schema={
+                    "name": pl.Utf8(),
+                    "n": pl.Int64(),
+                    "ic": pl.Float64(),
+                    "ic_pvalue": pl.Float64(),
+                    "adjusted_pvalue": pl.Float64(),
+                    "sharpe": pl.Float64(),
+                    "selected": pl.Boolean(),
+                }
+            )
+            log.note("تخطّي الشاشة الاستكشافية (ليست أساس الاختيار)")
 
         log.step("كتابة تقرير البحث الموثّق")
         assistant = ResearchAssistant(alpha=alpha)
@@ -602,7 +648,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
             sample_size=oos_n,
             detail=(
                 f"best_oos_spec={best!r}; depth_filters={len(depth_specs)}; "
-                f"walk-forward nested selection"
+                f"lean_filters={lean_filters}; walk-forward nested selection"
             ),
         )
         claim = (
@@ -636,7 +682,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
                 interval_ns=interval_ns,
                 ssl_window=ssl_window,
                 n_splits=n_splits,
-                n_permutations=n_permutations,
+                n_permutations=understand_n_permutations,
                 seed=global_seed,
                 progress=log,
             )
@@ -692,7 +738,9 @@ __all__ = [
     "FvgHypothesisSearchResult",
     "FvgHypothesisSpec",
     "apply_causal_ssl_gate",
+    "core_fvg_grid",
     "default_fvg_grid",
+    "exploratory_screen_candidates",
     "materialize_fvg_hypotheses",
     "search_fail_fvg_hypotheses",
     "walk_forward_select_hypotheses",

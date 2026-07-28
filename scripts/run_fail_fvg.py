@@ -25,6 +25,7 @@ if sys.version_info < _MIN_PYTHON:
         f"الحالي {sys.version_info.major}.{sys.version_info.minor}"
     )
 
+from nq.research.capacity import RECOMMENDED_MAX_ROWS, SEARCH_N_PERMUTATIONS  # noqa: E402
 from nq.strategies.fail_fvg import run_fail_fvg_research  # noqa: E402
 from nq.strategies.fvg_hypothesis import search_fail_fvg_hypotheses  # noqa: E402
 
@@ -32,19 +33,28 @@ from nq.strategies.fvg_hypothesis import search_fail_fvg_hypotheses  # noqa: E40
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Failed FVG research — separate run on unified pipeline "
-            "(optional walk-forward hypothesis search + causal SSL gate)"
+            "Failed FVG research — capacity-correct walk-forward search + causal SSL gate"
         )
     )
     parser.add_argument("--nq", type=Path, required=True, help="مسار NQ MBO")
     parser.add_argument("--mnq", type=Path, default=None, help="مسار MNQ اختياري (dual)")
     parser.add_argument("--output", type=Path, default=Path("data/runs/fail_fvg"))
-    parser.add_argument("--max-rows", type=int, default=None)
+    parser.add_argument(
+        "--max-rows",
+        type=int,
+        default=None,
+        help=f"حد صفوف MBO (موصى به للبحث: {RECOMMENDED_MAX_ROWS:,})",
+    )
     parser.add_argument("--horizon", type=int, default=1)
     parser.add_argument(
         "--search",
         action="store_true",
-        help="بحث شبكة تايم فريم/إعدادات بـ walk-forward + بوابة SSL سببية",
+        help="بحث نواة تايم فريم/إعدادات بـ walk-forward + بوابة SSL سببية",
+    )
+    parser.add_argument(
+        "--full-grid",
+        action="store_true",
+        help="مع --search: شبكة FVG كاملة (~84) بدل النواة المضغوطة",
     )
     parser.add_argument(
         "--no-ssl-gate",
@@ -57,11 +67,27 @@ def main() -> None:
         help="مع --search: تعطيل فلتر مسار أحداث العمق داخل الشمعة",
     )
     parser.add_argument(
+        "--no-lean-filters",
+        action="store_true",
+        help="مع --search: توسيع كمّيات العمق (أثقل)",
+    )
+    parser.add_argument(
+        "--exploratory",
+        action="store_true",
+        help="مع --search: شاشة BH استكشافية (ليست أساس الاختيار)",
+    )
+    parser.add_argument(
         "--understand",
         action="store_true",
         help="مع --search: طبقات فهم كمية بعد الاختيار (OOS فقط، بلا تغيير best)",
     )
     parser.add_argument("--n-splits", type=int, default=3)
+    parser.add_argument(
+        "--n-permutations",
+        type=int,
+        default=SEARCH_N_PERMUTATIONS,
+        help=f"تبديلات دلالة OOS فقط (افتراضي {SEARCH_N_PERMUTATIONS})",
+    )
     parser.add_argument(
         "--quiet",
         action="store_true",
@@ -86,10 +112,14 @@ def main() -> None:
             use_ssl_gate=not args.no_ssl_gate,
             use_depth_filter=not args.no_depth_filter,
             n_splits=args.n_splits,
+            n_permutations=args.n_permutations,
             max_rows=args.max_rows,
             output_dir=args.output,
             quiet=args.quiet,
             understand=args.understand,
+            full_grid=args.full_grid,
+            lean_filters=not args.no_lean_filters,
+            exploratory=args.exploratory,
         )
         print(result.report.to_markdown())
         print(f"\nbest_oos_spec: {result.best_oos_spec}")

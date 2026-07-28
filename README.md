@@ -113,7 +113,33 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 
 ---
 
-### 1) الخط الموحّد — من MBO إلى التقرير (`run_week`)
+### 0) معالجة صحيحة ضمن القدرة (قبل الحجم)
+
+**الكثرة لا تعوّض البروتوكول.** القدرة المحدودة → عيّنة مضبوطة + اختيار lean + دلالة على OOS فقط.
+
+| قاعدة | التطبيق في المشروع |
+|-------|---------------------|
+| عيّنة محدودة | `--max-rows 500000` أو `configs/lean.toml` (`max_rows=500000`) |
+| شبكة مضغوطة | FB: نواة+تعزيزات (افتراضي) · FVG: `core_fvg_grid` (~16) |
+| فلاتر lean | كمّية عمق/تعزيز `0.7` فقط (عطّل بـ `--no-lean-filters`) |
+| ترتيب رخيص | walk-forward يرتّب بـ Spearman IC فقط (بلا تبديل لكل مرشّح) |
+| دلالة مرة واحدة | permutation على **OOS المجمّع** (`--n-permutations` افتراضي 100) |
+| استكشاف اختياري | `--exploratory` مغلق افتراضيًا (ليس أساس `best`) |
+| فهم بعد الاختيار | `--understand` بـ 50 تبديلًا فقط — لا يغيّر الاختيار |
+
+```bash
+# ملف lean للخط الموحّد
+python scripts/run_week.py --config configs/lean.toml --nq /path/to/nq.parquet
+
+# بحث FB/FVG ضمن القدرة
+python scripts/run_fail_breakout.py --nq ... --search --max-rows 500000
+python scripts/run_fail_fvg.py --nq ... --search --max-rows 500000
+```
+
+الثوابت: `nq.research.capacity`.
+
+---
+
 
 نقطة الدخول الأساسية: **SSL ‖ M9 ‖ ألفا** في تقرير واحد.  
 الإشارات الافتراضية معًا: `trap_setup` / `lead_lag` / `fail_fvg` / `vp_balance` / `vp_imbalance` / …
@@ -495,10 +521,13 @@ CI: `.github/workflows/ci.yml` على كل push/PR إلى `main`.
 ### 7) نصائح تشغيل على بيانات حقيقية
 
 1. **Python ≥ 3.11** — المشروع يرفض أقل من ذلك في السكربتات.
-2. **الذاكرة:** ملف شهر كامل (~300M صف) — استخدم `--max-rows` أو شريحة يومية؛ لا تحمّل الشهر دفعة واحدة.
+2. **الذاكرة / القدرة:** لا تحمّل شهرًا كاملاً (~300M صف). للبحث التفاعلي استخدم
+   `--max-rows 500000` أو `configs/lean.toml` أو شريحة يومية.
 3. **NQ فقط:** `--nq-only` أو `cross_market_mode = "nq_only"` في TOML.
 4. **أسعار Databento float:** تُحوَّل تلقائيًا إلى fixed-point عبر `PRICE_SCALE`.
 5. **أسعار null (Clear):** تُعالَج في `sanitize_mbo_frame` قبل إعادة بناء الدفتر.
+6. **بحث ثقيل عمدًا:** `--no-enhance` / `--full-grid` / `--no-lean-filters` / `--exploratory`
+   للحالات الخبيرة فقط — الافتراضي capacity-correct.
 
 ---
 
@@ -510,6 +539,7 @@ Nq/
 ├── configs/
 │   ├── default.toml
 │   ├── research.toml          # الخط العام — كل الإشارات معًا
+│   ├── lean.toml              # قدرة محدودة: max_rows=500k · perms=200
 │   ├── fail_fvg.toml          # أمر FVG منفصل (فرز مركّز، مخرجات كاملة)
 │   ├── fail_breakout.toml     # أمر FB منفصل (فوليوم + عمق)
 │   └── vp_auction.toml        # أمر VP منفصل (فرز مركّز، مخرجات كاملة)

@@ -28,6 +28,7 @@ if sys.version_info < _MIN_PYTHON:
         f"الحالي {sys.version_info.major}.{sys.version_info.minor}"
     )
 
+from nq.research.capacity import RECOMMENDED_MAX_ROWS, SEARCH_N_PERMUTATIONS  # noqa: E402
 from nq.strategies.breakout_hypothesis import search_fail_breakout_hypotheses  # noqa: E402
 from nq.strategies.fail_breakout import run_fail_breakout_research  # noqa: E402
 
@@ -36,13 +37,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Failed Breakout volume research — causal close entry; "
-            "walk-forward volume hypotheses (bar/cum/delta/effort_result) + SSL sift"
+            "capacity-correct walk-forward volume hypotheses + SSL sift"
         )
     )
     parser.add_argument("--nq", type=Path, required=True, help="مسار NQ MBO")
     parser.add_argument("--mnq", type=Path, default=None, help="مسار MNQ اختياري")
     parser.add_argument("--output", type=Path, default=Path("data/runs/fail_breakout"))
-    parser.add_argument("--max-rows", type=int, default=None)
+    parser.add_argument(
+        "--max-rows",
+        type=int,
+        default=None,
+        help=f"حد صفوف MBO (موصى به للبحث: {RECOMMENDED_MAX_ROWS:,})",
+    )
     parser.add_argument("--horizon", type=int, default=1)
     parser.add_argument(
         "--search",
@@ -65,11 +71,27 @@ def main() -> None:
         help="مع --search: تعطيل فلتر مسار أحداث العمق داخل الشمعة",
     )
     parser.add_argument(
+        "--no-lean-filters",
+        action="store_true",
+        help="مع --search: توسيع كمّيات العمق/التعزيز (أثقل)",
+    )
+    parser.add_argument(
+        "--exploratory",
+        action="store_true",
+        help="مع --search: شاشة BH استكشافية (ليست أساس الاختيار)",
+    )
+    parser.add_argument(
         "--understand",
         action="store_true",
         help="مع --search: طبقات فهم كمية بعد الاختيار (OOS فقط، بلا تغيير best)",
     )
     parser.add_argument("--n-splits", type=int, default=3)
+    parser.add_argument(
+        "--n-permutations",
+        type=int,
+        default=SEARCH_N_PERMUTATIONS,
+        help=f"تبديلات دلالة OOS فقط (افتراضي {SEARCH_N_PERMUTATIONS})",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -82,7 +104,7 @@ def main() -> None:
         mode = (
             "شبكة فوليوم كاملة (--no-enhance)"
             if args.no_enhance
-            else "نواة فوليوم + تعزيزات SSL"
+            else "نواة فوليوم + تعزيزات SSL (capacity-correct)"
         )
     else:
         mode = "خط Failed Breakout (فوليوم)"
@@ -102,10 +124,13 @@ def main() -> None:
             enhance_with_ssl=not args.no_enhance,
             use_depth_filter=not args.no_depth_filter,
             n_splits=args.n_splits,
+            n_permutations=args.n_permutations,
             max_rows=args.max_rows,
             output_dir=args.output,
             quiet=args.quiet,
             understand=args.understand,
+            lean_filters=not args.no_lean_filters,
+            exploratory=args.exploratory,
         )
         print(result.report.to_markdown())
         print(f"\nbest_oos_spec: {result.best_oos_spec}")
@@ -153,7 +178,10 @@ def main() -> None:
     ):
         assert col in result.features.columns, f"missing volume column {col}"
     if "fb_entry_ref" in result.features.columns:
-        print("entry_model: fb_entry_ref=signal_bar_close (executable); fb_break_level=analytic only")
+        print(
+            "entry_model: fb_entry_ref=signal_bar_close (executable); "
+            "fb_break_level=analytic only"
+        )
 
 
 if __name__ == "__main__":

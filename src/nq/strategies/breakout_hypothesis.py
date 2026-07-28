@@ -23,6 +23,12 @@ from nq.core.temporal_policy import TemporalPolicy
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
 from nq.research.assistant import ResearchAssistant, ResearchReport
+from nq.research.capacity import (
+    LEAN_GATE_QUANTILES,
+    LEAN_SSL_Z_COLS,
+    SEARCH_N_PERMUTATIONS,
+    UNDERSTAND_N_PERMUTATIONS,
+)
 from nq.research.evidence import Evidence
 from nq.research.progress import PipelineProgress, ProgressLike, resolve_progress
 from nq.research.understanding import (
@@ -402,7 +408,7 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     ssl_components: int = 4,
     n_splits: int = 3,
     alpha: float = 0.05,
-    n_permutations: int = 200,
+    n_permutations: int = SEARCH_N_PERMUTATIONS,
     max_rows: int | None = None,
     global_seed: int = 0,
     output_dir: Path | str | None = None,
@@ -410,6 +416,9 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     progress: PipelineProgress | bool | None = None,
     quiet: bool = False,
     understand: bool = False,
+    lean_filters: bool = True,
+    exploratory: bool = False,
+    understand_n_permutations: int = UNDERSTAND_N_PERMUTATIONS,
 ) -> BreakoutHypothesisSearchResult:
     """يبحث أفضل إعداد فوليوم/تعزيز Failed Breakout بـ walk-forward + SSL.
 
@@ -418,8 +427,9 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     ثم يختار بـ walk-forward (OOS هو الحكم).
     بدون تعزيز: الشبكة الكاملة ``volume_breakout_grid`` (~144 فرضية).
 
-    ``use_depth_filter`` (افتراضي): مسار أحداث العمق داخل شمعة القرار → مرشّحي
-    ``__depth__*`` فوق نفس القواعد — بلا إعادة كتابة الإشارة.
+    ``lean_filters`` (افتراضي): كمّيات عمق/تعزيز مضغوطة ضمن القدرة.
+    ``exploratory``: شاشة BH اختيارية (ليست أساس الاختيار — مغلقة افتراضيًا).
+    ترتيب المرشّحين = IC فقط؛ permutation على OOS المجمّع.
     """
     log = resolve_progress(progress, quiet=quiet)
     need_ssl = use_ssl_gate or enhance_with_ssl
@@ -427,13 +437,14 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     ssl_steps = (1 if need_ssl else 0) + (1 if enhance_with_ssl else 0) + (1 if use_ssl_gate else 0)
     depth_steps = 1 if use_depth_filter else 0
     understand_steps = 1 if understand else 0
+    explor_step = 1 if exploratory else 0
     if output_dir is not None:
         out_early = Path(output_dir)
         out_early.mkdir(parents=True, exist_ok=True)
         log.attach_log(out_early / "progress.log")
     log.begin(
         "بحث فرضيات Failed Breakout (فوليوم) + تعزيزات SSL + فلتر عمق",
-        total_steps=7 + ssl_steps + depth_steps + save_step + understand_steps,
+        total_steps=6 + ssl_steps + depth_steps + save_step + understand_steps + explor_step,
     )
     log.line("كل عملية تُطبع سطرًا بسطر — راقب progress.log أو stderr")
     try:
@@ -505,10 +516,17 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             features = attach_depth_path_to_features(
                 features, nq_frame, interval_ns=interval_ns, progress=log
             )
-            features, depth_cols, depth_specs = generate_depth_entry_candidates(features, hyp_cols)
+            depth_kwargs: dict[str, object] = {}
+            if lean_filters:
+                depth_kwargs["quantiles"] = LEAN_GATE_QUANTILES
+            features, depth_cols, depth_specs = generate_depth_entry_candidates(
+                features,
+                hyp_cols,
+                **depth_kwargs,  # type: ignore[arg-type]
+            )
             depth_columns = depth_cols
             candidates.extend(list(depth_cols))
-            log.note(f"مرشّحو عمق: {len(depth_cols)}")
+            log.note(f"مرشّحو عمق: {len(depth_cols)} · lean={lean_filters}")
 
         if need_ssl:
             log.step("تشغيل SSL tick (تمثيلات للتعزيز/البوابة)", f"window={ssl_window}")
@@ -525,15 +543,20 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
 
         if enhance_with_ssl and ssl_result is not None:
             log.step("توليد مرشّحي تعزيز SSL/سياق/فوليوم", f"bases={len(hyp_cols)}")
+            enh_kwargs: dict[str, object] = {}
+            if lean_filters:
+                enh_kwargs["quantiles"] = LEAN_GATE_QUANTILES
+                enh_kwargs["z_cols"] = LEAN_SSL_Z_COLS
             features, enh_cols, enh_specs = generate_ssl_enhancement_candidates(
                 features,
                 ssl_result.embeddings,
                 hyp_cols,
+                **enh_kwargs,  # type: ignore[arg-type]
             )
             enhancement_columns = enh_cols
             enhancement_specs = enh_specs
             candidates.extend(list(enh_cols))
-            log.note(f"تعزيزات مولَّدة: {len(enh_cols)}")
+            log.note(f"تعزيزات مولَّدة: {len(enh_cols)} · lean={lean_filters}")
 
         if use_ssl_gate and ssl_result is not None:
             log.step("بوابة SSL كلاسيكية على الأساس", f"q={_SSL_GATE_QUANTILE}")
@@ -578,24 +601,39 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         )
         log.note(f"best_oos={best!r} · oos_ic={oos_ic:.4g} · {winner}")
 
-        log.step("شاشة استكشافية")
-        explor = exploratory_screen_candidates(
-            features,
-            candidates_t,
-            price_col="nq_close",
-            horizon=horizon,
-            alpha=alpha,
-            n_permutations=n_permutations,
-            rng=generator,
-            progress=log,
-        )
+        if exploratory:
+            log.step("شاشة استكشافية")
+            explor = exploratory_screen_candidates(
+                features,
+                candidates_t,
+                price_col="nq_close",
+                horizon=horizon,
+                alpha=alpha,
+                n_permutations=n_permutations,
+                rng=generator,
+                progress=log,
+            )
+        else:
+            explor = pl.DataFrame(
+                schema={
+                    "name": pl.Utf8(),
+                    "n": pl.Int64(),
+                    "ic": pl.Float64(),
+                    "ic_pvalue": pl.Float64(),
+                    "adjusted_pvalue": pl.Float64(),
+                    "sharpe": pl.Float64(),
+                    "selected": pl.Boolean(),
+                }
+            )
+            log.note("تخطّي الشاشة الاستكشافية (ليست أساس الاختيار)")
 
         log.step("تقرير البحث")
         assistant = ResearchAssistant(alpha=alpha)
         detail = (
             f"best_oos_spec={best!r}; volume_specs={len(grid)}; "
             f"enhancements={len(enhancement_columns)}; depth_filters={len(depth_columns)}; "
-            f"enhance_won={enh_won}; depth_won={depth_won}; walk-forward nested selection"
+            f"lean_filters={lean_filters}; enhance_won={enh_won}; depth_won={depth_won}; "
+            f"walk-forward nested selection"
         )
         evidence = Evidence(
             id="fb_search:oos_ic",
@@ -641,7 +679,7 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
                 interval_ns=interval_ns,
                 ssl_window=ssl_window,
                 n_splits=n_splits,
-                n_permutations=n_permutations,
+                n_permutations=understand_n_permutations,
                 seed=global_seed,
                 progress=log,
             )

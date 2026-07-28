@@ -38,6 +38,7 @@ import polars as pl
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.temporal_policy import TemporalPolicy
 from nq.models.splitting import purged_walk_forward_split
+from nq.research.capacity import UNDERSTAND_N_PERMUTATIONS
 from nq.research.progress import PipelineProgress, resolve_progress
 from nq.statistics.metrics import information_coefficient
 from nq.statistics.multiple_testing import benjamini_hochberg
@@ -602,7 +603,7 @@ def run_understanding_layers(
     interval_ns: int,
     ssl_window: int = 5,
     n_splits: int = 3,
-    n_permutations: int = 200,
+    n_permutations: int = UNDERSTAND_N_PERMUTATIONS,
     seed: int = 7,
     progress: PipelineProgress | bool | None = None,
     quiet: bool = False,
