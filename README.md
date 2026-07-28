@@ -211,6 +211,10 @@ SSL هنا **بوابة ظرف** (`z0` + كمّية ماضية)، مش مولّ�
 | `fold_selections.parquet` | الفرضية المختارة لكل طيّة train→test |
 | `exploratory_screen.parquet` | فرز BH استكشافي (ليس أساس الاختيار) |
 | `ssl_metrics.parquet` | مقاييس SSL عند تفعيل البوابة |
+| `understanding/` | مع `--understand`: ablation / regime / attribution / stability / depth CF / SSL link (OOS فقط) |
+
+> **`--understand`**: طبقات فهم كمية **بعد** اختيار walk-forward. لا تغيّر `best_oos_spec`
+> ولا تضيف مرشّحين — كل المقاييس على طيّات الاختبار (purged) فقط.
 
 > في الخط العام: `include_failed_fvg = true` يُلحق `fail_fvg` **مع** باقي الإشارات.  
 > `run_fail_fvg` = جولة فرز مركّزة؛ `--search` = بحث إعدادات/تايم فريم فوق نفس المحرك.
@@ -266,6 +270,9 @@ python scripts/run_fail_breakout.py \
 
 مع `--search` (افتراضي): SSL يولّد **مرشّحي تعزيز** (`ssl_abs_q*`, `ssl_sign_*`, `ctx_*` بما فيها فلاتر فوليوم)
 فوق نواة Failed Breakout، ثم walk-forward يختار الأفضل خارج العينة.
+
+`--understand` (اختياري مع `--search`): طبقات فهم كمية بعد الاختيار (ablation / regime /
+attribution / stability / depth CF / SSL link) على OOS فقط — **لا تغيّر** `best_oos_spec`.
 
 | عمود | المعنى |
 |------|--------|

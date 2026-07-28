@@ -30,6 +30,11 @@ from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
 from nq.research.progress import PipelineProgress, ProgressLike, resolve_progress
+from nq.research.understanding import (
+    UnderstandingReport,
+    run_understanding_layers,
+    write_understanding_outputs,
+)
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import (
     NS_PER_MIN,
@@ -77,6 +82,7 @@ class FvgHypothesisSearchResult:
     best_oos_spec: str | None
     ssl: SSLPipelineResult | None
     report: ResearchReport
+    understanding: UnderstandingReport | None = None
 
 
 def default_fvg_grid() -> tuple[FvgHypothesisSpec, ...]:
@@ -440,23 +446,28 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
     rng: np.random.Generator | None = None,
     progress: PipelineProgress | bool | None = None,
     quiet: bool = False,
+    understand: bool = False,
 ) -> FvgHypothesisSearchResult:
     """يبحث أفضل إعداد/تايم فريم Failed FVG بـ walk-forward + بوابة SSL اختيارية.
 
     ``use_depth_filter`` (افتراضي): مسار أحداث العمق داخل شمعة القرار → مرشّحي
     ``__depth__*`` فوق نفس قواعد FVG — بلا إعادة كتابة الإشارة.
+
+    ``understand`` (اختياري): طبقات فهم كمية بعد الاختيار — OOS فقط، بلا تغيير
+    ``best_oos_spec``.
     """
     log = resolve_progress(progress, quiet=quiet)
     save_step = 1 if output_dir is not None else 0
     gate_step = 1 if use_ssl_gate else 0
     depth_step = 1 if use_depth_filter else 0
+    understand_step = 1 if understand else 0
     if output_dir is not None:
         out_early = Path(output_dir)
         out_early.mkdir(parents=True, exist_ok=True)
         log.attach_log(out_early / "progress.log")
     log.begin(
         "بحث فرضيات Failed FVG (walk-forward)",
-        total_steps=6 + gate_step + depth_step + save_step,
+        total_steps=6 + gate_step + depth_step + save_step + understand_step,
     )
     log.line("كل عملية تُطبع سطرًا بسطر — راقب progress.log أو stderr")
     try:
@@ -611,6 +622,29 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
             title="Failed FVG Hypothesis Search — Walk-Forward + SSL/Depth Gates",
         )
 
+        understanding: UnderstandingReport | None = None
+        if understand and best is not None and best in features.columns:
+            log.step("طبقات الفهم الكمي (OOS فقط — بلا تغيير اختيار)")
+            emb = ssl_result.embeddings if ssl_result is not None else None
+            understanding = run_understanding_layers(
+                features,
+                selected_column=best,
+                fold_selections=fold_df,
+                embeddings=emb,
+                price_col="nq_close",
+                horizon=horizon,
+                interval_ns=interval_ns,
+                ssl_window=ssl_window,
+                n_splits=n_splits,
+                n_permutations=n_permutations,
+                seed=global_seed,
+                progress=log,
+            )
+            log.note(
+                f"understanding layers={list(understanding.layers)} · "
+                f"findings={len(understanding.findings)}"
+            )
+
         result = FvgHypothesisSearchResult(
             features=features,
             specs=grid,
@@ -621,6 +655,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
             best_oos_spec=best,
             ssl=ssl_result,
             report=report,
+            understanding=understanding,
         )
 
         if output_dir is not None:
@@ -642,6 +677,8 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
                 ).write_parquet(out / "depth_entry_specs.parquet")
             if ssl_result is not None and ssl_result.metrics.height > 0:
                 ssl_result.metrics.write_parquet(out / "ssl_metrics.parquet")
+            if understanding is not None:
+                write_understanding_outputs(understanding, out)
             log.note(f"كُتبت الملفات في {out.resolve()}")
 
         log.done(f"best={best!r} · oos_ic={oos_ic:.4g}")

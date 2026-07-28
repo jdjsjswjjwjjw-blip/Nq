@@ -64,6 +64,11 @@ def main() -> None:
         action="store_true",
         help="مع --search: تعطيل فلتر مسار أحداث العمق داخل الشمعة",
     )
+    parser.add_argument(
+        "--understand",
+        action="store_true",
+        help="مع --search: طبقات فهم كمية بعد الاختيار (OOS فقط، بلا تغيير best)",
+    )
     parser.add_argument("--n-splits", type=int, default=3)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
@@ -100,6 +105,7 @@ def main() -> None:
             max_rows=args.max_rows,
             output_dir=args.output,
             quiet=args.quiet,
+            understand=args.understand,
         )
         print(result.report.to_markdown())
         print(f"\nbest_oos_spec: {result.best_oos_spec}")
@@ -108,6 +114,9 @@ def main() -> None:
         print(f"volume_specs: {len(result.specs)}")
         print(f"enhancements: {len(result.enhancement_columns)}")
         print(f"features: {result.features.height} rows")
+        if result.understanding is not None:
+            print(result.understanding.to_markdown())
+            print(f"understanding: {args.output.resolve()}/understanding/")
         print(f"outputs: {args.output.resolve()}/")
         return
 

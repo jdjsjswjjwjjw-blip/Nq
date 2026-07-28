@@ -25,6 +25,11 @@ from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
 from nq.research.progress import PipelineProgress, ProgressLike, resolve_progress
+from nq.research.understanding import (
+    UnderstandingReport,
+    run_understanding_layers,
+    write_understanding_outputs,
+)
 from nq.simulation.breakout import VolMode, failed_breakout_features, failed_breakout_from_bars
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import NS_PER_MIN, build_ohlcv_bars
@@ -94,6 +99,7 @@ class BreakoutHypothesisSearchResult:
     best_oos_spec: str | None
     ssl: SSLPipelineResult | None
     report: ResearchReport
+    understanding: UnderstandingReport | None = None
 
 
 def _tag_float(value: float) -> str:
@@ -403,6 +409,7 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     rng: np.random.Generator | None = None,
     progress: PipelineProgress | bool | None = None,
     quiet: bool = False,
+    understand: bool = False,
 ) -> BreakoutHypothesisSearchResult:
     """يبحث أفضل إعداد فوليوم/تعزيز Failed Breakout بـ walk-forward + SSL.
 
@@ -419,13 +426,14 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     save_step = 1 if output_dir is not None else 0
     ssl_steps = (1 if need_ssl else 0) + (1 if enhance_with_ssl else 0) + (1 if use_ssl_gate else 0)
     depth_steps = 1 if use_depth_filter else 0
+    understand_steps = 1 if understand else 0
     if output_dir is not None:
         out_early = Path(output_dir)
         out_early.mkdir(parents=True, exist_ok=True)
         log.attach_log(out_early / "progress.log")
     log.begin(
         "بحث فرضيات Failed Breakout (فوليوم) + تعزيزات SSL + فلتر عمق",
-        total_steps=7 + ssl_steps + depth_steps + save_step,
+        total_steps=7 + ssl_steps + depth_steps + save_step + understand_steps,
     )
     log.line("كل عملية تُطبع سطرًا بسطر — راقب progress.log أو stderr")
     try:
@@ -618,6 +626,30 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
                 else "Failed Breakout Volume Hypothesis Search — Walk-Forward"
             ),
         )
+
+        understanding: UnderstandingReport | None = None
+        if understand and best is not None and best in features.columns:
+            log.step("طبقات الفهم الكمي (OOS فقط — بلا تغيير اختيار)")
+            emb = ssl_result.embeddings if ssl_result is not None else None
+            understanding = run_understanding_layers(
+                features,
+                selected_column=best,
+                fold_selections=fold_df,
+                embeddings=emb,
+                price_col="nq_close",
+                horizon=horizon,
+                interval_ns=interval_ns,
+                ssl_window=ssl_window,
+                n_splits=n_splits,
+                n_permutations=n_permutations,
+                seed=global_seed,
+                progress=log,
+            )
+            log.note(
+                f"understanding layers={list(understanding.layers)} · "
+                f"findings={len(understanding.findings)}"
+            )
+
         result = BreakoutHypothesisSearchResult(
             features=features,
             specs=grid,
@@ -630,6 +662,7 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             best_oos_spec=best,
             ssl=ssl_result,
             report=report,
+            understanding=understanding,
         )
         if output_dir is not None:
             out = Path(output_dir)
@@ -659,6 +692,8 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
                 ).write_parquet(out / "depth_entry_specs.parquet")
             if ssl_result is not None and ssl_result.metrics.height > 0:
                 ssl_result.metrics.write_parquet(out / "ssl_metrics.parquet")
+            if understanding is not None:
+                write_understanding_outputs(understanding, out)
         log.done(f"best={best!r} · oos_ic={oos_ic:.4g}")
         return result
     except Exception as exc:
