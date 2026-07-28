@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import polars as pl
+
 from nq.core.determinism import make_generator
 from nq.research.orchestrator import PipelineConfig, run_research_pipeline
 from nq.research.progress import PipelineProgress
@@ -13,6 +15,10 @@ from nq.simulation.depth_lifecycle import depth_at_bar_close
 from nq.strategies.breakout_hypothesis import (
     BreakoutHypothesisSpec,
     materialize_breakout_hypotheses,
+)
+from nq.strategies.depth_entry_filter import (
+    attach_depth_path_to_features,
+    generate_depth_entry_candidates,
 )
 from nq.strategies.fvg_hypothesis import search_fail_fvg_hypotheses
 from tests.test_coverage import _paired_streams
@@ -284,3 +290,35 @@ def test_pipeline_progress_prints_depth_ops() -> None:
     assert "[SSL]" in text
     assert "[M9]" in text
     assert "mfig-perm" in text or "M9 مقياس:" in text
+
+
+def test_heartbeat_channels_do_not_mute_each_other() -> None:
+    """نبض قناة لا يكتم نبض قناة أخرى عند نفس العداد."""
+    buf = io.StringIO()
+    progress = PipelineProgress(enabled=True, stream=buf, heartbeat_seconds=60.0)
+    progress.begin("قنوات", total_steps=1)
+    progress.step("متوازي")
+    with progress.channel("SSL"):
+        progress.heartbeat(10, 100, label="loop", force=True)
+    with progress.channel("M9"):
+        progress.heartbeat(10, 100, label="loop", force=True)
+    text = buf.getvalue()
+    assert "[SSL]" in text and "[M9]" in text
+    assert text.count("10/100") >= 2
+
+
+def test_depth_filter_progress_emits_asof_and_generate() -> None:
+    nq, _ = _paired_streams(900, seed=55)
+    clock = cross_market_features(nq, nq, interval_ns=10_000, lead_lag_window=2, latency_ns=0)
+    features = clock.with_columns(pl.lit(1.0).alias("sig"))
+    buf = io.StringIO()
+    progress = PipelineProgress(enabled=True, stream=buf)
+    progress.begin("عمق", total_steps=1)
+    progress.step("فلتر")
+    features = attach_depth_path_to_features(features, nq, interval_ns=10_000, progress=progress)
+    generate_depth_entry_candidates(features, ["sig"], progress=progress)
+    progress.done()
+    text = buf.getvalue()
+    assert "depth_path" in text or "depth_event_path" in text
+    assert "asof مسار العمق" in text
+    assert "توليد مرشّحي عمق" in text

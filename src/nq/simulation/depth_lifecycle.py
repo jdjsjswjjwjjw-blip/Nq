@@ -139,7 +139,7 @@ def depth_event_series(
         if log is not None:
             log.heartbeat(i + 1, n, label="depth_events")
     if log is not None:
-        log.op(f"depth_event_series انتهى: {len(rows):,} لقطة")
+        log.op(f"depth_event_series انتهى: {len(rows):,} لقطة — بناء DataFrame…")
     return pl.DataFrame(rows).sort(AVAILABILITY_TS)
 
 
@@ -208,7 +208,7 @@ def depth_at_bar_close(
         _emit(current_bucket)
 
     if log is not None:
-        log.op(f"depth_at_bar_close انتهى: {len(rows):,} شمعة بعمق")
+        log.op(f"depth_at_bar_close انتهى: {len(rows):,} شمعة بعمق — بناء DataFrame…")
     if not rows:
         return pl.DataFrame(schema=empty_schema)
     return pl.DataFrame(rows).sort(AVAILABILITY_TS)
@@ -328,7 +328,7 @@ def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915
         _emit(current_bucket)
 
     if log is not None:
-        log.op(f"depth_event_path انتهى: {len(rows):,} شمعة")
+        log.op(f"depth_event_path انتهى: {len(rows):,} شمعة — بناء DataFrame…")
     if not rows:
         return pl.DataFrame(schema=schema)
     return pl.DataFrame(rows).sort(AVAILABILITY_TS)

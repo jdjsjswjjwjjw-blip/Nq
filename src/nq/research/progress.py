@@ -96,6 +96,10 @@ class PipelineProgress:
     _log_file: TextIO | None = field(default=None, init=False, repr=False)
     _last_heartbeat: float = field(default=0.0, init=False, repr=False)
     _last_heartbeat_done: int = field(default=-1, init=False, repr=False)
+    # مفتاح = قناة|تسمية — يمنع كتم نبض قناة بسبب قناة أخرى في الوضع المتوازي
+    _last_heartbeat_by_key: dict[str, tuple[float, int]] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
     _channel: str = field(default="", init=False, repr=False)
     _local: threading.local = field(default_factory=threading.local, init=False, repr=False)
@@ -141,10 +145,11 @@ class PipelineProgress:
             self._current = ""
             self._last_heartbeat = self._t0
             self._last_heartbeat_done = -1
+            self._last_heartbeat_by_key.clear()
         self.line(f"========== بدء: {title} ==========")
         if total_steps is not None:
             self.line(f"عدد الخطوات المتوقعة: {total_steps}")
-        self.line("المسار خطي — كل حلقة طويلة تطبع نبضًا حيًّا (لا صمت)")
+        self.line("المسار خطي — كل حلقة طويلة تطبع نبضًا حيًّا كل ~1 ث (لا صمت)")
 
     def step(self, name: str, detail: str = "") -> None:
         """يعلن بدء خطوة جديدة (ويُغلق زمنيًا الخطوة السابقة إن وُجدت)."""
@@ -157,6 +162,7 @@ class PipelineProgress:
             self._step_t0 = now
             self._last_heartbeat = now
             self._last_heartbeat_done = -1
+            self._last_heartbeat_by_key.clear()
             index = self._index
             total = self._total
         if prev:
@@ -197,20 +203,24 @@ class PipelineProgress:
         if every is None and total >= _HB_DENSE_MIN_TOTAL:
             count_every = max(count_every, 1, total // 25)
         due_count = done in (0, total) or (done % count_every == 0)
+        channel = getattr(self._local, "channel", "") or ""
+        key = f"{channel}|{label}"
         with self._lock:
             if self._step_t0 <= 0.0:
                 self._step_t0 = now
             if self._t0 <= 0.0:
                 self._t0 = now
-            due_time = (now - self._last_heartbeat) >= self.heartbeat_seconds
+            last_t, last_done = self._last_heartbeat_by_key.get(key, (0.0, -1))
+            due_time = (now - last_t) >= self.heartbeat_seconds
             if not force and not due_count and not due_time:
                 return
-            if done == self._last_heartbeat_done and not force and done != total:
+            if done == last_done and not force and done != total:
                 return
             step_t0 = self._step_t0
             t0 = self._t0
             self._last_heartbeat = now
             self._last_heartbeat_done = done
+            self._last_heartbeat_by_key[key] = (now, done)
 
         elapsed = now - step_t0 if step_t0 > 0 else now - t0
         if elapsed < 0:

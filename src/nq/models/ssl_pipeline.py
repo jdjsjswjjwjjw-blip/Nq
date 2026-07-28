@@ -199,7 +199,7 @@ def _walk_forward_folds(
     return []
 
 
-def run_ssl_pipeline(
+def run_ssl_pipeline(  # noqa: PLR0912
     features: pl.DataFrame,
     *,
     feature_columns: Sequence[str] | None = None,
@@ -274,7 +274,7 @@ def run_ssl_pipeline(
         if log is not None:
             log.op(
                 f"SSL-bucket fold {fold_idx + 1}/{len(folds)} "
-                f"(train={len(fold.train_idx):,} · test={len(fold.test_idx):,})"
+                f"(train={len(fold.train_idx):,} · test={len(fold.test_idx):,}) — fit/encode…"
             )
         result = _evaluate_ssl_fold(
             fold_idx,
@@ -289,6 +289,12 @@ def run_ssl_pipeline(
             if log is not None:
                 log.op(f"SSL-bucket fold {fold_idx + 1}: تخطّي (نتيجة فارغة)")
             continue
+        if log is not None:
+            log.op(
+                f"SSL-bucket fold {fold_idx + 1}: mse={result.masked_mse:.4g} · "
+                f"r2={result.world_model_r2:.4g}"
+            )
+            log.heartbeat(fold_idx + 1, len(folds), label="SSL-bucket folds", force=True)
         fold_rows.append(
             {
                 "fold": result.fold,
@@ -440,7 +446,7 @@ def run_ssl_tick_pipeline(
         if log is not None:
             log.op(
                 f"SSL-tick fold {fold_idx + 1}/{len(folds)} "
-                f"(train={len(fold.train_idx):,} · test={len(fold.test_idx):,})"
+                f"(train={len(fold.train_idx):,} · test={len(fold.test_idx):,}) — fit/encode…"
             )
         result = _evaluate_ssl_tick_fold(
             fold_idx,
@@ -457,6 +463,12 @@ def run_ssl_tick_pipeline(
             if log is not None:
                 log.op(f"SSL-tick fold {fold_idx + 1}: تخطّي (نتيجة فارغة)")
             continue
+        if log is not None:
+            log.op(
+                f"SSL-tick fold {fold_idx + 1}: mse={result.masked_mse:.4g} · "
+                f"r2={result.world_model_r2:.4g}"
+            )
+            log.heartbeat(fold_idx + 1, len(folds), label="SSL-tick folds", force=True)
         fold_rows.append(
             {
                 "fold": result.fold,

@@ -315,6 +315,8 @@ def evolve_gplearn(
             n_jobs=1,
             low_memory=True,
         )
+        if progress is not None:
+            progress.op(f"gplearn fit {k + 1}/{n_hof}: pop={population_size} · gens={generations}…")
         # gplearn يُعظّم الارتباط؛ نمرّر y كما هو
         y_fit = np.nan_to_num(y.astype(np.float64), nan=0.0)
         model.fit(x, y_fit)
@@ -424,6 +426,11 @@ def discover_symbolic_on_train(
                 n_jobs=1,
                 low_memory=True,
             )
+            if progress is not None:
+                progress.op(
+                    f"gplearn[{k + 1}/{n_programs}] fit: "
+                    f"pop={population_size} · gens={generations}…"
+                )
             model.fit(x_tr, np.nan_to_num(y_tr, nan=0.0))
             expr = str(model._program)
             full = np.nan_to_num(

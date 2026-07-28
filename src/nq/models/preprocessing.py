@@ -11,6 +11,9 @@ import numpy.typing as npt
 
 FloatArray = npt.NDArray[np.float64]
 
+# عتبة رقمية: عمود شبه-ثابت (std طافي بسبب float) يُعامل كانحراف = 1
+_MIN_STD = 1e-8
+
 
 class CausalStandardScaler:
     """مطبّع قياسي يُلائَم على الماضي (train) ويُطبّق للأمام.
@@ -32,7 +35,7 @@ class CausalStandardScaler:
         axes = tuple(range(arr.ndim - 1))
         self.mean_ = arr.mean(axis=axes)
         std = arr.std(axis=axes)
-        self.std_ = np.where(std > 0, std, 1.0)
+        self.std_ = np.where(std > _MIN_STD, std, 1.0)
         self._fitted = True
         return self
 

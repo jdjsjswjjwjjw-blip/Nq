@@ -488,6 +488,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
             interval_ns=interval_ns,
             lead_lag_window=2,
             latency_ns=0,
+            progress=log,
         )
         log.step("تجسيد شبكة فرضيات FVG", f"candidates={len(grid)}")
         hyp = materialize_fvg_hypotheses(nq_frame, grid, clock=clock, progress=log)
@@ -514,7 +515,9 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
             features = attach_depth_path_to_features(
                 features, nq_frame, interval_ns=interval_ns, progress=log
             )
-            features, depth_cols, depth_specs = generate_depth_entry_candidates(features, hyp_cols)
+            features, depth_cols, depth_specs = generate_depth_entry_candidates(
+                features, hyp_cols, progress=log
+            )
             candidate_list.extend(list(depth_cols))
             log.note(f"مرشّحو عمق: {len(depth_cols)}")
 
