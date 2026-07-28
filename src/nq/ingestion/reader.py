@@ -34,7 +34,8 @@ def _read_zst_bytes(path: Path) -> bytes:
             f"cannot read {path.name!r}: install optional dependency `zstandard` for .zst files"
         ) from exc
     with path.open("rb") as handle:
-        return zstd.ZstdDecompressor().decompress(handle.read())
+        raw = zstd.ZstdDecompressor().decompress(handle.read())
+    return bytes(raw)
 
 
 def _read_columnar(path: Path, *, max_rows: int | None = None) -> pl.DataFrame:

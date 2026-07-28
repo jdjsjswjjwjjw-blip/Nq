@@ -28,6 +28,11 @@ from nq.research.progress import PipelineProgress, ProgressLike, resolve_progres
 from nq.simulation.breakout import VolMode, failed_breakout_features, failed_breakout_from_bars
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import NS_PER_MIN, build_ohlcv_bars
+from nq.strategies.depth_entry_filter import (
+    DepthEntrySpec,
+    attach_depth_path_to_features,
+    generate_depth_entry_candidates,
+)
 from nq.strategies.fvg_hypothesis import (
     apply_causal_ssl_gate,
     exploratory_screen_candidates,
@@ -386,6 +391,7 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     horizon: int = 1,
     use_ssl_gate: bool = True,
     enhance_with_ssl: bool = True,
+    use_depth_filter: bool = True,
     ssl_window: int = 5,
     ssl_components: int = 4,
     n_splits: int = 3,
@@ -404,18 +410,22 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     يستخدم نواة فوليوم مضغوطة + يولّد مرشّحي تعزيز من ``z*`` والسياق/الفوليوم،
     ثم يختار بـ walk-forward (OOS هو الحكم).
     بدون تعزيز: الشبكة الكاملة ``volume_breakout_grid`` (~144 فرضية).
+
+    ``use_depth_filter`` (افتراضي): مسار أحداث العمق داخل شمعة القرار → مرشّحي
+    ``__depth__*`` فوق نفس القواعد — بلا إعادة كتابة الإشارة.
     """
     log = resolve_progress(progress, quiet=quiet)
     need_ssl = use_ssl_gate or enhance_with_ssl
     save_step = 1 if output_dir is not None else 0
     ssl_steps = (1 if need_ssl else 0) + (1 if enhance_with_ssl else 0) + (1 if use_ssl_gate else 0)
+    depth_steps = 1 if use_depth_filter else 0
     if output_dir is not None:
         out_early = Path(output_dir)
         out_early.mkdir(parents=True, exist_ok=True)
         log.attach_log(out_early / "progress.log")
     log.begin(
-        "بحث فرضيات Failed Breakout (فوليوم) + تعزيزات SSL",
-        total_steps=7 + ssl_steps + save_step,
+        "بحث فرضيات Failed Breakout (فوليوم) + تعزيزات SSL + فلتر عمق",
+        total_steps=7 + ssl_steps + depth_steps + save_step,
     )
     log.line("كل عملية تُطبع سطرًا بسطر — راقب progress.log أو stderr")
     try:
@@ -478,7 +488,19 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         ssl_result: SSLPipelineResult | None = None
         enhancement_columns: tuple[str, ...] = ()
         enhancement_specs: tuple[EnhancementSpec, ...] = ()
+        depth_columns: tuple[str, ...] = ()
+        depth_specs: tuple[DepthEntrySpec, ...] = ()
         candidates: list[str] = list(hyp_cols)
+
+        if use_depth_filter:
+            log.step("مسار أحداث العمق داخل الشمعة → مرشّحي دخول", f"interval_ns={interval_ns}")
+            features = attach_depth_path_to_features(
+                features, nq_frame, interval_ns=interval_ns, progress=log
+            )
+            features, depth_cols, depth_specs = generate_depth_entry_candidates(features, hyp_cols)
+            depth_columns = depth_cols
+            candidates.extend(list(depth_cols))
+            log.note(f"مرشّحو عمق: {len(depth_cols)}")
 
         if need_ssl:
             log.step("تشغيل SSL tick (تمثيلات للتعزيز/البوابة)", f"window={ssl_window}")
@@ -542,10 +564,11 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             progress=log,
         )
         enh_won = best is not None and "__enh__" in str(best)
-        log.note(
-            f"best_oos={best!r} · oos_ic={oos_ic:.4g} · "
-            f"{'تعزيز SSL فاز' if enh_won else 'أساس فوليوم/بوابة'}"
+        depth_won = best is not None and "__depth__" in str(best)
+        winner = (
+            "فلتر عمق فاز" if depth_won else "تعزيز SSL فاز" if enh_won else "أساس فوليوم/بوابة"
         )
+        log.note(f"best_oos={best!r} · oos_ic={oos_ic:.4g} · {winner}")
 
         log.step("شاشة استكشافية")
         explor = exploratory_screen_candidates(
@@ -563,8 +586,8 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         assistant = ResearchAssistant(alpha=alpha)
         detail = (
             f"best_oos_spec={best!r}; volume_specs={len(grid)}; "
-            f"enhancements={len(enhancement_columns)}; enhance_won={enh_won}; "
-            f"walk-forward nested selection"
+            f"enhancements={len(enhancement_columns)}; depth_filters={len(depth_columns)}; "
+            f"enhance_won={enh_won}; depth_won={depth_won}; walk-forward nested selection"
         )
         evidence = Evidence(
             id="fb_search:oos_ic",
@@ -625,6 +648,15 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
                         "kind": [s.kind for s in enhancement_specs],
                     }
                 ).write_parquet(out / "enhancement_specs.parquet")
+            if depth_specs:
+                pl.DataFrame(
+                    {
+                        "column": [s.column() for s in depth_specs],
+                        "base": [s.base_column for s in depth_specs],
+                        "name": [s.name for s in depth_specs],
+                        "kind": [s.kind for s in depth_specs],
+                    }
+                ).write_parquet(out / "depth_entry_specs.parquet")
             if ssl_result is not None and ssl_result.metrics.height > 0:
                 ssl_result.metrics.write_parquet(out / "ssl_metrics.parquet")
         log.done(f"best={best!r} · oos_ic={oos_ic:.4g}")

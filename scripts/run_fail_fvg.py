@@ -51,6 +51,11 @@ def main() -> None:
         action="store_true",
         help="مع --search: تعطيل بوابة SSL (الإشارات الخام فقط)",
     )
+    parser.add_argument(
+        "--no-depth-filter",
+        action="store_true",
+        help="مع --search: تعطيل فلتر مسار أحداث العمق داخل الشمعة",
+    )
     parser.add_argument("--n-splits", type=int, default=3)
     parser.add_argument(
         "--quiet",
@@ -74,6 +79,7 @@ def main() -> None:
             args.mnq,
             horizon=args.horizon,
             use_ssl_gate=not args.no_ssl_gate,
+            use_depth_filter=not args.no_depth_filter,
             n_splits=args.n_splits,
             max_rows=args.max_rows,
             output_dir=args.output,

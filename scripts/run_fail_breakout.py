@@ -59,6 +59,11 @@ def main() -> None:
         action="store_true",
         help="مع --search: شبكة فوليوم كاملة (~144) بدل نواة+تعزيزات SSL",
     )
+    parser.add_argument(
+        "--no-depth-filter",
+        action="store_true",
+        help="مع --search: تعطيل فلتر مسار أحداث العمق داخل الشمعة",
+    )
     parser.add_argument("--n-splits", type=int, default=3)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
@@ -90,6 +95,7 @@ def main() -> None:
             horizon=args.horizon,
             use_ssl_gate=not args.no_ssl_gate,
             enhance_with_ssl=not args.no_enhance,
+            use_depth_filter=not args.no_depth_filter,
             n_splits=args.n_splits,
             max_rows=args.max_rows,
             output_dir=args.output,
