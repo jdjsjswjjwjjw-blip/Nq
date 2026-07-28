@@ -514,7 +514,11 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         if use_depth_filter:
             log.step("مسار أحداث العمق داخل الشمعة → مرشّحي دخول", f"interval_ns={interval_ns}")
             features = attach_depth_path_to_features(
-                features, nq_frame, interval_ns=interval_ns, progress=log
+                features,
+                nq_frame,
+                interval_ns=interval_ns,
+                progress=log,
+                signal_columns=hyp_cols,
             )
             depth_kwargs: dict[str, object] = {}
             if lean_filters:

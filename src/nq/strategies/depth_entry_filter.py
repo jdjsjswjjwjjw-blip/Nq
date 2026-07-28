@@ -39,15 +39,38 @@ class DepthEntrySpec:
         return f"{self.base_column}__depth__{self.name}"
 
 
+def _signals_all_zero(features: pl.DataFrame, signal_columns: Sequence[str]) -> bool:
+    """True إذا لا توجد إشارة غير صفرية في الأعمدة المعطاة."""
+    cols = [c for c in signal_columns if c in features.columns]
+    if not cols:
+        return True
+    for c in cols:
+        has_signal = features.select(
+            (pl.col(c).fill_null(0.0).abs() > 0.0).any().alias("_any")
+        )["_any"][0]
+        if bool(has_signal):
+            return False
+    return True
+
+
 def attach_depth_path_to_features(
     features: pl.DataFrame,
     mbo: pl.DataFrame,
     *,
     interval_ns: int,
     progress: ProgressLike | None = None,
+    signal_columns: Sequence[str] | None = None,
 ) -> pl.DataFrame:
-    """يحسب مسار أحداث العمق لكل شمعة ويلحقه بالإطار بـ asof خلفي."""
+    """يحسب مسار أحداث العمق لكل شمعة ويلحقه بالإطار بـ asof خلفي.
+
+    إذا مُرِّرت ``signal_columns`` وكانت كلها صفرًا، يُتخطّى حساب المسار
+    (لا مرشّحي عمق بلا إشارة أساس) — تسريع آمن بلا تغيير قواعد التسريب.
+    """
     if features.height == 0 or mbo.height == 0:
+        return features
+    if signal_columns is not None and _signals_all_zero(features, signal_columns):
+        if progress is not None:
+            progress.op("depth_event_path: تخطّي — إشارات الأساس كلها صفر")
         return features
     path = depth_event_path_at_bar_close(mbo, interval_ns=interval_ns, progress=progress)
     return attach_depth_asof(features, path, columns=DEPTH_PATH_COLUMNS)

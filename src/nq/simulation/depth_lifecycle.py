@@ -214,7 +214,7 @@ def depth_at_bar_close(
     return pl.DataFrame(rows).sort(AVAILABILITY_TS)
 
 
-def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915
+def depth_event_path_at_bar_close(  # noqa: PLR0915
     frame: pl.DataFrame,
     *,
     interval_ns: int,
@@ -228,6 +228,11 @@ def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915
     * ``depth_path_bid/ask_drain`` — سحب سيولة نسبي من افتتاح المسار إلى الإغلاق
     * ``depth_path_pressure`` — ``ask_drain - bid_drain`` (موجب ≈ ضغط صاعد سببيًا)
     * ``depth_path_n_events`` — عدد أحداث MBO داخل الشمعة
+
+    تسريع آمن (نفس الأرقام):
+    * كل حدث يحدّث الدفتر (``apply``) — سببية كاملة.
+    * قياس السيولة فقط عند **أول** حدث في الشمعة وعند **إغلاقها**
+      (ليس ``snapshot`` كامل لكل حدث).
     """
     if interval_ns < 1:
         raise ValueError(f"interval_ns must be >= 1, got {interval_ns}")
@@ -255,7 +260,10 @@ def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915
     n = len(actions)
     log = progress
     if log is not None:
-        log.op(f"depth_event_path: {n:,} حدث → مسار داخل الشمعة · interval_ns={interval_ns}")
+        log.op(
+            f"depth_event_path: {n:,} حدث → مسار داخل الشمعة · "
+            f"interval_ns={interval_ns} · sample=open/close"
+        )
 
     rows: list[dict[str, float | int]] = []
     current_bucket: int | None = None
@@ -264,15 +272,14 @@ def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915
     open_imb = 0.0
     open_bid = 0.0
     open_ask = 0.0
-    close_imb = 0.0
-    close_bid = 0.0
-    close_ask = 0.0
     opened = False
 
     def _emit(bucket_start: int) -> None:
         nonlocal opened
         if not opened:
             return
+        # حالة الدفتر = بعد آخر حدث في الشمعة السابقة (قبل apply للشمعة الجديدة)
+        close_bid, close_ask, close_imb = book.path_liquidity(n_levels)
         bucket_end = bucket_start + interval_ns
         bid_base = max(open_bid, 1.0)
         ask_base = max(open_ask, 1.0)
@@ -306,21 +313,11 @@ def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915
             opened = False
 
         book.apply(str(actions[i]), str(sides[i]), int(prices[i]), int(sizes[i]), int(order_ids[i]))
-        snap = book.snapshot(n_levels, availability_ts=ts)
         last_event = ts
         n_events += 1
-        imb = float(snap.imbalance)
-        bid = float(snap.cum_bid)
-        ask = float(snap.cum_ask)
         if not opened:
-            open_imb = close_imb = imb
-            open_bid = close_bid = bid
-            open_ask = close_ask = ask
+            open_bid, open_ask, open_imb = book.path_liquidity(n_levels)
             opened = True
-        else:
-            close_imb = imb
-            close_bid = bid
-            close_ask = ask
         if log is not None:
             log.heartbeat(i + 1, n, label="depth_path")
 

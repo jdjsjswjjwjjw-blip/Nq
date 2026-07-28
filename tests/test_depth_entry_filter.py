@@ -8,6 +8,7 @@ import pytest
 
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.determinism import make_generator
+from nq.orderbook.book import OrderBook
 from nq.simulation.depth_lifecycle import DEPTH_PATH_COLUMNS, depth_event_path_at_bar_close
 from nq.strategies.breakout_hypothesis import core_breakout_grid, search_fail_breakout_hypotheses
 from nq.strategies.depth_entry_filter import (
@@ -26,6 +27,33 @@ def test_depth_event_path_publishes_at_bucket_end() -> None:
         assert c in path.columns
     # availability = bucket_end
     assert (path[AVAILABILITY_TS] == path["bucket_end"]).all()
+
+
+def test_path_liquidity_matches_snapshot_totals() -> None:
+    book = OrderBook()
+    book.apply("A", "B", 100, 5, 1)
+    book.apply("A", "A", 101, 3, 2)
+    book.apply("A", "B", 99, 2, 3)
+    cum_bid, cum_ask, imb = book.path_liquidity(5)
+    snap = book.snapshot(5, availability_ts=0)
+    assert cum_bid == float(snap.cum_bid)
+    assert cum_ask == float(snap.cum_ask)
+    assert imb == float(snap.imbalance)
+
+
+def test_attach_depth_skips_when_base_signals_zero() -> None:
+    nq, _ = _paired_streams(600, seed=2)
+    clock = pl.DataFrame(
+        {
+            AVAILABILITY_TS: list(range(0, 50_000, 10_000)),
+            "sig": [0.0, 0.0, 0.0, 0.0, 0.0],
+        }
+    )
+    joined = attach_depth_path_to_features(
+        clock, nq, interval_ns=10_000, signal_columns=["sig"]
+    )
+    assert "depth_path_pressure" not in joined.columns
+    assert joined.height == clock.height
 
 
 def test_depth_entry_candidates_do_not_invent_signal() -> None:
@@ -105,8 +133,17 @@ def test_breakout_search_with_depth_filter_smoke() -> None:
         rng=make_generator(4),
         quiet=True,
     )
-    assert any("__depth__" in c for c in result.candidate_columns)
-    assert "depth_path_pressure" in result.features.columns
+    assert result.features.height >= 1
+    base_cols = [c for c in result.candidate_columns if "__depth__" not in c]
+    has_base = any(
+        float(result.features[c].fill_null(0.0).abs().sum()) > 0.0 for c in base_cols
+    )
+    if has_base:
+        assert any("__depth__" in c for c in result.candidate_columns)
+        assert "depth_path_pressure" in result.features.columns
+    else:
+        # Safe skip: no depth path when all base signals are zero
+        assert not any("__depth__" in c for c in result.candidate_columns)
 
 
 def test_fvg_search_with_depth_filter_smoke() -> None:
@@ -123,4 +160,27 @@ def test_fvg_search_with_depth_filter_smoke() -> None:
         rng=make_generator(5),
         quiet=True,
     )
-    assert any("__depth__" in c for c in result.candidate_columns)
+    assert result.features.height >= 1
+    base_cols = [c for c in result.candidate_columns if "__depth__" not in c]
+    has_base = any(
+        float(result.features[c].fill_null(0.0).abs().sum()) > 0.0 for c in base_cols
+    )
+    if has_base:
+        assert any("__depth__" in c for c in result.candidate_columns)
+    else:
+        assert not any("__depth__" in c for c in result.candidate_columns)
+
+
+def test_attach_depth_runs_when_signal_nonzero() -> None:
+    nq, _ = _paired_streams(600, seed=7)
+    clock = pl.DataFrame(
+        {
+            AVAILABILITY_TS: list(range(0, 50_000, 10_000)),
+            "sig": [1.0, 0.0, -1.0, 1.0, 0.0],
+        }
+    )
+    joined = attach_depth_path_to_features(
+        clock, nq, interval_ns=10_000, signal_columns=["sig"]
+    )
+    assert "depth_path_pressure" in joined.columns
+    assert joined.height == clock.height

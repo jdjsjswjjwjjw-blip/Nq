@@ -162,6 +162,16 @@ class OrderBook:
             return 0.0
         return (bid_n - ask_n) / total
 
+    def path_liquidity(self, n: int = 5) -> tuple[float, float, float]:
+        """سيولة المسار ``(cum_bid, cum_ask, imbalance)`` بدون لقطة L1–L5 كاملة."""
+        if n < 1:
+            raise ValueError(f"n must be >= 1, got {n}")
+        bid_n = self.cum_depth(_BID, n)
+        ask_n = self.cum_depth("A", n)
+        total = bid_n + ask_n
+        imb = 0.0 if total <= 0 else (bid_n - ask_n) / float(total)
+        return float(bid_n), float(ask_n), float(imb)
+
     def trail_liquidity(self) -> tuple[int, int]:
         """سيولة خلف أفضل طلب/عرض ``(trail_bid, trail_ask)``."""
         best_bid = self.best_bid()
