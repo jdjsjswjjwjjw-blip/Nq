@@ -16,12 +16,24 @@
 from __future__ import annotations
 
 from nq.research.assistant import LanguageModel, ResearchAssistant, ResearchReport
+from nq.research.day_parallel import (
+    DayInput,
+    DayJobResult,
+    DayParallelManifest,
+    day_id_from_path,
+    discover_day_inputs,
+    run_fail_breakout_day_parallel,
+    stable_day_seed,
+)
 from nq.research.evidence import Evidence, EvidenceStore
 from nq.research.findings import Finding, VerificationOutcome, verify_finding, verify_report
 from nq.research.progress import PipelineProgress, resolve_progress
 from nq.research.unified import UnifiedResearchReport, build_unified_report
 
 __all__ = [
+    "DayInput",
+    "DayJobResult",
+    "DayParallelManifest",
     "Evidence",
     "EvidenceStore",
     "Finding",
@@ -32,7 +44,11 @@ __all__ = [
     "UnifiedResearchReport",
     "VerificationOutcome",
     "build_unified_report",
+    "day_id_from_path",
+    "discover_day_inputs",
     "resolve_progress",
+    "run_fail_breakout_day_parallel",
+    "stable_day_seed",
     "verify_finding",
     "verify_report",
 ]

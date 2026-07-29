@@ -101,6 +101,7 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 | `run_fail_breakout` | Failed Breakout (فوليوم + عمق دفتر) | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
 | `run_fail_breakout --search` | شبكة فوليوم (~144) / نواة+SSL | نعم — walk-forward بلا تسريب | تقرير بحث + folds + screen |
 | `run_fail_breakout --search --understand` | نفس البحث + طبقات فهم كمية (OOS) | نعم — تشخيص بعد الاختيار فقط | + `understanding/` |
+| `run_fail_breakout_days` | نفس FB على شرائح يومية متوازية | نعم — كل يوم كون سببي مغلق؛ لا اختيار عبر الأيام | `manifest.json` + مجلد/يوم |
 | `run_symbolic_search` | DEAP + gplearn (معادلات بلا `if`) | نعم — WF فوق ميزات الخط · يحتاج `nq[gp]` | programs.json + folds + signals |
 | `run_vp_auction` + `configs/vp_auction.toml` | VP + توازن/اختلال | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
 
@@ -338,7 +339,22 @@ python scripts/run_fail_breakout.py \
   --nq /path/to/nq.parquet \
   --search --no-enhance \
   --max-rows 500000
+
+# أيام متوازية (بيانات يوم-بيوم) — كل يوم كون سببي مغلق؛ لا اختيار عبر الأيام
+python scripts/run_fail_breakout_days.py \
+  --nq-glob '/data/nq/*.parquet' \
+  --mnq-dir /data/mnq \
+  --jobs 30 \
+  --threads-per-worker 2 \
+  --search \
+  --n-splits 3 \
+  --n-permutations 100 \
+  --output data/runs/fail_breakout_month
 ```
+
+> **Day-parallel والمبادئ الأربعة:** التوازي على **مستوى الملف اليومي** فقط
+> (`ProcessPool`). داخل كل يوم يبقى نفس المحرّك السببي (asof خلفي + purged WF).
+> `manifest.json` / `summary.md` وصفيان — **لا** يختاران فرضية موحّدة عبر الشهر.
 
 مع `--search` (افتراضي): SSL يولّد **مرشّحي تعزيز** (`ssl_abs_q*`, `ssl_sign_*`, `ctx_*` بما فيها فلاتر فوليوم)
 فوق نواة Failed Breakout، ثم walk-forward يختار الأفضل خارج العينة.
@@ -549,6 +565,7 @@ Nq/
 │   ├── run_week.py            # الخط الموحّد MBO → تقرير
 │   ├── run_fail_fvg.py        # FVG منفصل (+ --search / --understand)
 │   ├── run_fail_breakout.py   # FB منفصل (+ --search فوليوم/SSL / --understand)
+│   ├── run_fail_breakout_days.py  # FB يوم-بيوم متوازٍ (ProcessPool · عزل سببي)
 │   ├── run_symbolic_search.py # DEAP + gplearn (معادلات بلا if · nq[gp])
 │   └── run_vp_auction.py      # أمر منفصل VP / توازن·اختلال (داخل المنظومة)
 ├── docs/
