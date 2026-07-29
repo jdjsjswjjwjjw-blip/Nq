@@ -29,6 +29,7 @@ n_splits = 3
 [signals]
 include_failed_fvg = true
 include_auction_vp = false
+include_failed_breakout = false
 columns = [
   "fail_fvg",
   "lead_lag",

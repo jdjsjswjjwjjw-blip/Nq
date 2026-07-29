@@ -32,13 +32,18 @@ from nq.features.streaming import (
 )
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_pipeline, run_ssl_tick_pipeline
+from nq.models.tick_stream import TickStream
 from nq.research.assistant import LanguageModel, ResearchAssistant
 from nq.research.progress import PipelineProgress, resolve_progress
 from nq.research.unified import UnifiedResearchReport, build_unified_report
 from nq.simulation.auction import auction_signal_frame
 from nq.simulation.breakout import failed_breakout_features
 from nq.simulation.cross_market import cross_market_features
-from nq.simulation.depth_lifecycle import attach_depth_asof, depth_at_bar_close
+from nq.simulation.depth_lifecycle import (
+    attach_depth_asof,
+    depth_at_bar_close,
+    depth_at_bar_close_multi,
+)
 from nq.simulation.fvg import failed_fvg_features
 
 if TYPE_CHECKING:
@@ -314,6 +319,7 @@ def _attach_failed_breakout(  # noqa: PLR0915
     features: pl.DataFrame,
     nq: pl.DataFrame,
     *,
+    depth_30m: pl.DataFrame | None = None,
     progress: PipelineProgress | None = None,
 ) -> pl.DataFrame:
     """يلحق Failed Breakout asof خلفي — إشارة + عمق عند مستوى الكسر (سببي)."""
@@ -327,10 +333,14 @@ def _attach_failed_breakout(  # noqa: PLR0915
         log.op("Failed Breakout: لا صفوف — أعمدة صفرية")
         return features.with_columns(zero_exprs)
 
-    # عمق عند إغلاق شمعة الإشارة (30m) — مسار منفصل عن عمق ساعة البحث
+    # عمق عند إغلاق شمعة الإشارة (30m) — يُعاد استخدام المسح الموحّد إن وُجد
     interval_30m = 30 * 60 * 1_000_000_000
-    log.op("مسح عمق FB عند إغلاق 30m (منفصل عن عمق ساعة البحث) · levels=5")
-    depth = depth_at_bar_close(nq, interval_ns=interval_30m, n_levels=5, progress=log)
+    if depth_30m is None:
+        log.op("مسح عمق FB عند إغلاق 30m · levels=5")
+        depth = depth_at_bar_close(nq, interval_ns=interval_30m, n_levels=5, progress=log)
+    else:
+        log.op("إعادة استخدام عمق 30m من المسح الموحّد (بدون مرور ثانٍ)")
+        depth = depth_30m
     if depth.height > 0:
         fb = attach_depth_asof(
             fb,
@@ -394,9 +404,13 @@ def _attach_failed_breakout(  # noqa: PLR0915
         log.op(f"حساب fb_depth_at_break على {fb.height:,} صف")
         at_break = []
         n_fb = fb.height
+        hb_every = max(1, min(500, n_fb // 20 or 1))
+        next_hb = hb_every
         for i, r in enumerate(fb.iter_rows(named=True), start=1):
             at_break.append(_depth_at_break(r))
-            log.heartbeat(i, n_fb, label="fb_depth_at_break")
+            if i >= next_hb or i == n_fb:
+                log.heartbeat(i, n_fb, label="fb_depth_at_break", force=True, every=hb_every)
+                next_hb = i + hb_every
         fb = fb.with_columns(
             pl.Series("fb_depth_at_break", at_break),
             pl.col("depth_imbalance").fill_null(0.0).alias("fb_depth_imbalance"),
@@ -429,12 +443,16 @@ def _attach_causal_depth(
     nq: pl.DataFrame,
     *,
     interval_ns: int,
+    depth: pl.DataFrame | None = None,
     progress: PipelineProgress | None = None,
 ) -> pl.DataFrame:
     """يلحق سلم عمق NQ عند إغلاق كل فاصل بحثي (مراقبة + تنفيذ/خروج)."""
     log = progress if progress is not None else PipelineProgress(enabled=False)
-    log.op(f"depth_at_bar_close ساعة البحث · levels=5 · interval_ns={interval_ns}")
-    depth = depth_at_bar_close(nq, interval_ns=interval_ns, n_levels=5, progress=log)
+    if depth is None:
+        log.op(f"depth_at_bar_close ساعة البحث · levels=5 · interval_ns={interval_ns}")
+        depth = depth_at_bar_close(nq, interval_ns=interval_ns, n_levels=5, progress=log)
+    else:
+        log.op("إعادة استخدام عمق ساعة البحث من المسح الموحّد")
     if depth.height == 0:
         log.op("عمق: لا لقطات — تخطّي")
         return features
@@ -454,19 +472,25 @@ def _build_research_features(
     cfg: PipelineConfig,
     *,
     progress: PipelineProgress | None = None,
-) -> pl.DataFrame:
-    """يبني إطار البحث: streaming (افتراضي) أو batch، ثم FVG/Auction asof."""
+) -> tuple[pl.DataFrame, TickStream | None]:
+    """يبني إطار البحث: streaming (افتراضي) أو batch، ثم FVG/Auction asof.
+
+    يُعيد أيضًا ``TickStream`` عند الوضع streaming لإعادة استخدامه في SSL-tick
+    بدون إعادة بناء آلة الحالة.
+    """
     log = progress if progress is not None else PipelineProgress(enabled=False)
+    tick_stream: TickStream | None = None
     if cfg.feature_mode == "streaming":
         log.step(
             "بناء الميزات (streaming state-machine)",
             f"NQ={nq.height:,} · MNQ={mnq.height:,} · interval_ns={cfg.interval_ns}",
         )
-        features = build_streaming_research_features(
+        features, tick_stream = build_streaming_research_features(
             nq,
             mnq,
             interval_ns=cfg.interval_ns,
             progress=log,
+            return_tick=True,
         )
     else:
         log.step(
@@ -483,8 +507,28 @@ def _build_research_features(
             progress=log,
         )
     log.note(f"إطار الميزات الأساسي: {features.height:,} صف × {features.width} عمود")
-    log.step("إلحاق عمق الدفتر السببي (دخول/مراقبة/تنفيذ/خروج)")
-    features = _attach_causal_depth(features, nq, interval_ns=cfg.interval_ns, progress=log)
+
+    interval_30m = 30 * 60 * 1_000_000_000
+    depth_by_iv: dict[int, pl.DataFrame] = {}
+    if cfg.include_failed_breakout and cfg.interval_ns != interval_30m:
+        log.step("إلحاق عمق الدفتر السببي (مسح موحّد: ساعة البحث + 30m)")
+        depth_by_iv = depth_at_bar_close_multi(
+            nq,
+            interval_ns_list=(cfg.interval_ns, interval_30m),
+            n_levels=5,
+            progress=log,
+        )
+        features = _attach_causal_depth(
+            features,
+            nq,
+            interval_ns=cfg.interval_ns,
+            depth=depth_by_iv[cfg.interval_ns],
+            progress=log,
+        )
+    else:
+        log.step("إلحاق عمق الدفتر السببي (دخول/مراقبة/تنفيذ/خروج)")
+        features = _attach_causal_depth(features, nq, interval_ns=cfg.interval_ns, progress=log)
+
     if cfg.include_failed_fvg:
         log.step("إلحاق Failed FVG (asof خلفي)")
         log.op("failed_fvg_features + join_asof backward")
@@ -498,9 +542,14 @@ def _build_research_features(
     if cfg.include_failed_breakout:
         log.step("إلحاق Failed Breakout + عمق عند مستوى الكسر")
         log.op("failed_breakout_features + depth_at_break(30m) + join_asof backward")
-        features = _attach_failed_breakout(features, nq, progress=log)
+        features = _attach_failed_breakout(
+            features,
+            nq,
+            depth_30m=depth_by_iv.get(interval_30m),
+            progress=log,
+        )
         log.op(f"بعد Failed Breakout: {features.height:,} صف")
-    return features
+    return features, tick_stream
 
 
 def run_ssl_research_pipeline(  # noqa: PLR0915
@@ -527,11 +576,13 @@ def run_ssl_research_pipeline(  # noqa: PLR0915
     language_model: LanguageModel | None = None,
     rng: np.random.Generator | None = None,
     progress: PipelineProgress | None = None,
+    tick_stream: TickStream | None = None,
 ) -> tuple[SSLPipelineResult, CoverageReport, AlphaDiscovery, UnifiedResearchReport]:
     """يشغّل SSL + M9 + ألفا → تقرير شامل (الميزات مُبنية مسبقًا).
 
     افتراضيًا تسلسلي (``parallel_coverage=False``) حتى يبقى اللوج مسارًا خطيًا
     مقروءًا. عند التوازي تُستخدم بادئات قنوات ``[SSL]`` / ``[M9]``.
+    ``tick_stream`` يُمرَّر لـ SSL-tick عند توفره من مرحلة الميزات streaming.
     """
     from nq.alpha.discovery import discover_alpha_from_features  # noqa: PLC0415
 
@@ -574,6 +625,7 @@ def run_ssl_research_pipeline(  # noqa: PLR0915
                     rng=generator,
                     assistant=ssl_assistant,
                     progress=log,
+                    tick_stream=tick_stream,
                 )
             log.op("استدعاء run_ssl_pipeline (bucket)")
             return run_ssl_pipeline(
@@ -841,7 +893,7 @@ def run_research_pipeline(
             + (" (nq_only)" if cfg.cross_market_mode == "nq_only" else "")
         )
 
-        features = _build_research_features(nq_frame, mnq_frame, cfg, progress=log)
+        features, tick_stream = _build_research_features(nq_frame, mnq_frame, cfg, progress=log)
         resolved_signals = signal_columns if signal_columns is not None else cfg.signal_columns
 
         ssl_result, coverage_result, alpha_result, unified = run_ssl_research_pipeline(
@@ -867,6 +919,7 @@ def run_research_pipeline(
             language_model=language_model,
             rng=generator,
             progress=log,
+            tick_stream=tick_stream,
         )
 
         result = UnifiedResearchResult(

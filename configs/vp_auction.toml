@@ -29,6 +29,7 @@ n_splits = 3
 [signals]
 include_failed_fvg = false
 include_auction_vp = true
+include_failed_breakout = false
 columns = [
   "vp_balance",
   "vp_imbalance",

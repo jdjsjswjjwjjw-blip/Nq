@@ -131,16 +131,119 @@ def depth_event_series(
         log.op(f"depth_event_series: مسح {n:,} حدث MBO → لقطات L1–L{n_levels}")
 
     rows: list[dict[str, float | int | None]] = []
+    hb_every = 5_000 if n else 1
+    next_hb = hb_every
     for i in range(n):
         book.apply(str(actions[i]), str(sides[i]), int(prices[i]), int(sizes[i]), int(order_ids[i]))
         ts = int(event_ts[i])
         snap = book.snapshot(n_levels, availability_ts=ts)
         rows.append(snapshot_to_row(snap, event_ts=ts))
-        if log is not None:
-            log.heartbeat(i + 1, n, label="depth_events")
+        done = i + 1
+        if log is not None and (done >= next_hb or done == n):
+            log.heartbeat(done, n, label="depth_events", force=True, every=hb_every)
+            next_hb = done + hb_every
     if log is not None:
         log.op(f"depth_event_series انتهى: {len(rows):,} لقطة")
     return pl.DataFrame(rows).sort(AVAILABILITY_TS)
+
+
+def _depth_bar_empty_schema(*, n_levels: int) -> dict[str, pl.DataType]:
+    empty_schema = _empty_depth_schema(n_levels=n_levels)
+    empty_schema[BUCKET_START] = pl.Int64()
+    empty_schema[BUCKET_END] = pl.Int64()
+    return empty_schema
+
+
+def depth_at_bar_close_multi(
+    frame: pl.DataFrame,
+    *,
+    interval_ns_list: Sequence[int],
+    n_levels: int = _DEFAULT_LEVELS,
+    progress: ProgressLike | None = None,
+) -> dict[int, pl.DataFrame]:
+    """لقطات عمق عند إغلاق الشموع لعدة فواصل في **مرور دفتر واحد**.
+
+    كل فاصل يستقلّ بـ buckets خاصّة به؛ النتائج مطابقة لاستدعاء
+    ``depth_at_bar_close`` منفصل لكل فاصل (نفس الأرقام السببية).
+    """
+    if n_levels < 1:
+        raise ValueError(f"n_levels must be >= 1, got {n_levels}")
+    intervals = tuple(dict.fromkeys(int(x) for x in interval_ns_list))
+    if not intervals:
+        raise ValueError("interval_ns_list must be non-empty")
+    for interval_ns in intervals:
+        if interval_ns < 1:
+            raise ValueError(f"interval_ns must be >= 1, got {interval_ns}")
+
+    empty_schema = _depth_bar_empty_schema(n_levels=n_levels)
+    if frame.height == 0:
+        return {iv: pl.DataFrame(schema=empty_schema) for iv in intervals}
+
+    work = sort_causal(frame)
+    book = OrderBook()
+    actions = work["action"].to_list()
+    sides = work["side"].to_list()
+    prices = work["price"].to_list()
+    sizes = work["size"].to_list()
+    order_ids = work["order_id"].to_list()
+    event_ts = work[EVENT_TS].to_list()
+    n = len(actions)
+    log = progress
+    if log is not None:
+        iv_txt = ",".join(str(iv) for iv in intervals)
+        log.op(
+            f"depth_at_bar_close_multi: {n:,} حدث → فواصل [{iv_txt}] · L1–L{n_levels}"
+        )
+
+    rows_by_iv: dict[int, list[dict[str, float | int | None]]] = {iv: [] for iv in intervals}
+    current_bucket: dict[int, int | None] = dict.fromkeys(intervals)
+    last_event_in_bucket: dict[int, int] = dict.fromkeys(intervals, -1)
+    hb_every = 5_000 if n else 1
+    next_hb = hb_every
+
+    def _emit(interval_ns: int, bucket_start: int) -> None:
+        bucket_end = bucket_start + interval_ns
+        snap = book.snapshot(n_levels, availability_ts=bucket_end)
+        row = snapshot_to_row(snap, event_ts=last_event_in_bucket[interval_ns])
+        row[AVAILABILITY_TS] = bucket_end
+        row[BUCKET_START] = bucket_start
+        row[BUCKET_END] = bucket_end
+        rows_by_iv[interval_ns].append(row)
+
+    for i in range(n):
+        ts = int(event_ts[i])
+        for interval_ns in intervals:
+            bucket = (ts // interval_ns) * interval_ns
+            cur = current_bucket[interval_ns]
+            if cur is None:
+                current_bucket[interval_ns] = bucket
+            elif bucket != cur:
+                _emit(interval_ns, cur)
+                current_bucket[interval_ns] = bucket
+        book.apply(str(actions[i]), str(sides[i]), int(prices[i]), int(sizes[i]), int(order_ids[i]))
+        for interval_ns in intervals:
+            last_event_in_bucket[interval_ns] = ts
+        done = i + 1
+        if log is not None and (done >= next_hb or done == n):
+            log.heartbeat(done, n, label="depth_bars", force=True, every=hb_every)
+            next_hb = done + hb_every
+
+    for interval_ns in intervals:
+        cur = current_bucket[interval_ns]
+        if cur is not None:
+            _emit(interval_ns, cur)
+
+    out: dict[int, pl.DataFrame] = {}
+    for interval_ns in intervals:
+        rows = rows_by_iv[interval_ns]
+        if log is not None:
+            log.op(f"depth_at_bar_close[{interval_ns}]: {len(rows):,} شمعة بعمق")
+        out[interval_ns] = (
+            pl.DataFrame(rows).sort(AVAILABILITY_TS)
+            if rows
+            else pl.DataFrame(schema=empty_schema)
+        )
+    return out
 
 
 def depth_at_bar_close(
@@ -155,63 +258,12 @@ def depth_at_bar_close(
     الدفتر يُحدَّث بكل أحداث الشمعة ثم تُثبَّت
     ``availability_ts = bucket_end`` (point-in-time عند الإغلاق).
     """
-    if interval_ns < 1:
-        raise ValueError(f"interval_ns must be >= 1, got {interval_ns}")
-    if n_levels < 1:
-        raise ValueError(f"n_levels must be >= 1, got {n_levels}")
-    empty_schema = _empty_depth_schema(n_levels=n_levels)
-    empty_schema[BUCKET_START] = pl.Int64()
-    empty_schema[BUCKET_END] = pl.Int64()
-    if frame.height == 0:
-        return pl.DataFrame(schema=empty_schema)
-
-    work = sort_causal(frame)
-    book = OrderBook()
-    actions = work["action"].to_list()
-    sides = work["side"].to_list()
-    prices = work["price"].to_list()
-    sizes = work["size"].to_list()
-    order_ids = work["order_id"].to_list()
-    event_ts = work[EVENT_TS].to_list()
-    n = len(actions)
-    log = progress
-    if log is not None:
-        log.op(f"depth_at_bar_close: {n:,} حدث → شموع interval_ns={interval_ns} · L1–L{n_levels}")
-
-    rows: list[dict[str, float | int | None]] = []
-    current_bucket: int | None = None
-    last_event_in_bucket = -1
-
-    def _emit(bucket_start: int) -> None:
-        bucket_end = bucket_start + interval_ns
-        snap = book.snapshot(n_levels, availability_ts=bucket_end)
-        row = snapshot_to_row(snap, event_ts=last_event_in_bucket)
-        row[AVAILABILITY_TS] = bucket_end
-        row[BUCKET_START] = bucket_start
-        row[BUCKET_END] = bucket_end
-        rows.append(row)
-
-    for i in range(n):
-        ts = int(event_ts[i])
-        bucket = (ts // interval_ns) * interval_ns
-        if current_bucket is None:
-            current_bucket = bucket
-        elif bucket != current_bucket:
-            _emit(current_bucket)
-            current_bucket = bucket
-        book.apply(str(actions[i]), str(sides[i]), int(prices[i]), int(sizes[i]), int(order_ids[i]))
-        last_event_in_bucket = ts
-        if log is not None:
-            log.heartbeat(i + 1, n, label="depth_bars")
-
-    if current_bucket is not None:
-        _emit(current_bucket)
-
-    if log is not None:
-        log.op(f"depth_at_bar_close انتهى: {len(rows):,} شمعة بعمق")
-    if not rows:
-        return pl.DataFrame(schema=empty_schema)
-    return pl.DataFrame(rows).sort(AVAILABILITY_TS)
+    return depth_at_bar_close_multi(
+        frame,
+        interval_ns_list=(interval_ns,),
+        n_levels=n_levels,
+        progress=progress,
+    )[interval_ns]
 
 
 def depth_event_path_at_bar_close(  # noqa: PLR0915
@@ -273,6 +325,8 @@ def depth_event_path_at_bar_close(  # noqa: PLR0915
     open_bid = 0.0
     open_ask = 0.0
     opened = False
+    hb_every = 5_000 if n else 1
+    next_hb = hb_every
 
     def _emit(bucket_start: int) -> None:
         nonlocal opened
@@ -318,8 +372,10 @@ def depth_event_path_at_bar_close(  # noqa: PLR0915
         if not opened:
             open_bid, open_ask, open_imb = book.path_liquidity(n_levels)
             opened = True
-        if log is not None:
-            log.heartbeat(i + 1, n, label="depth_path")
+        done = i + 1
+        if log is not None and (done >= next_hb or done == n):
+            log.heartbeat(done, n, label="depth_path", force=True, every=hb_every)
+            next_hb = done + hb_every
 
     if current_bucket is not None:
         _emit(current_bucket)
@@ -373,6 +429,7 @@ __all__ = [
     "DEPTH_PATH_COLUMNS",
     "attach_depth_asof",
     "depth_at_bar_close",
+    "depth_at_bar_close_multi",
     "depth_event_path_at_bar_close",
     "depth_event_series",
     "snapshot_to_row",

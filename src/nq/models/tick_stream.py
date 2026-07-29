@@ -169,10 +169,7 @@ def _book_depth_features(
     vah_ask = book.asks.get(va.vah, 0)
     val_bid = book.bids.get(va.val, 0)
     val_ask = book.asks.get(va.val, 0)
-    best_bid = book.best_bid()
-    best_ask = book.best_ask()
-    trail_bid = sum(sz for p, sz in book.bids.items() if best_bid and p < best_bid[0])
-    trail_ask = sum(sz for p, sz in book.asks.items() if best_ask and p > best_ask[0])
+    trail_bid, trail_ask = book.trail_liquidity()
     return (
         _log_size(vah_bid),
         _log_size(vah_ask),
@@ -279,7 +276,9 @@ def _tick_row(
         mnq_low = mnq_mid if mnq_low == 0.0 else min(mnq_low, mnq_mid)
 
     va = nq_profile.value_area()
-    vp_feats = nq_profile.features_at_mid(nq_mid, ref_price=ref_price, near_ticks=_NEAR_TICKS)
+    vp_feats = nq_profile.features_at_mid(
+        nq_mid, ref_price=ref_price, near_ticks=_NEAR_TICKS, va=va
+    )
     depth_feats = _book_depth_features(nq_book, va)
     phase = MarketPhase(regime_tracker.update(_regime_features(vp_feats, depth_feats)))
     phase_oh = _phase_one_hot(phase)

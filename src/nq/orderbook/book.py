@@ -30,29 +30,47 @@ class OrderBook:
 
     * ``bids`` / ``asks``: ``dict[price -> aggregated_size]`` لكل جانب.
     * ``orders``: ``dict[order_id -> (is_bid, price, size)]`` لتتبّع الأوامر.
+    * ``_bid_vol`` / ``_ask_vol``: مجموع الحجم لكل جانب (للـ trail بنفس الأرقام).
     """
 
-    __slots__ = ("asks", "bids", "orders", "unknown_order_refs")
+    __slots__ = ("asks", "bids", "orders", "unknown_order_refs", "_ask_vol", "_bid_vol")
 
     def __init__(self) -> None:
         self.bids: dict[int, int] = {}
         self.asks: dict[int, int] = {}
         self.orders: dict[int, tuple[bool, int, int]] = {}
         self.unknown_order_refs: int = 0
+        self._bid_vol: int = 0
+        self._ask_vol: int = 0
 
     def clear(self) -> None:
         """يمسح الدفتر بالكامل (book reset)."""
         self.bids.clear()
         self.asks.clear()
         self.orders.clear()
+        self._bid_vol = 0
+        self._ask_vol = 0
 
-    @staticmethod
-    def _reduce(level: dict[int, int], price: int, size: int) -> None:
-        remaining = level.get(price, 0) - size
+    def _add_level(self, level: dict[int, int], price: int, size: int, *, is_bid: bool) -> None:
+        level[price] = level.get(price, 0) + size
+        if is_bid:
+            self._bid_vol += size
+        else:
+            self._ask_vol += size
+
+    def _reduce(self, level: dict[int, int], price: int, size: int, *, is_bid: bool) -> None:
+        old = level.get(price, 0)
+        remaining = old - size
         if remaining > 0:
             level[price] = remaining
+            removed = size
         else:
             level.pop(price, None)
+            removed = old
+        if is_bid:
+            self._bid_vol -= removed
+        else:
+            self._ask_vol -= removed
 
     def apply(  # noqa: PLR0911 -- dispatch على نوع الحدث؛ العودة المبكرة أوضح
         self, action: str, side: str, price: int, size: int, order_id: int
@@ -65,8 +83,7 @@ class OrderBook:
         if action == _ADD:
             is_bid = side == _BID
             self.orders[order_id] = (is_bid, price, size)
-            level = self.bids if is_bid else self.asks
-            level[price] = level.get(price, 0) + size
+            self._add_level(self.bids if is_bid else self.asks, price, size, is_bid=is_bid)
             return
 
         if action == _CANCEL:
@@ -75,7 +92,7 @@ class OrderBook:
                 self.unknown_order_refs += 1
                 return
             is_bid, p, s = rec
-            self._reduce(self.bids if is_bid else self.asks, p, s)
+            self._reduce(self.bids if is_bid else self.asks, p, s, is_bid=is_bid)
             return
 
         if action == _FILL:
@@ -84,7 +101,7 @@ class OrderBook:
                 self.unknown_order_refs += 1
                 return
             is_bid, p, s = rec
-            self._reduce(self.bids if is_bid else self.asks, p, size)
+            self._reduce(self.bids if is_bid else self.asks, p, size, is_bid=is_bid)
             remaining = s - size
             if remaining > 0:
                 self.orders[order_id] = (is_bid, p, remaining)
@@ -98,13 +115,12 @@ class OrderBook:
                 self.unknown_order_refs += 1
                 is_bid = side == _BID
                 self.orders[order_id] = (is_bid, price, size)
-                level = self.bids if is_bid else self.asks
-                level[price] = level.get(price, 0) + size
+                self._add_level(self.bids if is_bid else self.asks, price, size, is_bid=is_bid)
                 return
             is_bid, old_price, old_size = rec
             level = self.bids if is_bid else self.asks
-            self._reduce(level, old_price, old_size)
-            level[price] = level.get(price, 0) + size
+            self._reduce(level, old_price, old_size, is_bid=is_bid)
+            self._add_level(level, price, size, is_bid=is_bid)
             self.orders[order_id] = (is_bid, price, size)
             return
 
@@ -173,19 +189,14 @@ class OrderBook:
         return float(bid_n), float(ask_n), float(imb)
 
     def trail_liquidity(self) -> tuple[int, int]:
-        """سيولة خلف أفضل طلب/عرض ``(trail_bid, trail_ask)``."""
+        """سيولة خلف أفضل طلب/عرض ``(trail_bid, trail_ask)``.
+
+        مكافئ رياضيًا لـ ``sum(levels) - best_size`` عبر مجاميع الجانب المخزّنة.
+        """
         best_bid = self.best_bid()
         best_ask = self.best_ask()
-        trail_bid = (
-            sum(sz for p, sz in self.bids.items() if best_bid is not None and p < best_bid[0])
-            if best_bid is not None
-            else 0
-        )
-        trail_ask = (
-            sum(sz for p, sz in self.asks.items() if best_ask is not None and p > best_ask[0])
-            if best_ask is not None
-            else 0
-        )
+        trail_bid = self._bid_vol - best_bid[1] if best_bid is not None else 0
+        trail_ask = self._ask_vol - best_ask[1] if best_ask is not None else 0
         return int(trail_bid), int(trail_ask)
 
     def snapshot(self, n: int = 5, *, availability_ts: int = 0) -> DepthSnapshot:
@@ -197,6 +208,10 @@ class OrderBook:
         bids = tuple(self.top_n(_BID, n))
         asks = tuple(self.top_n("A", n))
         trail_bid, trail_ask = self.trail_liquidity()
+        cum_bid = int(sum(sz for _, sz in bids))
+        cum_ask = int(sum(sz for _, sz in asks))
+        total = cum_bid + cum_ask
+        imbalance = 0.0 if total <= 0 else (cum_bid - cum_ask) / float(total)
         return DepthSnapshot(
             availability_ts=int(availability_ts),
             best_bid=None if bid is None else bid[0],
@@ -205,9 +220,9 @@ class OrderBook:
             ask_size=0 if ask is None else ask[1],
             bid_levels=bids,
             ask_levels=asks,
-            cum_bid=int(sum(sz for _, sz in bids)),
-            cum_ask=int(sum(sz for _, sz in asks)),
-            imbalance=self.depth_imbalance(n),
+            cum_bid=cum_bid,
+            cum_ask=cum_ask,
+            imbalance=imbalance,
             trail_bid=trail_bid,
             trail_ask=trail_ask,
             n_levels=n,

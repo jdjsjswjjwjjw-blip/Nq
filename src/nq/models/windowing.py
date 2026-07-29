@@ -69,28 +69,30 @@ def build_sequences(
     if times_all.shape[0] and bool(np.any(np.diff(times_all) < 0)):
         raise ValueError(f"{time_col} must be non-decreasing (causal order).")
 
-    values = frame.select(feature_columns).to_numpy().astype(np.float64)
+    values = frame.select(feature_columns).to_numpy().astype(np.float64, copy=False)
     n_rows = values.shape[0]
-
-    ends_list = list(range(window - 1, n_rows, stride))
-    n_ends = len(ends_list)
+    n_features = len(feature_columns)
+    ends = np.arange(window - 1, n_rows, stride, dtype=np.int64)
+    n_ends = int(ends.shape[0])
     if progress is not None:
         progress.op(f"build_sequences: {n_ends:,} نافذة · window={window} · rows={n_rows:,}")
-    samples = []
-    times = []
-    for i, end in enumerate(ends_list, start=1):
-        samples.append(values[end - window + 1 : end + 1])
-        times.append(times_all[end])
-        if progress is not None:
-            progress.heartbeat(i, n_ends, label="sequences")
 
-    if samples:
-        x = np.stack(samples).astype(np.float64)
+    if n_ends == 0:
+        x = np.empty((0, window, n_features), dtype=np.float64)
+        times = np.empty(0, dtype=np.int64)
     else:
-        x = np.empty((0, window, len(feature_columns)), dtype=np.float64)
+        # sliding_window_view(..., axis=0) → (n-w+1, n_features, window)
+        windows = np.lib.stride_tricks.sliding_window_view(
+            values, window_shape=window, axis=0
+        )
+        x = np.ascontiguousarray(np.transpose(windows[::stride], (0, 2, 1)))
+        times = times_all[ends]
+        if progress is not None:
+            progress.heartbeat(n_ends, n_ends, label="sequences", force=True)
+
     return SequenceDataset(
         x=x,
-        times=np.asarray(times, dtype=np.int64),
+        times=times,
         feature_names=tuple(feature_columns),
     )
 
@@ -134,7 +136,7 @@ def build_tick_sequences(
             market_phases=np.empty(0, dtype=np.int64),
         )
 
-    ends = list(range(window - 1, frame.height, stride))
+    ends = np.arange(window - 1, frame.height, stride, dtype=np.int64)
     mask_paths = frame["mask_path"].to_numpy().astype(np.int64)[ends]
     market_phases = frame["market_phase"].to_numpy().astype(np.int64)[ends]
     return TickSequenceDataset(

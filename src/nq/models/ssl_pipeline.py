@@ -21,7 +21,7 @@ from nq.models.masking import mask_matrix, masked_reconstruction_error
 from nq.models.masking_structural import batch_masked_mse, structural_mask_batch
 from nq.models.preprocessing import CausalStandardScaler
 from nq.models.splitting import WalkForwardFold, purged_walk_forward_split
-from nq.models.tick_stream import TICK_FEATURE_NAMES, build_tick_stream
+from nq.models.tick_stream import TICK_FEATURE_NAMES, TickStream, build_tick_stream
 from nq.models.windowing import TickSequenceDataset, build_sequences, build_tick_sequences
 from nq.models.world_model import NextStatePredictor, r2_score
 from nq.research.assistant import ResearchAssistant, ResearchReport
@@ -385,19 +385,26 @@ def run_ssl_tick_pipeline(
     rng: np.random.Generator | None = None,
     assistant: ResearchAssistant | None = None,
     progress: ProgressLike | None = None,
+    tick_stream: TickStream | None = None,
 ) -> SSLPipelineResult:
     """SSL على tick/event: دفتر حي + ميزات inline + إخفاء هيكلي (الأبعاد 1–6).
 
     يُكمّل ``run_ssl_pipeline`` (bucket) ولا يستبدله.
+    ``tick_stream`` اختياري — إن وُجد يُعاد استخدامه (نفس الأرقام، بدون بناء ثانٍ).
     """
 
     generator = rng if rng is not None else np.random.default_rng(0)
     research = assistant if assistant is not None else ResearchAssistant(alpha=alpha)
     log = progress
 
-    if log is not None:
-        log.op("SSL-tick: بناء tick_stream للتمثيلات")
-    stream = build_tick_stream(nq, mnq, progress=progress)
+    if tick_stream is not None:
+        if log is not None:
+            log.op(f"SSL-tick: إعادة استخدام tick_stream ({tick_stream.height:,} حدث)")
+        stream = tick_stream
+    else:
+        if log is not None:
+            log.op("SSL-tick: بناء tick_stream للتمثيلات")
+        stream = build_tick_stream(nq, mnq, progress=progress)
     if stream.height < window:
         if log is not None:
             log.op(f"SSL-tick: أحداث غير كافية ({stream.height} < window={window})")

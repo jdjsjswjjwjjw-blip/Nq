@@ -41,6 +41,7 @@ from nq.simulation.volume_profile import (
     classify_nodes,
     developing_value_area,
     value_area,
+    value_area_from_levels,
 )
 
 __all__ = [
@@ -72,4 +73,5 @@ __all__ = [
     "order_flow_imbalance",
     "order_flow_summary",
     "value_area",
+    "value_area_from_levels",
 ]

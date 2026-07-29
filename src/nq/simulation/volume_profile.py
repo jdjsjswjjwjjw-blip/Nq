@@ -49,24 +49,20 @@ class ValueArea:
     fraction: float
 
 
-def value_area(
-    profile: pl.DataFrame,
+def value_area_from_levels(
+    prices: list[int],
+    volumes: list[int],
     *,
     fraction: float = _DEFAULT_VALUE_AREA_FRACTION,
 ) -> ValueArea | None:
-    """يحسب POC و VAH/VAL من ملف حجم (يُفترض ترتيبه تصاعديًا بالسعر).
-
-    يُعيد ``None`` لملف فارغ. يتوسّع من POC نحو الجار الأعلى حجمًا حتى بلوغ
-    ``fraction`` من الإجمالي.
-    """
+    """نفس خوارزمية منطقة القيمة على قوائم مرتّبة تصاعديًا بالسعر (بدون Polars)."""
     if not 0 < fraction <= 1:
         raise ValueError(f"fraction must be in (0, 1], got {fraction}")
-    if profile.height == 0:
-        return None
-
-    prices: list[int] = profile["price"].to_list()
-    volumes: list[int] = profile["volume"].to_list()
     n = len(prices)
+    if n == 0:
+        return None
+    if n != len(volumes):
+        raise ValueError("prices and volumes must have the same length")
 
     poc_idx = max(range(n), key=lambda i: volumes[i])
     total = sum(volumes)
@@ -94,15 +90,37 @@ def value_area(
     )
 
 
+def value_area(
+    profile: pl.DataFrame,
+    *,
+    fraction: float = _DEFAULT_VALUE_AREA_FRACTION,
+) -> ValueArea | None:
+    """يحسب POC و VAH/VAL من ملف حجم (يُفترض ترتيبه تصاعديًا بالسعر).
+
+    يُعيد ``None`` لملف فارغ. يتوسّع من POC نحو الجار الأعلى حجمًا حتى بلوغ
+    ``fraction`` من الإجمالي.
+    """
+    if profile.height == 0:
+        return None
+    return value_area_from_levels(
+        profile["price"].to_list(),
+        profile["volume"].to_list(),
+        fraction=fraction,
+    )
+
+
 @dataclass
 class DevelopingVolumeProfile:
     """ملف حجم متطوّر event-by-event — يُحدَّث سببيًا مع كل صفقة.
 
     يُكمّل ``developing_value_area`` (نافذة زمنية) بتحديث فوري لكل tick.
+    الكاش: يُعاد حساب VA فقط بعد ``add_trade`` (نفس الأرقام، أقل عمل).
     """
 
     fraction: float = _DEFAULT_VALUE_AREA_FRACTION
     _levels: dict[int, int] = field(default_factory=dict, repr=False)
+    _cached_va: ValueArea | None = field(default=None, repr=False)
+    _va_dirty: bool = field(default=True, repr=False)
 
     def __post_init__(self) -> None:
         if not 0 < self.fraction <= 1:
@@ -111,18 +129,30 @@ class DevelopingVolumeProfile:
     def add_trade(self, price: int, size: int) -> None:
         """يُضيف حجم صفقة إلى المستوى السعري."""
         self._levels[price] = self._levels.get(price, 0) + size
+        self._va_dirty = True
 
     def to_frame(self) -> pl.DataFrame:
         """يُعيد ملف الحجم الحالي كإطار polars مرتّب بالسعر."""
         if not self._levels:
             return pl.DataFrame(schema={"price": pl.Int64(), "volume": pl.Int64()})
+        prices = sorted(self._levels)
         return pl.DataFrame(
-            {"price": list(self._levels.keys()), "volume": list(self._levels.values())}
-        ).sort("price")
+            {"price": prices, "volume": [self._levels[p] for p in prices]}
+        )
 
     def value_area(self) -> ValueArea | None:
-        """POC/VAH/VAL من الحالة الحالية."""
-        return value_area(self.to_frame(), fraction=self.fraction)
+        """POC/VAH/VAL من الحالة الحالية (مع كاش صالح حتى الصفقة التالية)."""
+        if not self._va_dirty:
+            return self._cached_va
+        if not self._levels:
+            self._cached_va = None
+            self._va_dirty = False
+            return None
+        prices = sorted(self._levels)
+        volumes = [self._levels[p] for p in prices]
+        self._cached_va = value_area_from_levels(prices, volumes, fraction=self.fraction)
+        self._va_dirty = False
+        return self._cached_va
 
     def features_at_mid(
         self,
@@ -130,20 +160,21 @@ class DevelopingVolumeProfile:
         *,
         ref_price: float,
         near_ticks: int,
+        va: ValueArea | None = None,
     ) -> tuple[float, float, float, float, float, float]:
         """ميزات VP سببية: مسافات POC/VAH/VAL + أعلام القرب/داخل المنطقة."""
         if not self._levels or mid <= 0 or ref_price <= 0:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        va = self.value_area()
-        if va is None:
+        area = va if va is not None else self.value_area()
+        if area is None:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         scale = near_ticks * _PRICE_SCALE
-        poc_d = (mid - va.poc) / ref_price
-        vah_d = (mid - va.vah) / ref_price
-        val_d = (mid - va.val) / ref_price
-        near_vah = 1.0 if abs(mid - va.vah) <= scale else 0.0
-        near_val = 1.0 if abs(mid - va.val) <= scale else 0.0
-        in_va = 1.0 if va.val <= mid <= va.vah else 0.0
+        poc_d = (mid - area.poc) / ref_price
+        vah_d = (mid - area.vah) / ref_price
+        val_d = (mid - area.val) / ref_price
+        near_vah = 1.0 if abs(mid - area.vah) <= scale else 0.0
+        near_val = 1.0 if abs(mid - area.val) <= scale else 0.0
+        in_va = 1.0 if area.val <= mid <= area.vah else 0.0
         return (poc_d, vah_d, val_d, near_vah, near_val, in_va)
 
 
@@ -201,7 +232,12 @@ def developing_value_area(
     for i, ((bucket_start,), group) in enumerate(groups, start=1):
         if progress is not None:
             progress.heartbeat(i, n_buckets, label="value_area")
-        va = value_area(group.sort("price"), fraction=fraction)
+        sorted_group = group.sort("price")
+        va = value_area_from_levels(
+            sorted_group["price"].to_list(),
+            sorted_group["volume"].to_list(),
+            fraction=fraction,
+        )
         if va is None:  # pragma: no cover - group is always non-empty here
             continue
         rows.append(

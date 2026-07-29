@@ -9,13 +9,13 @@
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, Literal, overload
 
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.session import add_session_columns
-from nq.models.tick_stream import TICK_FEATURE_NAMES, build_tick_stream
+from nq.models.tick_stream import TICK_FEATURE_NAMES, TickStream, build_tick_stream
 from nq.research.progress import ProgressLike
 
 _REF_PRICE: Final = 20_000_000_000.0
@@ -46,28 +46,10 @@ STREAMING_SIGNAL_COLUMNS: Final[tuple[str, ...]] = (
 )
 
 
-def streaming_event_features(
-    nq: pl.DataFrame,
-    mnq: pl.DataFrame,
-    *,
-    nq_instrument_id: int = 1,
-    mnq_instrument_id: int = 2,
-    progress: ProgressLike | None = None,
-) -> pl.DataFrame:
-    """إطار حدث-بحدث من آلة الحالة (متاح عند ``event_ts``)."""
-    if progress is not None:
-        progress.op("streaming: استدعاء build_tick_stream")
-    tick = build_tick_stream(
-        nq,
-        mnq,
-        nq_instrument_id=nq_instrument_id,
-        mnq_instrument_id=mnq_instrument_id,
-        progress=progress,
-    )
+def _events_from_tick(tick: TickStream, *, progress: ProgressLike | None) -> pl.DataFrame:
     raw = tick.frame
     if raw.height == 0:
         return raw
-
     if progress is not None:
         progress.op(f"streaming: تحويل أسعار/عوائد من {raw.height:,} حدث")
     ref = _REF_PRICE
@@ -90,6 +72,27 @@ def streaming_event_features(
         pl.col("mnq_close").diff().fill_null(0.0).alias("mnq_return"),
         pl.col("nq_close").diff().fill_null(0.0).sign().alias("nq_delta"),
     )
+
+
+def streaming_event_features(
+    nq: pl.DataFrame,
+    mnq: pl.DataFrame,
+    *,
+    nq_instrument_id: int = 1,
+    mnq_instrument_id: int = 2,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
+    """إطار حدث-بحدث من آلة الحالة (متاح عند ``event_ts``)."""
+    if progress is not None:
+        progress.op("streaming: استدعاء build_tick_stream")
+    tick = build_tick_stream(
+        nq,
+        mnq,
+        nq_instrument_id=nq_instrument_id,
+        mnq_instrument_id=mnq_instrument_id,
+        progress=progress,
+    )
+    return _events_from_tick(tick, progress=progress)
 
 
 def sample_streaming_to_interval(
@@ -121,26 +124,14 @@ def sample_streaming_to_interval(
     )
 
 
-def build_streaming_research_features(
-    nq: pl.DataFrame,
-    mnq: pl.DataFrame,
+def _assemble_streaming_frame(
+    events: pl.DataFrame,
     *,
     interval_ns: int,
-    nq_instrument_id: int = 1,
-    mnq_instrument_id: int = 2,
-    progress: ProgressLike | None = None,
+    progress: ProgressLike | None,
 ) -> pl.DataFrame:
-    """يبني إطار البحث من آلة حالة MBO لحظية (بديل الـ batch العريض)."""
-    events = streaming_event_features(
-        nq,
-        mnq,
-        nq_instrument_id=nq_instrument_id,
-        mnq_instrument_id=mnq_instrument_id,
-        progress=progress,
-    )
     if events.height == 0:
         return events
-
     if progress is not None:
         progress.op(f"عيّنة بحثية على interval_ns={interval_ns} من {events.height:,} حدث")
     sampled = sample_streaming_to_interval(events, interval_ns=interval_ns)
@@ -191,6 +182,62 @@ def build_streaming_research_features(
     if progress is not None:
         progress.op(f"إضافة أعمدة الجلسة — عيّنة={frame.height:,} صف")
     return add_session_columns(frame, time_col=AVAILABILITY_TS)
+
+
+@overload
+def build_streaming_research_features(
+    nq: pl.DataFrame,
+    mnq: pl.DataFrame,
+    *,
+    interval_ns: int,
+    nq_instrument_id: int = 1,
+    mnq_instrument_id: int = 2,
+    progress: ProgressLike | None = None,
+    return_tick: Literal[False] = False,
+) -> pl.DataFrame: ...
+
+
+@overload
+def build_streaming_research_features(
+    nq: pl.DataFrame,
+    mnq: pl.DataFrame,
+    *,
+    interval_ns: int,
+    nq_instrument_id: int = 1,
+    mnq_instrument_id: int = 2,
+    progress: ProgressLike | None = None,
+    return_tick: Literal[True],
+) -> tuple[pl.DataFrame, TickStream]: ...
+
+
+def build_streaming_research_features(
+    nq: pl.DataFrame,
+    mnq: pl.DataFrame,
+    *,
+    interval_ns: int,
+    nq_instrument_id: int = 1,
+    mnq_instrument_id: int = 2,
+    progress: ProgressLike | None = None,
+    return_tick: bool = False,
+) -> pl.DataFrame | tuple[pl.DataFrame, TickStream]:
+    """يبني إطار البحث من آلة حالة MBO لحظية (بديل الـ batch العريض).
+
+    ``return_tick=True`` يعيد ``TickStream`` لإعادة استخدامه في SSL-tick.
+    """
+    if progress is not None:
+        progress.op("streaming: استدعاء build_tick_stream")
+    tick = build_tick_stream(
+        nq,
+        mnq,
+        nq_instrument_id=nq_instrument_id,
+        mnq_instrument_id=mnq_instrument_id,
+        progress=progress,
+    )
+    events = _events_from_tick(tick, progress=progress)
+    frame = _assemble_streaming_frame(events, interval_ns=interval_ns, progress=progress)
+    if return_tick:
+        return frame, tick
+    return frame
 
 
 __all__ = [
