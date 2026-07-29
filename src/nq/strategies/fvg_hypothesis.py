@@ -50,6 +50,7 @@ from nq.statistics.metrics import information_coefficient
 from nq.strategies.depth_entry_filter import (
     DepthEntrySpec,
     attach_depth_path_to_features,
+    count_signal_hits,
     generate_depth_entry_candidates,
 )
 
@@ -567,25 +568,37 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
 
         if use_ssl_gate:
             log.step("تشغيل SSL tick + بوابة سببية", f"window={ssl_window}")
-            ssl_result = run_ssl_tick_pipeline(
-                nq_frame,
-                mnq_frame,
-                window=ssl_window,
-                n_components=ssl_components,
-                n_splits=max(2, n_splits),
-                alpha=alpha,
-                rng=generator,
-                progress=log,
-            )
-            features, gated = apply_causal_ssl_gate(
-                features,
-                ssl_result.embeddings,
-                hyp_cols,
-                z_col="z0",
-                quantile=_SSL_GATE_QUANTILE,
-            )
-            candidate_list = [*list(gated), *[c for c in candidate_list if "__depth__" in c]]
-            log.note(f"مرشّحون بعد البوابة+عمق: {len(candidate_list)}")
+            min_ssl_hits = max(3, int(n_splits))
+            base_hits = count_signal_hits(features, hyp_cols)
+            if base_hits < min_ssl_hits:
+                log.note(
+                    f"تخطي SSL — إشارات أساس غير كافية "
+                    f"(hits={base_hits} < {min_ssl_hits})"
+                )
+            else:
+                log.note(f"إشارات أساس: hits={base_hits} ≥ {min_ssl_hits}")
+                ssl_result = run_ssl_tick_pipeline(
+                    nq_frame,
+                    mnq_frame,
+                    window=ssl_window,
+                    n_components=ssl_components,
+                    n_splits=max(2, n_splits),
+                    alpha=alpha,
+                    rng=generator,
+                    progress=log,
+                )
+                features, gated = apply_causal_ssl_gate(
+                    features,
+                    ssl_result.embeddings,
+                    hyp_cols,
+                    z_col="z0",
+                    quantile=_SSL_GATE_QUANTILE,
+                )
+                candidate_list = [
+                    *list(gated),
+                    *[c for c in candidate_list if "__depth__" in c],
+                ]
+                log.note(f"مرشّحون بعد البوابة+عمق: {len(candidate_list)}")
 
         seen: set[str] = set()
         uniq: list[str] = []

@@ -542,6 +542,8 @@ CI: `.github/workflows/ci.yml` على كل push/PR إلى `main`.
 2. **الذاكرة / القدرة:** لا تحمّل شهرًا كاملاً (~300M صف). للبحث التفاعلي استخدم
    `--max-rows 500000` أو `configs/lean.toml` أو شريحة يومية.
 3. **NQ فقط:** `--nq-only` أو `cross_market_mode = "nq_only"` في TOML.
+   `build_tick_stream` يبني مسارًا أحاديًا عند `nq is mnq` (بدون مضاعفة الأحداث).
+   بحث FB/FVG يتخطّى SSL تلقائيًا إذا كانت إشارات الأساس أقل من عتبة WF.
 4. **أسعار Databento float:** تُحوَّل تلقائيًا إلى fixed-point عبر `PRICE_SCALE`.
 5. **أسعار null (Clear):** تُعالَج في `sanitize_mbo_frame` قبل إعادة بناء الدفتر.
 6. **بحث ثقيل عمدًا:** `--no-enhance` / `--full-grid` / `--no-lean-filters` / `--exploratory`

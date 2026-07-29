@@ -801,7 +801,7 @@ def _load_pipeline_frames(
         log.op(f"قص NQ DataFrame إلى max_rows={cfg.max_rows:,}")
         nq_frame = nq_frame.head(cfg.max_rows)
     if cfg.cross_market_mode == "nq_only":
-        log.op("وضع nq_only — تكرار NQ كـ MNQ")
+        log.op("وضع nq_only — بدون سوق ثانٍ (tick_stream أحادي عند nq is mnq)")
         return nq_frame, nq_frame
     log.op("تحميل MNQ")
     mnq_frame = (

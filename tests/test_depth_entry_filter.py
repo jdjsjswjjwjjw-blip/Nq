@@ -13,6 +13,7 @@ from nq.simulation.depth_lifecycle import DEPTH_PATH_COLUMNS, depth_event_path_a
 from nq.strategies.breakout_hypothesis import core_breakout_grid, search_fail_breakout_hypotheses
 from nq.strategies.depth_entry_filter import (
     attach_depth_path_to_features,
+    count_signal_hits,
     generate_depth_entry_candidates,
 )
 from nq.strategies.fvg_hypothesis import default_fvg_grid, search_fail_fvg_hypotheses
@@ -54,6 +55,44 @@ def test_attach_depth_skips_when_base_signals_zero() -> None:
     )
     assert "depth_path_pressure" not in joined.columns
     assert joined.height == clock.height
+
+
+def test_count_signal_hits() -> None:
+    features = pl.DataFrame(
+        {
+            AVAILABILITY_TS: [0, 1, 2, 3, 4],
+            "a": [0.0, 1.0, 0.0, -1.0, 0.0],
+            "b": [0.0, 0.0, 0.0, 0.0, 2.0],
+        }
+    )
+    assert count_signal_hits(features, ["a"]) == 2
+    assert count_signal_hits(features, ["a", "b"]) == 3
+    assert count_signal_hits(features, ["missing"]) == 0
+    assert count_signal_hits(features, ["a", "b", "missing"]) == 3
+
+
+def test_fb_search_skips_ssl_when_base_hits_insufficient(tmp_path) -> None:
+    """يوم بلا إشارات FB كافية → لا يبني tick_stream SSL."""
+    nq, _ = _paired_streams(400, seed=9)
+    result = search_fail_breakout_hypotheses(
+        nq,
+        None,
+        specs=core_breakout_grid()[:2],
+        interval_ns=50_000,
+        enhance_with_ssl=True,
+        use_ssl_gate=True,
+        use_depth_filter=False,
+        n_splits=3,
+        n_permutations=0,
+        output_dir=tmp_path / "fb_ssl_skip",
+        quiet=True,
+        progress=False,
+        rng=make_generator(1),
+    )
+    assert result.ssl is None
+    assert result.enhancement_columns == ()
+    assert not any("__enh__" in c for c in result.candidate_columns)
+    assert not any(c.endswith("__ssl") for c in result.candidate_columns)
 
 
 def test_depth_entry_candidates_do_not_invent_signal() -> None:

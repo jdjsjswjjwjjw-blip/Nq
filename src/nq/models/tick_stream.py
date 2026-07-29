@@ -314,14 +314,30 @@ def build_tick_stream(
 ) -> TickStream:
     """يبني تسلسل tick موحّد من MBO خام (NQ + MNQ) مع دفتر حي وميزات inline.
 
+    عندما ``nq is mnq`` (وضع ``nq_only``) يُبنى مسار أداة واحدة دون مضاعفة الأحداث
+    — دفتر MNQ يبقى فارغًا، والمخطط نفسه (أعمدة mnq_* = 0، بلا trap زائف من الذات).
+
     ``progress`` كائن اختياري يدعم ``op`` / ``heartbeat`` (مثل ``PipelineProgress``).
     """
     log = progress
-    if log is not None:
-        log.op(f"دمج NQ+MNQ وترتيب سببي (NQ={nq.height:,} · MNQ={mnq.height:,})")
+    nq_only = nq is mnq
     nq_sorted = sort_causal(nq.with_columns(pl.lit(nq_instrument_id).alias("instrument_id")))
-    mnq_sorted = sort_causal(mnq.with_columns(pl.lit(mnq_instrument_id).alias("instrument_id")))
-    combined = pl.concat([nq_sorted, mnq_sorted], how="vertical").sort([EVENT_TS, SEQUENCE])
+    if nq_only:
+        if log is not None:
+            log.op(
+                f"tick_stream أحادي (nq_only) — {nq.height:,} حدث "
+                "(بدون مضاعفة NQ كـ MNQ)"
+            )
+        combined = nq_sorted
+    else:
+        if log is not None:
+            log.op(f"دمج NQ+MNQ وترتيب سببي (NQ={nq.height:,} · MNQ={mnq.height:,})")
+        mnq_sorted = sort_causal(
+            mnq.with_columns(pl.lit(mnq_instrument_id).alias("instrument_id"))
+        )
+        combined = pl.concat([nq_sorted, mnq_sorted], how="vertical").sort(
+            [EVENT_TS, SEQUENCE]
+        )
 
     nq_book = OrderBook()
     mnq_book = OrderBook()

@@ -42,6 +42,7 @@ from nq.simulation.fvg import NS_PER_MIN, build_ohlcv_bars
 from nq.strategies.depth_entry_filter import (
     DepthEntrySpec,
     attach_depth_path_to_features,
+    count_signal_hits,
     generate_depth_entry_candidates,
 )
 from nq.strategies.fvg_hypothesis import (
@@ -532,47 +533,63 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             candidates.extend(list(depth_cols))
             log.note(f"مرشّحو عمق: {len(depth_cols)} · lean={lean_filters}")
 
+        # SSL يحتاج إشارات أساس كافية لـ WF؛ بدونها التكلفة كارثية بلا قيمة اختيار.
+        min_ssl_hits = max(3, int(n_splits))
+        base_hits = count_signal_hits(features, hyp_cols)
         if need_ssl:
             log.step("تشغيل SSL tick (تمثيلات للتعزيز/البوابة)", f"window={ssl_window}")
-            ssl_result = run_ssl_tick_pipeline(
-                nq_frame,
-                mnq_frame,
-                window=ssl_window,
-                n_components=ssl_components,
-                n_splits=max(2, n_splits),
-                alpha=alpha,
-                rng=generator,
-                progress=log,
-            )
+            if base_hits < min_ssl_hits:
+                log.note(
+                    f"تخطي SSL — إشارات أساس غير كافية "
+                    f"(hits={base_hits} < {min_ssl_hits})"
+                )
+            else:
+                log.note(f"إشارات أساس: hits={base_hits} ≥ {min_ssl_hits}")
+                ssl_result = run_ssl_tick_pipeline(
+                    nq_frame,
+                    mnq_frame,
+                    window=ssl_window,
+                    n_components=ssl_components,
+                    n_splits=max(2, n_splits),
+                    alpha=alpha,
+                    rng=generator,
+                    progress=log,
+                )
 
-        if enhance_with_ssl and ssl_result is not None:
+        if enhance_with_ssl:
             log.step("توليد مرشّحي تعزيز SSL/سياق/فوليوم", f"bases={len(hyp_cols)}")
-            enh_kwargs: dict[str, object] = {}
-            if lean_filters:
-                enh_kwargs["quantiles"] = LEAN_GATE_QUANTILES
-                enh_kwargs["z_cols"] = LEAN_SSL_Z_COLS
-            features, enh_cols, enh_specs = generate_ssl_enhancement_candidates(
-                features,
-                ssl_result.embeddings,
-                hyp_cols,
-                **enh_kwargs,  # type: ignore[arg-type]
-            )
-            enhancement_columns = enh_cols
-            enhancement_specs = enh_specs
-            candidates.extend(list(enh_cols))
-            log.note(f"تعزيزات مولَّدة: {len(enh_cols)} · lean={lean_filters}")
+            if ssl_result is not None:
+                enh_kwargs: dict[str, object] = {}
+                if lean_filters:
+                    enh_kwargs["quantiles"] = LEAN_GATE_QUANTILES
+                    enh_kwargs["z_cols"] = LEAN_SSL_Z_COLS
+                features, enh_cols, enh_specs = generate_ssl_enhancement_candidates(
+                    features,
+                    ssl_result.embeddings,
+                    hyp_cols,
+                    **enh_kwargs,  # type: ignore[arg-type]
+                )
+                enhancement_columns = enh_cols
+                enhancement_specs = enh_specs
+                candidates.extend(list(enh_cols))
+                log.note(f"تعزيزات مولَّدة: {len(enh_cols)} · lean={lean_filters}")
+            else:
+                log.note("تخطي التعزيز — لا تمثيلات SSL")
 
-        if use_ssl_gate and ssl_result is not None:
+        if use_ssl_gate:
             log.step("بوابة SSL كلاسيكية على الأساس", f"q={_SSL_GATE_QUANTILE}")
-            features, gated = apply_causal_ssl_gate(
-                features,
-                ssl_result.embeddings,
-                hyp_cols,
-                z_col="z0",
-                quantile=_SSL_GATE_QUANTILE,
-            )
-            candidates.extend(list(gated))
-            log.note(f"أعمدة بوابة: {len(gated)}")
+            if ssl_result is not None:
+                features, gated = apply_causal_ssl_gate(
+                    features,
+                    ssl_result.embeddings,
+                    hyp_cols,
+                    z_col="z0",
+                    quantile=_SSL_GATE_QUANTILE,
+                )
+                candidates.extend(list(gated))
+                log.note(f"أعمدة بوابة: {len(gated)}")
+            else:
+                log.note("تخطي البوابة — لا تمثيلات SSL")
 
         seen: set[str] = set()
         uniq: list[str] = []

@@ -62,3 +62,18 @@ def test_market_phase_values() -> None:
     assert phases.issubset(
         {int(MarketPhase.BALANCE), int(MarketPhase.EXPANSION), int(MarketPhase.NEUTRAL)}
     )
+
+
+def test_nq_only_tick_stream_does_not_double_events() -> None:
+    """nq is mnq → مسار أحادي؛ لا مضاعفة الأحداث ولا trap من الذات."""
+    nq, _ = _paired_mbo(6)
+    dual = build_tick_stream(nq, nq.clone())  # كائنان مختلفان → مسار ثنائي
+    single = build_tick_stream(nq, nq)  # نفس الكائن → nq_only
+    assert single.height == nq.height
+    assert dual.height == 2 * nq.height
+    assert "nq_best_bid_norm" in single.frame.columns
+    assert "mnq_best_bid_norm" in single.frame.columns
+    # دفتر MNQ فارغ في المسار الأحادي
+    assert float(single.frame["mnq_best_bid_norm"].abs().max()) == 0.0
+    assert set(single.frame["mask_path"].to_list()).issubset({int(MaskPath.STANDALONE)})
+

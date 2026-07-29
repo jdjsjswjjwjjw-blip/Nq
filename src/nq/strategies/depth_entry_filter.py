@@ -41,16 +41,20 @@ class DepthEntrySpec:
 
 def _signals_all_zero(features: pl.DataFrame, signal_columns: Sequence[str]) -> bool:
     """True إذا لا توجد إشارة غير صفرية في الأعمدة المعطاة."""
+    return count_signal_hits(features, signal_columns) == 0
+
+
+def count_signal_hits(
+    features: pl.DataFrame, signal_columns: Sequence[str]
+) -> int:
+    """عدد الصفوف التي فيها إشارة غير صفرية في أي عمود من ``signal_columns``."""
     cols = [c for c in signal_columns if c in features.columns]
-    if not cols:
-        return True
-    for c in cols:
-        has_signal = features.select(
-            (pl.col(c).fill_null(0.0).abs() > 0.0).any().alias("_any")
-        )["_any"][0]
-        if bool(has_signal):
-            return False
-    return True
+    if not cols or features.height == 0:
+        return 0
+    hit = pl.any_horizontal(
+        [(pl.col(c).fill_null(0.0).abs() > 0.0) for c in cols]
+    )
+    return int(features.select(hit.sum().alias("_n"))["_n"][0])
 
 
 def attach_depth_path_to_features(
@@ -159,5 +163,6 @@ def generate_depth_entry_candidates(
 __all__ = [
     "DepthEntrySpec",
     "attach_depth_path_to_features",
+    "count_signal_hits",
     "generate_depth_entry_candidates",
 ]
