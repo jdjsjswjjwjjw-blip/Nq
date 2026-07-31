@@ -20,17 +20,18 @@ import json
 import os
 import re
 import traceback
+from collections import Counter
+from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from hashlib import blake2b
 from pathlib import Path
-from typing import Any, Literal, Sequence
+from typing import Any, Literal
 
 FbDayMode = Literal["search", "unified"]
 
-_DAY_STEM_RE = re.compile(
-    r"(?P<date>\d{4}[-_]?\d{2}[-_]?\d{2})|(?P<ymd>\d{8})"
-)
+_YMD_DIGIT_LEN = 8
+_DAY_STEM_RE = re.compile(r"(?P<date>\d{4}[-_]?\d{2}[-_]?\d{2})|(?P<ymd>\d{8})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,8 +129,6 @@ class DayParallelManifest:
             )
         ok_specs = [r.best_oos_spec for r in self.results if r.ok and r.best_oos_spec]
         if ok_specs:
-            from collections import Counter
-
             counts = Counter(ok_specs)
             lines.extend(["", "## Descriptive frequency of daily winners (not a selector)", ""])
             for spec, n in counts.most_common():
@@ -153,7 +152,7 @@ def day_id_from_path(path: Path) -> str:
         return stem
     raw = match.group("date") or match.group("ymd") or stem
     digits = re.sub(r"\D", "", raw)
-    if len(digits) == 8:
+    if len(digits) == _YMD_DIGIT_LEN:
         return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
     return raw.replace("_", "-")
 
@@ -288,7 +287,8 @@ def _run_one_day(payload: dict[str, Any]) -> DayJobResult:
             n_features=int(result.features.height),
             seed=seed,
         )
-    except Exception as exc:  # noqa: BLE001 — نُبلّغ اليوم الفاشل دون إسقاط الشهر كله افتراضيًا
+    except Exception as exc:
+        # نُبلّغ اليوم الفاشل دون إسقاط الشهر كله افتراضيًا
         return DayJobResult(
             day_id=day_id,
             ok=False,
@@ -301,7 +301,7 @@ def _run_one_day(payload: dict[str, Any]) -> DayJobResult:
         )
 
 
-def run_fail_breakout_day_parallel(  # noqa: PLR0913
+def run_fail_breakout_day_parallel(
     days: Sequence[DayInput],
     *,
     output_root: Path | str,

@@ -136,9 +136,7 @@ class DevelopingVolumeProfile:
         if not self._levels:
             return pl.DataFrame(schema={"price": pl.Int64(), "volume": pl.Int64()})
         prices = sorted(self._levels)
-        return pl.DataFrame(
-            {"price": prices, "volume": [self._levels[p] for p in prices]}
-        )
+        return pl.DataFrame({"price": prices, "volume": [self._levels[p] for p in prices]})
 
     def value_area(self) -> ValueArea | None:
         """POC/VAH/VAL من الحالة الحالية (مع كاش صالح حتى الصفقة التالية)."""

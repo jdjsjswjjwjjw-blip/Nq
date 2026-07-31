@@ -324,20 +324,13 @@ def build_tick_stream(
     nq_sorted = sort_causal(nq.with_columns(pl.lit(nq_instrument_id).alias("instrument_id")))
     if nq_only:
         if log is not None:
-            log.op(
-                f"tick_stream أحادي (nq_only) — {nq.height:,} حدث "
-                "(بدون مضاعفة NQ كـ MNQ)"
-            )
+            log.op(f"tick_stream أحادي (nq_only) — {nq.height:,} حدث (بدون مضاعفة NQ كـ MNQ)")
         combined = nq_sorted
     else:
         if log is not None:
             log.op(f"دمج NQ+MNQ وترتيب سببي (NQ={nq.height:,} · MNQ={mnq.height:,})")
-        mnq_sorted = sort_causal(
-            mnq.with_columns(pl.lit(mnq_instrument_id).alias("instrument_id"))
-        )
-        combined = pl.concat([nq_sorted, mnq_sorted], how="vertical").sort(
-            [EVENT_TS, SEQUENCE]
-        )
+        mnq_sorted = sort_causal(mnq.with_columns(pl.lit(mnq_instrument_id).alias("instrument_id")))
+        combined = pl.concat([nq_sorted, mnq_sorted], how="vertical").sort([EVENT_TS, SEQUENCE])
 
     nq_book = OrderBook()
     mnq_book = OrderBook()

@@ -50,9 +50,7 @@ def test_attach_depth_skips_when_base_signals_zero() -> None:
             "sig": [0.0, 0.0, 0.0, 0.0, 0.0],
         }
     )
-    joined = attach_depth_path_to_features(
-        clock, nq, interval_ns=10_000, signal_columns=["sig"]
-    )
+    joined = attach_depth_path_to_features(clock, nq, interval_ns=10_000, signal_columns=["sig"])
     assert "depth_path_pressure" not in joined.columns
     assert joined.height == clock.height
 
@@ -174,9 +172,7 @@ def test_breakout_search_with_depth_filter_smoke() -> None:
     )
     assert result.features.height >= 1
     base_cols = [c for c in result.candidate_columns if "__depth__" not in c]
-    has_base = any(
-        float(result.features[c].fill_null(0.0).abs().sum()) > 0.0 for c in base_cols
-    )
+    has_base = any(float(result.features[c].fill_null(0.0).abs().sum()) > 0.0 for c in base_cols)
     if has_base:
         assert any("__depth__" in c for c in result.candidate_columns)
         assert "depth_path_pressure" in result.features.columns
@@ -201,9 +197,7 @@ def test_fvg_search_with_depth_filter_smoke() -> None:
     )
     assert result.features.height >= 1
     base_cols = [c for c in result.candidate_columns if "__depth__" not in c]
-    has_base = any(
-        float(result.features[c].fill_null(0.0).abs().sum()) > 0.0 for c in base_cols
-    )
+    has_base = any(float(result.features[c].fill_null(0.0).abs().sum()) > 0.0 for c in base_cols)
     if has_base:
         assert any("__depth__" in c for c in result.candidate_columns)
     else:
@@ -218,8 +212,6 @@ def test_attach_depth_runs_when_signal_nonzero() -> None:
             "sig": [1.0, 0.0, -1.0, 1.0, 0.0],
         }
     )
-    joined = attach_depth_path_to_features(
-        clock, nq, interval_ns=10_000, signal_columns=["sig"]
-    )
+    joined = attach_depth_path_to_features(clock, nq, interval_ns=10_000, signal_columns=["sig"])
     assert "depth_path_pressure" in joined.columns
     assert joined.height == clock.height

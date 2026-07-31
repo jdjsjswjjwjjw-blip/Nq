@@ -82,9 +82,7 @@ def build_sequences(
         times = np.empty(0, dtype=np.int64)
     else:
         # sliding_window_view(..., axis=0) → (n-w+1, n_features, window)
-        windows = np.lib.stride_tricks.sliding_window_view(
-            values, window_shape=window, axis=0
-        )
+        windows = np.lib.stride_tricks.sliding_window_view(values, window_shape=window, axis=0)
         x = np.ascontiguousarray(np.transpose(windows[::stride], (0, 2, 1)))
         times = times_all[ends]
         if progress is not None:

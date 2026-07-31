@@ -154,7 +154,7 @@ def _depth_bar_empty_schema(*, n_levels: int) -> dict[str, pl.DataType]:
     return empty_schema
 
 
-def depth_at_bar_close_multi(
+def depth_at_bar_close_multi(  # noqa: PLR0912, PLR0915
     frame: pl.DataFrame,
     *,
     interval_ns_list: Sequence[int],
@@ -191,9 +191,7 @@ def depth_at_bar_close_multi(
     log = progress
     if log is not None:
         iv_txt = ",".join(str(iv) for iv in intervals)
-        log.op(
-            f"depth_at_bar_close_multi: {n:,} حدث → فواصل [{iv_txt}] · L1–L{n_levels}"
-        )
+        log.op(f"depth_at_bar_close_multi: {n:,} حدث → فواصل [{iv_txt}] · L1–L{n_levels}")
 
     rows_by_iv: dict[int, list[dict[str, float | int | None]]] = {iv: [] for iv in intervals}
     current_bucket: dict[int, int | None] = dict.fromkeys(intervals)
@@ -239,9 +237,7 @@ def depth_at_bar_close_multi(
         if log is not None:
             log.op(f"depth_at_bar_close[{interval_ns}]: {len(rows):,} شمعة بعمق")
         out[interval_ns] = (
-            pl.DataFrame(rows).sort(AVAILABILITY_TS)
-            if rows
-            else pl.DataFrame(schema=empty_schema)
+            pl.DataFrame(rows).sort(AVAILABILITY_TS) if rows else pl.DataFrame(schema=empty_schema)
         )
     return out
 

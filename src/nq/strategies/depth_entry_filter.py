@@ -44,16 +44,12 @@ def _signals_all_zero(features: pl.DataFrame, signal_columns: Sequence[str]) -> 
     return count_signal_hits(features, signal_columns) == 0
 
 
-def count_signal_hits(
-    features: pl.DataFrame, signal_columns: Sequence[str]
-) -> int:
+def count_signal_hits(features: pl.DataFrame, signal_columns: Sequence[str]) -> int:
     """عدد الصفوف التي فيها إشارة غير صفرية في أي عمود من ``signal_columns``."""
     cols = [c for c in signal_columns if c in features.columns]
     if not cols or features.height == 0:
         return 0
-    hit = pl.any_horizontal(
-        [(pl.col(c).fill_null(0.0).abs() > 0.0) for c in cols]
-    )
+    hit = pl.any_horizontal([(pl.col(c).fill_null(0.0).abs() > 0.0) for c in cols])
     return int(features.select(hit.sum().alias("_n"))["_n"][0])
 
 

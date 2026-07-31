@@ -208,4 +208,3 @@ def test_understanding_on_search_feature_schema(tmp_path: Path) -> None:
     paths = write_understanding_outputs(report, tmp_path)
     assert (tmp_path / "understanding" / "report.md").is_file()
     assert "ablation" in paths
-

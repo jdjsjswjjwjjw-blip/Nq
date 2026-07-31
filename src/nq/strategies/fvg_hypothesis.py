@@ -571,10 +571,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
             min_ssl_hits = max(3, int(n_splits))
             base_hits = count_signal_hits(features, hyp_cols)
             if base_hits < min_ssl_hits:
-                log.note(
-                    f"تخطي SSL — إشارات أساس غير كافية "
-                    f"(hits={base_hits} < {min_ssl_hits})"
-                )
+                log.note(f"تخطي SSL — إشارات أساس غير كافية (hits={base_hits} < {min_ssl_hits})")
             else:
                 log.note(f"إشارات أساس: hits={base_hits} ≥ {min_ssl_hits}")
                 ssl_result = run_ssl_tick_pipeline(

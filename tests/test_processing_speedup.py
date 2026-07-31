@@ -68,9 +68,7 @@ def test_depth_multi_matches_single_passes() -> None:
     nq, _ = _paired_streams(400, seed=17)
     interval_a = 1_000_000_000
     interval_b = 30 * 60 * 1_000_000_000
-    multi = depth_at_bar_close_multi(
-        nq, interval_ns_list=(interval_a, interval_b), n_levels=5
-    )
+    multi = depth_at_bar_close_multi(nq, interval_ns_list=(interval_a, interval_b), n_levels=5)
     single_a = depth_at_bar_close(nq, interval_ns=interval_a, n_levels=5)
     single_b = depth_at_bar_close(nq, interval_ns=interval_b, n_levels=5)
     assert multi[interval_a].equals(single_a)
@@ -101,8 +99,9 @@ def test_tick_stream_reuse_identical_frame() -> None:
         ("T", "A", 20_001_000_000, 1, 0),
     ]
     ts = [0, 1, 2, 3, 4]
-    nq = make_stream(events, instrument_id=1, symbol="NQ", event_ts=ts, sequence=list(range(1, 6)))
-    mnq = make_stream(events, instrument_id=2, symbol="MNQ", event_ts=ts, sequence=list(range(1, 6)))
+    seq = list(range(1, 6))
+    nq = make_stream(events, instrument_id=1, symbol="NQ", event_ts=ts, sequence=seq)
+    mnq = make_stream(events, instrument_id=2, symbol="MNQ", event_ts=ts, sequence=seq)
     a = build_tick_stream(nq, mnq)
     b = build_tick_stream(nq, mnq)
     assert a.frame.equals(b.frame)

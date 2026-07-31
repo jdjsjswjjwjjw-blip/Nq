@@ -33,7 +33,7 @@ class OrderBook:
     * ``_bid_vol`` / ``_ask_vol``: مجموع الحجم لكل جانب (للـ trail بنفس الأرقام).
     """
 
-    __slots__ = ("asks", "bids", "orders", "unknown_order_refs", "_ask_vol", "_bid_vol")
+    __slots__ = ("_ask_vol", "_bid_vol", "asks", "bids", "orders", "unknown_order_refs")
 
     def __init__(self) -> None:
         self.bids: dict[int, int] = {}

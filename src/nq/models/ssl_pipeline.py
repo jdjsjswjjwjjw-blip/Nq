@@ -372,7 +372,7 @@ def _evaluate_ssl_tick_fold(
     return _FoldMetrics(fold_idx, mse, wm_r2, contrastive, emb_rows)
 
 
-def run_ssl_tick_pipeline(
+def run_ssl_tick_pipeline(  # noqa: PLR0912
     nq: pl.DataFrame,
     mnq: pl.DataFrame,
     *,
