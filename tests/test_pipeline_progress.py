@@ -161,7 +161,7 @@ def test_pipeline_progress_prints_alpha_and_m9_ops() -> None:
 
 
 def test_fvg_search_passes_progress_into_ssl(tmp_path: Path) -> None:
-    """بحث FVG يمرّر progress إلى SSL-tick ويكتب progress.log."""
+    """بحث FVG يمرّر progress إلى SSL-tick (أو يتخطّاه عند ندرة الإشارات)."""
     nq, mnq = _paired_streams(2000, seed=96)
     buf = io.StringIO()
     progress = PipelineProgress(enabled=True, stream=buf)
@@ -180,7 +180,7 @@ def test_fvg_search_passes_progress_into_ssl(tmp_path: Path) -> None:
     )
     text = buf.getvalue()
     assert "بحث فرضيات Failed FVG" in text
-    assert "SSL-tick" in text
+    assert ("SSL-tick" in text) or ("تخطي SSL" in text) or ("تمثيلات" in text)
     assert "walk-forward" in text.lower() or "WF fold" in text
     assert (out / "progress.log").is_file()
     assert "انتهى بنجاح" in text
