@@ -208,10 +208,13 @@ def default_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
 
 
 def core_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
-    """نواة مضغوطة: وضع فوليوم واحد لكل عائلة + تعزيزات SSL لاحقًا."""
+    """نواة مضغوطة: وضع فوليوم واحد لكل عائلة + تعزيزات SSL لاحقًا.
+
+    الافتراضي ``nosma`` مناسب لشرائح يومية (day-parallel)؛ SMA يتكيّف إن فُعّل.
+    """
     return (
         BreakoutHypothesisSpec(
-            name="core_bar_vw20_v1p5_sma",
+            name="core_bar_vw20_v1p5_nosma",
             signal_interval_ns=30 * NS_PER_MIN,
             trend_interval_ns=60 * NS_PER_MIN,
             lookback=5,
@@ -219,10 +222,10 @@ def core_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
             vol_mode="bar",
             vol_window=20,
             vol_mult=1.5,
-            require_sma_filter=True,
+            require_sma_filter=False,
         ),
         BreakoutHypothesisSpec(
-            name="core_cum_vw20_v1p5_sma",
+            name="core_cum_vw20_v1p5_nosma",
             signal_interval_ns=30 * NS_PER_MIN,
             trend_interval_ns=60 * NS_PER_MIN,
             lookback=5,
@@ -231,7 +234,7 @@ def core_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
             vol_window=20,
             vol_mult=1.5,
             cum_window=5,
-            require_sma_filter=True,
+            require_sma_filter=False,
         ),
         BreakoutHypothesisSpec(
             name="core_delta_vw20_v1p5_nosma",
@@ -245,7 +248,7 @@ def core_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
             require_sma_filter=False,
         ),
         BreakoutHypothesisSpec(
-            name="core_effort_result_vw20_er1p5_sma",
+            name="core_effort_result_vw20_er1p5_nosma",
             signal_interval_ns=30 * NS_PER_MIN,
             trend_interval_ns=60 * NS_PER_MIN,
             lookback=5,
@@ -254,10 +257,10 @@ def core_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
             vol_window=20,
             vol_mult=1.5,
             result_mult=1.5,
-            require_sma_filter=True,
+            require_sma_filter=False,
         ),
         BreakoutHypothesisSpec(
-            name="core15_bar_vw10_v1p2_sma",
+            name="core15_bar_vw10_v1p2_nosma",
             signal_interval_ns=15 * NS_PER_MIN,
             trend_interval_ns=60 * NS_PER_MIN,
             lookback=3,
@@ -265,7 +268,7 @@ def core_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
             vol_mode="bar",
             vol_window=10,
             vol_mult=1.2,
-            require_sma_filter=True,
+            require_sma_filter=False,
         ),
         BreakoutHypothesisSpec(
             name="core15_effort_result_vw40_er1p8_nosma",
@@ -329,6 +332,9 @@ def volume_hold_compose_grid() -> tuple[BreakoutHypothesisSpec, ...]:
         for lb in lookbacks:
             for mode in vol_modes:
                 for hold in hold_modes:
+                    # absorption ≡ جهد effort_result — تجنّب تضخيم ميزانية الاختيار
+                    if mode == "effort_result" and hold == "absorption":
+                        continue
                     for vw, vm, rm, cw in vol_profiles:
                         name = (
                             f"vh_s{sig_m}_lb{lb}_{mode}_hold{hold}_"
@@ -366,6 +372,8 @@ def core_volume_hold_grid() -> tuple[BreakoutHypothesisSpec, ...]:
     for sig_m, lb, vw, vm, rm, cw in frames:
         for mode in vol_modes:
             for hold in hold_modes:
+                if mode == "effort_result" and hold == "absorption":
+                    continue
                 name = f"vhcore_s{sig_m}_{mode}_hold{hold}"
                 specs.append(
                     BreakoutHypothesisSpec(
@@ -394,12 +402,11 @@ def materialize_breakout_hypotheses(
     clock: pl.DataFrame,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """يبني أعمدة فرضيات على ساعة مشتركة (asof خلفي فقط)."""
+    """يبني أعمدة فرضيات على ساعة مشتركة (نبضة تطابقية عند bucket_end)."""
     if AVAILABILITY_TS not in clock.columns:
         raise ValueError(f"clock requires {AVAILABILITY_TS}")
-    left = clock.select(AVAILABILITY_TS).unique().sort(AVAILABILITY_TS)
-    if left.height == 0 or not specs:
-        return left
+    if clock.height == 0 or not specs:
+        return clock
 
     log = progress
     n_specs = len(specs)
@@ -419,7 +426,7 @@ def materialize_breakout_hypotheses(
                 log.op(f"OHLCV جاهز: {cached.height:,} شمعة")
         return cached
 
-    out = left
+    out = clock.sort(AVAILABILITY_TS)
     for i, spec in enumerate(specs, start=1):
         if log is not None:
             log.op(
@@ -456,12 +463,13 @@ def materialize_breakout_hypotheses(
             )
             if col in out.columns:
                 out = out.drop(col)
-            out = out.join_asof(right, on=AVAILABILITY_TS, strategy="backward").with_columns(
+            # join تطابقي — نبضة عند bucket_end فقط (لا sticky asof على ساعة أدق)
+            out = out.join(right, on=AVAILABILITY_TS, how="left").with_columns(
                 pl.col(col).fill_null(0.0)
             )
             if log is not None:
                 n_sig = int((raw["fail_breakout"] != 0).sum())
-                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف")
+                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف (pulse join)")
         if log is not None:
             log.heartbeat(i, n_specs, label="materialize_FB", force=True)
     if log is not None:
@@ -473,10 +481,24 @@ def _attach_volume_context(
     features: pl.DataFrame,
     nq: pl.DataFrame,
     *,
+    signal_interval_ns: int = 30 * NS_PER_MIN,
+    vol_mode: VolMode = "bar",
+    rth_only: bool = False,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """يلحق أعمدة فوليوم سببية افتراضية للتعزيز/السياق (asof خلفي)."""
-    fb = failed_breakout_features(nq, require_sma_filter=False, rth_only=False, progress=progress)
+    """يلحق أعمدة فوليوم سببية للتعزيز/السياق (نبضة تطابقية على إطار الإشارة).
+
+    يستخدم نفس ``signal_interval_ns`` / ``vol_mode`` للنواة قيد البحث حتى لا
+    يُعزَّز مرشّح 15m بسياق 30m افتراضي مختلف.
+    """
+    fb = failed_breakout_features(
+        nq,
+        signal_interval_ns=signal_interval_ns,
+        vol_mode=vol_mode,
+        require_sma_filter=False,
+        rth_only=rth_only,
+        progress=progress,
+    )
     keep = [c for c in (AVAILABILITY_TS, *_VOLUME_FEATURE_COLUMNS) if c in fb.columns]
     if len(keep) < _MIN_VOLUME_KEEP or features.height == 0:
         zeros = [pl.lit(0.0).alias(c) for c in _VOLUME_FEATURE_COLUMNS if c not in features.columns]
@@ -486,7 +508,8 @@ def _attach_volume_context(
     drop = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
     if drop:
         left = left.drop(drop)
-    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
+    # نبضة عند أوقات إشارة السياق فقط
+    joined = left.join(right, on=AVAILABILITY_TS, how="left")
     fills = [pl.col(c).fill_null(0.0) for c in _VOLUME_FEATURE_COLUMNS if c in joined.columns]
     return joined.with_columns(fills) if fills else joined
 
@@ -598,24 +621,45 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             latency_ns=0,
         )
         log.step("تجسيد فرضيات FB الفوليوم", f"specs={len(grid)}")
-        hyp = materialize_breakout_hypotheses(nq_frame, grid, clock=clock, progress=log)
-        base = clock.sort(AVAILABILITY_TS)
+        features = materialize_breakout_hypotheses(nq_frame, grid, clock=clock, progress=log)
         hyp_cols = [s.column() for s in grid]
-        drop = [c for c in hyp_cols if c in base.columns]
-        if drop:
-            base = base.drop(drop)
-        features = base.join_asof(
-            hyp.sort(AVAILABILITY_TS),
-            on=AVAILABILITY_TS,
-            strategy="backward",
-        )
         for col in hyp_cols:
             if col in features.columns:
                 features = features.with_columns(pl.col(col).fill_null(0.0))
 
-        log.step("إلحاق سياق فوليوم سببي (asof خلفي)")
-        features = _attach_volume_context(features, nq_frame, progress=log)
+        # سياق فوليوم بإطار النواة الغالب (لا 30m ثابت يخالف 15m)
+        ctx_interval = int(
+            max((s.signal_interval_ns for s in grid), default=30 * NS_PER_MIN)
+        )
+        ctx_mode: VolMode = "bar"
+        modes = {s.vol_mode for s in grid}
+        if len(modes) == 1:
+            ctx_mode = next(iter(modes))
+        log.step(
+            "إلحاق سياق فوليوم سببي (نبضة تطابقية)",
+            f"interval_ns={ctx_interval} · vol_mode={ctx_mode}",
+        )
+        features = _attach_volume_context(
+            features,
+            nq_frame,
+            signal_interval_ns=ctx_interval,
+            vol_mode=ctx_mode,
+            rth_only=False,
+            progress=log,
+        )
         log.note(f"أعمدة فوليوم: {[c for c in _VOLUME_FEATURE_COLUMNS if c in features.columns]}")
+
+        # أفق التقييم: حاذِ نبضة الإشارة مع ساعة البحث (افتراضيًا)
+        eval_horizon = int(horizon)
+        if eval_horizon <= 1 and interval_ns > 0:
+            aligned = max(1, ctx_interval // interval_ns)
+            if aligned > 1:
+                log.note(
+                    f"محاذاة horizon: {eval_horizon} → {aligned} "
+                    f"(إشارة {ctx_interval}ns / ساعة {interval_ns}ns)"
+                )
+                eval_horizon = aligned
+        horizon = eval_horizon
 
         ssl_result: SSLPipelineResult | None = None
         enhancement_columns: tuple[str, ...] = ()
@@ -625,11 +669,14 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         candidates: list[str] = list(hyp_cols)
 
         if use_depth_filter:
-            log.step("مسار أحداث العمق داخل الشمعة → مرشّحي دخول", f"interval_ns={interval_ns}")
+            log.step(
+                "مسار أحداث العمق داخل شمعة الإشارة → مرشّحي دخول",
+                f"interval_ns={ctx_interval}",
+            )
             features = attach_depth_path_to_features(
                 features,
                 nq_frame,
-                interval_ns=interval_ns,
+                interval_ns=ctx_interval,
                 progress=log,
                 signal_columns=hyp_cols,
             )

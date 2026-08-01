@@ -413,13 +413,17 @@ def _attach_failed_breakout(  # noqa: PLR0915
 
         log.op(f"حساب fb_depth_at_break على {n_fb:,} صف (متّجهي · match≤{match_tol})")
         active = (level_arr > 0) & (signal_arr != 0.0)
+        # NaN = لا تطابق مستوى؛ 0.0 = تطابق بحجم صفر — يُميَّزان عن بعض
+        at_break[:] = np.nan
         _assign(active & (signal_arr < 0), ask_px, ask_sz)
         _assign(active & (signal_arr > 0), bid_px, bid_sz)
+        # صفوف بلا إشارة تبقى بلا عمق عند الكسر
+        at_break[~active] = np.nan
         fb = fb.with_columns(
             pl.Series("fb_depth_at_break", at_break),
-            pl.col("depth_imbalance").fill_null(0.0).alias("fb_depth_imbalance"),
-            pl.col("depth_cum_bid").fill_null(0.0).alias("fb_depth_cum_bid"),
-            pl.col("depth_cum_ask").fill_null(0.0).alias("fb_depth_cum_ask"),
+            pl.col("depth_imbalance").alias("fb_depth_imbalance"),
+            pl.col("depth_cum_bid").alias("fb_depth_cum_bid"),
+            pl.col("depth_cum_ask").alias("fb_depth_cum_ask"),
         )
         log.op("أعمدة عمق FB جاهزة (at_break / imbalance / cum)")
     else:
@@ -437,8 +441,22 @@ def _attach_failed_breakout(  # noqa: PLR0915
     drop_existing = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
     if drop_existing:
         left = left.drop(drop_existing)
-    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
-    fills = [pl.col(c).fill_null(0.0) for c in _FB_SIGNAL_COLUMNS if c in joined.columns]
+    # نبضة تطابقية عند إغلاق شمعة الإشارة — لا sticky asof على ساعة البحث
+    joined = left.join(right, on=AVAILABILITY_TS, how="left")
+    # صفر للإشارة الاتجاهية فقط؛ عمق/جهد يبقيان null إن غاب التطابق
+    zero_ok = {
+        "fail_breakout",
+        "fb_vol_imbalance",
+        "fb_delta",
+        "fb_cum_delta",
+        "fb_absorption",
+        "fb_depth_imbalance",
+    }
+    fills = [
+        pl.col(c).fill_null(0.0)
+        for c in _FB_SIGNAL_COLUMNS
+        if c in joined.columns and c in zero_ok
+    ]
     return joined.with_columns(fills) if fills else joined
 
 

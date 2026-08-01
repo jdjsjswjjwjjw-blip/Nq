@@ -10,23 +10,26 @@
   - ``effort_result``: جهد حجم عالٍ مع نتيجة سعرية ضعيفة
     (امتصاص = volume/(range+ε) أعلى من ماضٍ) — جهد بلا نتيجة.
 * أولوية الإشارة (``priority``):
-  - ``structure_first``: الكسر الفاشل أولًا ثم بوابة فوليوم (الافتراضي التاريخي).
-  - ``volume_first``: حدث الفوليوم يولّد المرشّح ثم بنية الكسر تؤكّد.
+  - ``structure_first``: كسر فاشل + جهد سعري (range) ثم بوابة فوليوم.
+  - ``volume_first``: حدث الفوليوم + بنية الكسر الفاشل (بلا إلزام range_ok).
 * أوضاع hold سببية عند الدخول (لا look-ahead للخروج):
   - ``none``: بلا شرط hold إضافي.
   - ``persist``: جهد حجم الشمعة السابقة مرتفع أيضًا (بناء/استمرار فوليوم).
   - ``absorption``: امتصاص عالٍ = حجم يُمسَك بلا نتيجة سعرية.
+    (يُتخطّى مع ``vol_mode=effort_result`` في الشبكات — تكرار دلالي).
   - ``imbalance``: اختلال تدفق يتفق مع فشل الكسر.
 * كسر لأعلى ثم إغلاق تحت مستوى آخر N شموع مكتملة → SHORT.
 * كسر لأسفل ثم إغلاق فوق المستوى → LONG.
-* تأكيد اتجاه اختياري عبر SMA على إطار أعلى (asof خلفي).
+* تأكيد اتجاه اختياري عبر SMA على إطار أعلى (asof خلفي؛ يتكيّف مع قصر السلسلة).
 
 إصلاح تسريب/وهم الدخول:
 
 * الإشارة تُعلن عند ``availability_ts = bucket_end`` (إغلاق الشمعة).
-* ``fail_breakout`` اتجاه فقط ∈ {-1,0,+1} — التقييم عبر مسار الألفا.
+* ``fail_breakout`` اتجاه فقط ∈ {-1,0,+1} — **نبضة عند إغلاق الشمعة** (ليست
+  نظامًا sticky عبر asof على ساعة أدق).
 * ``fb_break_level`` تحليلي؛ ``fb_entry_ref`` = إغلاق شمعة الإشارة.
-* أفق الـ hold التنفيذي يُحدَّد عند التقييم (``--horizon``) — ليس داخل الميزة.
+* أفق الـ hold التنفيذي يُحدَّد عند التقييم (``--horizon``) — يُحاذى افتراضيًا
+  مع إطار الإشارة على ساعة البحث.
 """
 
 from __future__ import annotations
@@ -58,7 +61,7 @@ _DEFAULT_VOL_MULT = 1.2
 _DEFAULT_RESULT_MULT = 1.2
 _DEFAULT_IMBALANCE_MIN = 0.15
 _PERSIST_FRACTION = 0.85
-_MIN_BARS = 30
+_MIN_BARS = 12  # lookback+هوامش؛ أيام RTH القصيرة على 30m ≈ 13 شمعة
 _EPS = 1e-9
 
 _EMPTY_FB_SCHEMA: Final[dict[str, pl.DataType]] = {
@@ -133,15 +136,22 @@ def _with_volume_baselines(
 
 
 def _sma_frame(higher: pl.DataFrame, *, period: int) -> pl.DataFrame:
-    """SMA على إغلاق إطار أعلى؛ متاح عند إغلاق شمعة SMA فقط."""
+    """SMA على إغلاق إطار أعلى؛ متاح عند إغلاق شمعة SMA فقط.
+
+    يتكيّف ``period`` مع طول السلسلة حتى لا يموت الفلتر على يوم واحد
+    (Globex ≈ 23×1H < SMA50 التاريخي).
+    """
     if higher.height == 0:
         return pl.DataFrame(schema={AVAILABILITY_TS: pl.Int64(), "sma": pl.Float64()})
+    # على سلاسل قصيرة: لا تطلب أكثر من نصف العيّنة
+    effective = int(min(max(period, 3), max(3, higher.height // 2)))
+    min_samples = max(3, effective // 2)
     return (
         higher.sort(BUCKET_START)
         .with_columns(
             pl.col("c")
             .shift(1)
-            .rolling_mean(window_size=period, min_samples=max(5, period // 2))
+            .rolling_mean(window_size=effective, min_samples=min_samples)
             .alias("sma")
         )
         .select(pl.col(AVAILABILITY_TS), "sma")
@@ -257,13 +267,22 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
         vol_window=vol_window,
         cum_window=cum_window,
     )
+    sma_active = False
     if require_sma_filter and trend_bars is not None and trend_bars.height > 0:
         sma = _sma_frame(trend_bars, period=sma_period)
-        work = work.join_asof(
-            sma.sort(AVAILABILITY_TS),
-            on=AVAILABILITY_TS,
-            strategy="backward",
-        )
+        if sma.height > 0:
+            work = work.join_asof(
+                sma.sort(AVAILABILITY_TS),
+                on=AVAILABILITY_TS,
+                strategy="backward",
+            )
+            sma_active = True
+        elif progress is not None:
+            progress.op(
+                "failed_breakout_from_bars: SMA غير جاهز على السلسلة القصيرة — "
+                "متابعة بلا فلتر SMA (بدل إسقاط كل الإشارات)"
+            )
+            work = work.with_columns(pl.lit(None).cast(pl.Float64()).alias("sma"))
     else:
         work = work.with_columns(pl.lit(None).cast(pl.Float64()).alias("sma"))
 
@@ -309,7 +328,9 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
             continue
 
         avail = int(avails[j])
-        if rth_only and session_phase_from_ns(avail) == int(SessionPhase.ETH):
+        # صنّف الجلسة ببداية الشمعة — إغلاق 16:00 ET لشمعة RTH لا يُسقِطها كـ ETH
+        bar_start = int(starts[j])
+        if rth_only and session_phase_from_ns(bar_start) == int(SessionPhase.ETH):
             continue
 
         vol_j = float(volumes[j])
@@ -349,8 +370,8 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
         c = float(closes[j])
         sma = smas[j]
 
-        sma_ok_short = (not require_sma_filter) or (sma is not None and c < float(sma))
-        sma_ok_long = (not require_sma_filter) or (sma is not None and c > float(sma))
+        sma_ok_short = (not sma_active) or (sma is not None and c < float(sma))
+        sma_ok_long = (not sma_active) or (sma is not None and c > float(sma))
         struct_short = h > prior_h and c < prior_h and sma_ok_short
         struct_long = low_j < prior_l and c > prior_l and sma_ok_long
 
@@ -391,9 +412,10 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
                 imbalance_min=imbalance_min,
             )
             if priority == "volume_first":
-                # الفوليوم يولّد؛ البنية + المدى يؤكّدان؛ hold جودة الدخول
-                accepted = vol_ok and range_ok and hold_ok
+                # الفوليوم + بنية الكسر؛ المدى السعري اختياري (ليس شرطًا)
+                accepted = vol_ok and hold_ok
             else:
+                # structure_first: range فُرض أعلاه
                 accepted = vol_ok and hold_ok
             if accepted:
                 signal = side

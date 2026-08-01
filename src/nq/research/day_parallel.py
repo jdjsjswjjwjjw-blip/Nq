@@ -265,15 +265,18 @@ def _run_one_day(payload: dict[str, Any]) -> DayJobResult:
                 seed=seed,
             )
 
+        from nq.core.determinism import make_generator  # noqa: PLC0415
         from nq.strategies.fail_breakout import run_fail_breakout_research  # noqa: PLC0415
 
         unified_result = run_fail_breakout_research(
             nq_path,
             mnq_path,
             horizon=int(payload.get("horizon", 1)),
+            n_permutations=int(payload.get("n_permutations", 2000)),
             max_rows=payload.get("max_rows"),
             output_dir=out,
             quiet=quiet,
+            rng=make_generator(seed),
         )
         return DayJobResult(
             day_id=day_id,

@@ -283,13 +283,16 @@ def test_hold_persist_is_stricter_than_none() -> None:
 def test_volume_hold_compose_grid_all_volume_first() -> None:
     compose = volume_hold_compose_grid()
     core = core_volume_hold_grid()
-    assert len(compose) == 2 * 2 * 4 * 4 * 2  # sig × lb × mode × hold × profile
-    assert len(core) == 2 * 4 * 4
+    # effort_result × absorption يُستبعد (تكرار دلالي) → 3 holds لتلك العائلة
+    # sig×lb×(3 modes×4 holds + 1 mode×3 holds)×profiles
+    assert len(compose) == 2 * 2 * (3 * 4 + 3) * 2
+    assert len(core) == 2 * (3 * 4 + 3)
     assert all(s.priority == "volume_first" for s in compose)
     assert all(s.priority == "volume_first" for s in core)
     holds = {s.hold_mode for s in compose}
     assert holds == {"none", "persist", "absorption", "imbalance"}
     assert all(not s.require_sma_filter for s in compose)
+    assert not any(s.vol_mode == "effort_result" and s.hold_mode == "absorption" for s in compose)
 
 
 def test_ohlcv_bars_include_flow_columns() -> None:

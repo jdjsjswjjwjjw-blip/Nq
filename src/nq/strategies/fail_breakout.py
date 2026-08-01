@@ -1,8 +1,11 @@
 """Failed Breakout كطبقة بحث داخل الخط الموحّد.
 
 أمر تشغيل منفصل يمرّ بنفس المحرك: ميزات + SSL ‖ M9 ‖ ألفا + مخرجات.
-يضيّق الفرز على ``fail_breakout`` — مع دخول سببي (إغلاق الشمعة) بلا ملء
-وهمي عند مستوى الكسر.
+يضيّق الفرز على إشارات **اتجاهية** لـ Failed Breakout — مع دخول سببي
+(إغلاق الشمعة / نبضة) بلا ملء وهمي عند مستوى الكسر.
+
+ملاحظة: المسار الافتراضي هنا شاشة عيّنة كاملة استكشافية؛ الحكم الإحصائي
+لاختيار الفرضية عبر ``--search`` / ``search_fail_breakout_hypotheses``.
 """
 
 from __future__ import annotations
@@ -24,23 +27,14 @@ from nq.research.orchestrator import (
 from nq.research.unified import UnifiedResearchReport
 
 _FAIL_BREAKOUT_FOCUS = (
+    # إشارات اتجاهية فقط — لا أحجام/مستويات موجبة دائمًا كـ «ألفا»
     "fail_breakout",
-    "fb_effort_range_ratio",
-    "fb_effort_volume_ratio",
-    "fb_effort_result_ratio",
-    "fb_bar_volume",
-    "fb_cum_volume",
+    "fb_vol_imbalance",
     "fb_delta",
     "fb_cum_delta",
-    "fb_vol_imbalance",
     "fb_absorption",
-    "fb_depth_at_break",
     "fb_depth_imbalance",
-    "fb_depth_cum_bid",
-    "fb_depth_cum_ask",
     "depth_imbalance",
-    "depth_cum_bid",
-    "depth_cum_ask",
     "trap_setup",
     "nq_delta",
     "mnq_delta",
