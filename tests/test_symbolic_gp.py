@@ -11,6 +11,7 @@ pytest.importorskip("gplearn")
 pytest.importorskip("sklearn")
 
 from nq.alpha.symbolic_gp import (
+    default_symbolic_feature_columns,
     discover_symbolic_on_train,
     evolve_deap,
     evolve_gplearn,
@@ -24,6 +25,28 @@ from nq.contracts.temporal import AVAILABILITY_TS
 
 def test_require_gp_deps_ok() -> None:
     require_gp_deps()
+
+
+def test_default_symbolic_features_use_vp_ontology() -> None:
+    cols = default_symbolic_feature_columns()
+    assert "vp_balance" in cols
+    assert "nq_delta" in cols
+    # لا تخلط مسار التيك VA مع vp_*
+    for banned in ("near_vah", "in_value_area", "poc_dist_norm"):
+        assert banned not in cols
+
+
+def test_unique_name_stable_across_calls() -> None:
+    from nq.alpha.symbolic_gp import _unique_name
+
+    a = _unique_name("sym_deap", "add(nq_delta, mnq_delta)", set())
+    b = _unique_name("sym_deap", "add(nq_delta, mnq_delta)", set())
+    assert a == b
+    assert a.startswith("sym_deap__")
+    used: set[str] = {a}
+    c = _unique_name("sym_deap", "add(nq_delta, mnq_delta)", used)
+    assert c != a
+    assert c.startswith("sym_deap__")
 
 
 def test_protected_div_scalar_and_array() -> None:
@@ -102,13 +125,37 @@ def test_search_symbolic_hypotheses_walk_forward() -> None:
         max_depth=2,
         n_programs=1,
         n_permutations=20,
+        selection_aware_null=True,
         seed=3,
     )
     assert result.fold_selections.height >= 1
     assert result.oos_n >= 0
+    assert 0.0 <= result.oos_pvalue <= 1.0
     assert all(p.backend in {"deap", "gplearn"} for p in result.programs)
     for p in result.programs:
         assert "if" not in p.expression.lower()
+
+
+def test_search_symbolic_respects_embargo_and_purge() -> None:
+    frame = _toy_frame(200, seed=11)
+    result = search_symbolic_hypotheses(
+        frame,
+        ["nq_delta", "mnq_delta", "trap_setup"],
+        price_col="nq_close",
+        backend="gplearn",
+        n_splits=2,
+        embargo=2,
+        purge_samples=3,
+        population_size=12,
+        generations=1,
+        max_depth=2,
+        n_programs=1,
+        n_permutations=10,
+        selection_aware_null=True,
+        seed=4,
+    )
+    assert result.fold_selections.height >= 1
+    assert result.oos_pvalue <= 1.0
 
 
 @pytest.mark.leakage
