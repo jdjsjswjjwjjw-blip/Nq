@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """تشغيل بحث Failed FVG — أمر منفصل فوق الخط الموحّد (ليس خارج المنظومة).
 
-    # استكشافي كامل العيّنة (BH screen — ليس اختيار WF/OOS)
-    python scripts/run_fail_fvg.py --nq data/raw/nq.parquet --max-rows 500000
+# استكشافي كامل العيّنة (BH screen — ليس اختيار WF/OOS)
+python scripts/run_fail_fvg.py --nq data/raw/nq.parquet --max-rows 500000
 
-    # بحث تايم فريم/إعدادات + بوابة SSL سببية (walk-forward purged)
-    python scripts/run_fail_fvg.py --nq data/raw/nq.parquet --search --max-rows 500000
+# بحث تايم فريم/إعدادات + بوابة SSL سببية (walk-forward purged)
+python scripts/run_fail_fvg.py --nq data/raw/nq.parquet --search --max-rows 500000
 """
 
 from __future__ import annotations

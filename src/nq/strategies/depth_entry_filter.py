@@ -93,9 +93,7 @@ def attach_depth_path_to_features(
             f"(أُسقط {mbo.height - cleaned.height:,})"
         )
 
-    path = depth_event_path_at_bar_close(
-        cleaned, interval_ns=interval_ns, progress=progress
-    )
+    path = depth_event_path_at_bar_close(cleaned, interval_ns=interval_ns, progress=progress)
     out = attach_depth_asof(features, path, columns=DEPTH_PATH_COLUMNS, fill_missing=False)
 
     if include_bottom_book:
@@ -216,9 +214,7 @@ def generate_depth_entry_candidates(  # noqa: PLR0912, PLR0915
             exprs.append((pl.col(base).fill_null(0.0) * ice).alias(col))
 
     if include_bottom_edge and _L25_BID_DRAIN in work.columns and _L25_ASK_DRAIN in work.columns:
-        l25_pressure = pl.col(_L25_ASK_DRAIN).fill_null(0.0) - pl.col(_L25_BID_DRAIN).fill_null(
-            0.0
-        )
+        l25_pressure = pl.col(_L25_ASK_DRAIN).fill_null(0.0) - pl.col(_L25_BID_DRAIN).fill_null(0.0)
         abs_l25 = l25_pressure.abs()
         past_q = abs_l25.shift(1).rolling_quantile(
             0.7, window_size=_GATE_WINDOW, min_samples=_GATE_MIN_SAMPLES

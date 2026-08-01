@@ -266,11 +266,7 @@ def apply_causal_ssl_gate(
         quantile, window_size=_SSL_GATE_WINDOW, min_samples=_SSL_GATE_MIN_SAMPLES
     )
     # null z أو عتبة غير جاهزة → لا تمرّ البوابة
-    gate = (
-        abs_z.is_not_null()
-        & past_q.is_not_null()
-        & (abs_z >= past_q)
-    ).cast(pl.Float64)
+    gate = (abs_z.is_not_null() & past_q.is_not_null() & (abs_z >= past_q)).cast(pl.Float64)
     gated_exprs = [
         (pl.col(c).fill_null(0.0) * pl.col("_ssl_gate")).alias(f"{c}__ssl") for c in signal_columns
     ]
@@ -407,10 +403,7 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
         oos_ic = float(information_coefficient(oos_values[mask], oos_fwd[mask], method="spearman"))
         if selection_aware_null and n_permutations > 0 and folds:
             if log is not None:
-                log.op(
-                    f"WF selection-under-null: {n_permutations} تبديل · "
-                    f"candidates={len(cols)}"
-                )
+                log.op(f"WF selection-under-null: {n_permutations} تبديل · candidates={len(cols)}")
             null_ics = np.empty(n_permutations, dtype=np.float64)
             for p_i in range(n_permutations):
                 perm_fwd = generator.permutation(forward)
@@ -429,9 +422,7 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
                 nmask = np.isfinite(null_oos) & np.isfinite(null_y)
                 if int(nmask.sum()) >= _MIN_OOS_SAMPLES and float(np.std(null_oos[nmask])) > 0:
                     null_ics[p_i] = float(
-                        information_coefficient(
-                            null_oos[nmask], null_y[nmask], method="spearman"
-                        )
+                        information_coefficient(null_oos[nmask], null_y[nmask], method="spearman")
                     )
                 else:
                     null_ics[p_i] = 0.0
@@ -596,9 +587,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
                 features = features.with_columns(pl.col(col).fill_null(0.0))
         log.note(f"features={features.height:,} صف × {features.width} عمود")
 
-        ctx_interval = int(
-            max((s.signal_interval_ns for s in grid), default=30 * NS_PER_MIN)
-        )
+        ctx_interval = int(max((s.signal_interval_ns for s in grid), default=30 * NS_PER_MIN))
         eval_horizon = int(horizon)
         if eval_horizon <= 1 and interval_ns > 0:
             aligned = max(1, ctx_interval // interval_ns)
@@ -673,9 +662,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
                 uniq.append(c)
         candidates = tuple(uniq)
 
-        policy = TemporalPolicy.for_run(
-            interval_ns=interval_ns, window=ssl_window, horizon=horizon
-        )
+        policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window, horizon=horizon)
         embargo = policy.embargo_time_units(interval_ns=interval_ns)
         log.step(
             "اختيار walk-forward (purged)",

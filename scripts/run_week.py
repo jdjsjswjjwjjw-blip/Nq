@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """تشغيل أسبوعي — خط واحد من MBO إلى التقرير.
 
-    python scripts/run_week.py
-    python scripts/run_week.py --config configs/research.toml --output data/runs/w29
-    python scripts/run_week.py --nq data/raw/nq.parquet --nq-only --max-rows 500000
+python scripts/run_week.py
+python scripts/run_week.py --config configs/research.toml --output data/runs/w29
+python scripts/run_week.py --nq data/raw/nq.parquet --nq-only --max-rows 500000
 """
 
 from __future__ import annotations

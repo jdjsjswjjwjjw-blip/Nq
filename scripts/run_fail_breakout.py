@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """تشغيل بحث Failed Breakout — تركيز فوليوم فوق الخط الموحّد.
 
-    # استكشافي كامل العيّنة (BH screen — ليس اختيار WF/OOS)
-    python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --max-rows 500000
+# استكشافي كامل العيّنة (BH screen — ليس اختيار WF/OOS)
+python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --max-rows 500000
 
-    # بحث نواة فوليوم + تعزيزات SSL (تنخيل walk-forward)
-    python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --search --max-rows 500000
+# بحث نواة فوليوم + تعزيزات SSL (تنخيل walk-forward)
+python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --search --max-rows 500000
 
-    # شبكة فوليوم كاملة (~144 فرضية: bar/cum/delta/effort_result) بلا تعزيز SSL
-    python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --search --no-enhance
+# شبكة فوليوم كاملة (~144 فرضية: bar/cum/delta/effort_result) بلا تعزيز SSL
+python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --search --no-enhance
 
-    # تركيب volume-first + hold داخل الكسر (الفوليوم يولّد · البنية تؤكّد)
-    python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --search --compose-hold
-    python scripts/run_fail_breakout.py --nq ... --search --compose-hold --no-enhance --horizon 2
+# تركيب volume-first + hold داخل الكسر (الفوليوم يولّد · البنية تؤكّد)
+python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --search --compose-hold
+python scripts/run_fail_breakout.py --nq ... --search --compose-hold --no-enhance --horizon 2
 """
 
 from __future__ import annotations

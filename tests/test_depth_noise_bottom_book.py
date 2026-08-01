@@ -48,9 +48,7 @@ def test_filter_depth_noise_keeps_trades() -> None:
 
 def test_bottom_book_columns_at_bucket_end() -> None:
     nq, _ = _paired_streams(500, seed=11)
-    bottom = bottom_book_features_at_bar_close(
-        nq, interval_ns=10_000, filter_noise=True
-    )
+    bottom = bottom_book_features_at_bar_close(nq, interval_ns=10_000, filter_noise=True)
     assert bottom.height >= 1
     for c in BOTTOM_BOOK_COLUMNS:
         assert c in bottom.columns

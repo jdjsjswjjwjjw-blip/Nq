@@ -124,14 +124,10 @@ def test_tick_stream_session_resets_signed_vol() -> None:
     assert len(vols) >= 2
     # آخر صف في اليوم الأول أعلى من أول صف بعد إعادة التصفير في اليوم الثاني
     day1_last = max(
-        v
-        for v, t in zip(vols, mnq_trades[AVAILABILITY_TS].to_list(), strict=True)
-        if t < day2
+        v for v, t in zip(vols, mnq_trades[AVAILABILITY_TS].to_list(), strict=True) if t < day2
     )
     day2_first = min(
-        v
-        for v, t in zip(vols, mnq_trades[AVAILABILITY_TS].to_list(), strict=True)
-        if t >= day2
+        v for v, t in zip(vols, mnq_trades[AVAILABILITY_TS].to_list(), strict=True) if t >= day2
     )
     assert day1_last > 0
     assert day2_first < day1_last

@@ -623,9 +623,7 @@ def search_symbolic_hypotheses(  # noqa: PLR0915
     mask = np.isfinite(oos_values) & np.isfinite(oos_fwd)
     oos_n = int(mask.sum())
     if oos_n >= _MIN_IC_SAMPLES and float(np.std(oos_values[mask])) > 0:
-        oos_ic = float(
-            information_coefficient(oos_values[mask], oos_fwd[mask], method="spearman")
-        )
+        oos_ic = float(information_coefficient(oos_values[mask], oos_fwd[mask], method="spearman"))
         if selection_aware_null and n_permutations > 0 and any(fold_programs):
             if progress is not None:
                 progress.op(
@@ -652,19 +650,13 @@ def search_symbolic_hypotheses(  # noqa: PLR0915
                 nmask = np.isfinite(null_oos) & np.isfinite(null_y)
                 if int(nmask.sum()) >= _MIN_IC_SAMPLES and float(np.std(null_oos[nmask])) > 0:
                     null_ics[p_i] = float(
-                        information_coefficient(
-                            null_oos[nmask], null_y[nmask], method="spearman"
-                        )
+                        information_coefficient(null_oos[nmask], null_y[nmask], method="spearman")
                     )
                 else:
                     null_ics[p_i] = 0.0
-                if progress is not None and (
-                    (p_i + 1) % max(1, n_permutations // 10) == 0
-                ):
+                if progress is not None and ((p_i + 1) % max(1, n_permutations // 10) == 0):
                     progress.heartbeat(p_i + 1, n_permutations, label="sym-selection-null")
-            oos_p = float(
-                (int(np.sum(np.abs(null_ics) >= abs(oos_ic))) + 1) / (n_permutations + 1)
-            )
+            oos_p = float((int(np.sum(np.abs(null_ics) >= abs(oos_ic))) + 1) / (n_permutations + 1))
         else:
             oos_ev = evaluate_signal(
                 "symbolic_wf",

@@ -452,9 +452,7 @@ def _attach_failed_breakout(  # noqa: PLR0915
         "fb_depth_imbalance",
     }
     fills = [
-        pl.col(c).fill_null(0.0)
-        for c in _FB_SIGNAL_COLUMNS
-        if c in joined.columns and c in zero_ok
+        pl.col(c).fill_null(0.0) for c in _FB_SIGNAL_COLUMNS if c in joined.columns and c in zero_ok
     ]
     return joined.with_columns(fills) if fills else joined
 
@@ -611,9 +609,7 @@ def run_ssl_research_pipeline(  # noqa: PLR0915
     generator = rng if rng is not None else np.random.default_rng(0)
     seed = int(generator.integers(0, 2**31))
 
-    policy = TemporalPolicy.for_run(
-        interval_ns=interval_ns, window=ssl_window, horizon=horizon
-    )
+    policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window, horizon=horizon)
     embargo_val = (
         coverage_embargo
         if coverage_embargo is not None

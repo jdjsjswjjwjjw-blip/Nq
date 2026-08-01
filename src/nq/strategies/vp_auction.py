@@ -134,9 +134,7 @@ def run_vp_auction_research(
     )
 
     interval_ns = int(cfg.interval_ns)
-    policy = TemporalPolicy.for_run(
-        interval_ns=interval_ns, window=ssl_window, horizon=horizon
-    )
+    policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window, horizon=horizon)
     embargo = policy.embargo_time_units(interval_ns=interval_ns)
     candidates = tuple(c for c in _VP_AUCTION_FOCUS if c in result.features.columns)
     log.step("VP walk-forward selection", f"candidates={len(candidates)}")

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """بحث رمزي بلا if — DEAP (GP) + gplearn فوق ميزات الخط الموحّد.
 
-    pip install 'nq[gp]'
-    python scripts/run_symbolic_search.py --nq data/raw/nq.parquet --max-rows 200000
+pip install 'nq[gp]'
+python scripts/run_symbolic_search.py --nq data/raw/nq.parquet --max-rows 200000
 """
 
 from __future__ import annotations
@@ -76,9 +76,7 @@ def main() -> None:  # noqa: PLR0915
     if progress is not None:
         progress.op("بناء إطار الميزات عبر الخط الموحّد…")
 
-    cfg = (
-        PipelineConfig.from_toml(args.config) if args.config.is_file() else PipelineConfig()
-    )
+    cfg = PipelineConfig.from_toml(args.config) if args.config.is_file() else PipelineConfig()
     cfg = replace(
         cfg,
         horizon=args.horizon,
