@@ -93,7 +93,11 @@ class FvgHypothesisSearchResult:
 
 
 def default_fvg_grid() -> tuple[FvgHypothesisSpec, ...]:
-    """شبكة كاملة (~84): أطر إشارة/FVG + نوافذ + عتبات جهد."""
+    """شبكة كاملة: أطر إشارة/FVG + نوافذ + عتبات جهد-بلا-نتيجة.
+
+    ``vol_price_mult`` = سقف مدى/ATR؛ ``vol_volume_mult`` = أرضية حجم.
+    تُستبعد النوافذ أقصر من إطار تشكيل FVG.
+    """
     pairs = (
         (15, 30),
         (15, 60),
@@ -110,6 +114,8 @@ def default_fvg_grid() -> tuple[FvgHypothesisSpec, ...]:
         if fvg_m < sig_m:
             continue
         for win_m in windows:
+            if win_m < fvg_m:
+                continue
             for vp, vv in thresholds:
                 name = (
                     f"s{sig_m}_f{fvg_m}_w{win_m}_"
@@ -129,13 +135,15 @@ def default_fvg_grid() -> tuple[FvgHypothesisSpec, ...]:
 
 
 def core_fvg_grid() -> tuple[FvgHypothesisSpec, ...]:
-    """نواة مضغوطة (~16) للبحث ضمن القدرة — نفس القواعد السببية."""
+    """نواة مضغوطة للبحث ضمن القدرة — نفس القواعد السببية."""
     pairs = ((15, 30), (15, 60), (30, 60), (30, 120))
     windows = (60, 120)
     thresholds = ((1.2, 1.3), (1.5, 1.8))
     specs: list[FvgHypothesisSpec] = []
     for sig_m, fvg_m in pairs:
         for win_m in windows:
+            if win_m < fvg_m:
+                continue
             for vp, vv in thresholds:
                 name = (
                     f"core_s{sig_m}_f{fvg_m}_w{win_m}_"
@@ -161,12 +169,11 @@ def materialize_fvg_hypotheses(
     clock: pl.DataFrame,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """يبني أعمدة فرضيات على ساعة تقييم مشتركة (asof خلفي فقط)."""
+    """يبني أعمدة فرضيات على ساعة تقييم مشتركة (نبضة تطابقية عند bucket_end)."""
     if AVAILABILITY_TS not in clock.columns:
         raise ValueError(f"clock requires {AVAILABILITY_TS}")
-    left = clock.select(AVAILABILITY_TS).unique().sort(AVAILABILITY_TS)
-    if left.height == 0 or not specs:
-        return left
+    if clock.height == 0 or not specs:
+        return clock
 
     log = progress
     n_specs = len(specs)
@@ -186,7 +193,7 @@ def materialize_fvg_hypotheses(
                 log.op(f"OHLCV جاهز: {cached.height:,} شمعة")
         return cached
 
-    out = left
+    out = clock.sort(AVAILABILITY_TS)
     for i, spec in enumerate(specs, start=1):
         if log is not None:
             log.op(
@@ -214,12 +221,12 @@ def materialize_fvg_hypotheses(
             )
             if col in out.columns:
                 out = out.drop(col)
-            out = out.join_asof(right, on=AVAILABILITY_TS, strategy="backward").with_columns(
+            out = out.join(right, on=AVAILABILITY_TS, how="left").with_columns(
                 pl.col(col).fill_null(0.0)
             )
             if log is not None:
                 n_sig = int((raw["fail_fvg"] != 0).sum())
-                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف")
+                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف (pulse join)")
         if log is not None:
             log.heartbeat(i, n_specs, label="materialize_FVG", force=True)
     if log is not None:
@@ -239,10 +246,9 @@ def apply_causal_ssl_gate(
 
     يُنتج أعمدة ``{signal}__ssl`` = الإشارة × بوابة (0/1).
 
-    التداخل مع WF: العتبة عند الصف ``t`` تستخدم فقط ``|z|`` حتى ``t-1``
-    (``shift(1).rolling_quantile``) — مجمّدة على الماضي فقط، وليست مُعاد
-    تقديرها من العيّنة الكاملة. اختيار أي عمود مُبوَّب يتم داخل
-    ``walk_forward_select_hypotheses`` مع selection-under-null.
+    ``z`` الناقص → بوابة مغلقة (ليس ``fill_null(0)`` الذي يفتح البوابة زيفًا).
+    التداخل مع WF: العتبة عند ``t`` من الماضي فقط؛ الاختيار عبر
+    ``walk_forward_select_hypotheses`` + selection-under-null.
     """
     gated = tuple(f"{c}__ssl" for c in signal_columns)
     if embeddings.height == 0 or z_col not in embeddings.columns:
@@ -255,12 +261,16 @@ def apply_causal_ssl_gate(
     if drop:
         left = left.drop(drop)
     joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
-    abs_z = pl.col(z_col).abs().fill_null(0.0)
-    # كمّية ماضية فقط: shift(1) يمنع استخدام قيمة اللحظة الحالية في العتبة
+    abs_z = pl.col(z_col).abs()
     past_q = abs_z.shift(1).rolling_quantile(
         quantile, window_size=_SSL_GATE_WINDOW, min_samples=_SSL_GATE_MIN_SAMPLES
     )
-    gate = (abs_z >= past_q.fill_null(float("inf"))).cast(pl.Float64)
+    # null z أو عتبة غير جاهزة → لا تمرّ البوابة
+    gate = (
+        abs_z.is_not_null()
+        & past_q.is_not_null()
+        & (abs_z >= past_q)
+    ).cast(pl.Float64)
     gated_exprs = [
         (pl.col(c).fill_null(0.0) * pl.col("_ssl_gate")).alias(f"{c}__ssl") for c in signal_columns
     ]
@@ -579,31 +589,39 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
             latency_ns=0,
         )
         log.step("تجسيد شبكة فرضيات FVG", f"candidates={len(grid)}")
-        hyp = materialize_fvg_hypotheses(nq_frame, grid, clock=clock, progress=log)
-        base = clock.sort(AVAILABILITY_TS)
+        features = materialize_fvg_hypotheses(nq_frame, grid, clock=clock, progress=log)
         hyp_cols = [s.column() for s in grid]
-        drop = [c for c in hyp_cols if c in base.columns]
-        if drop:
-            base = base.drop(drop)
-        features = base.join_asof(
-            hyp.sort(AVAILABILITY_TS),
-            on=AVAILABILITY_TS,
-            strategy="backward",
-        )
         for col in hyp_cols:
             if col in features.columns:
                 features = features.with_columns(pl.col(col).fill_null(0.0))
         log.note(f"features={features.height:,} صف × {features.width} عمود")
 
+        ctx_interval = int(
+            max((s.signal_interval_ns for s in grid), default=30 * NS_PER_MIN)
+        )
+        eval_horizon = int(horizon)
+        if eval_horizon <= 1 and interval_ns > 0:
+            aligned = max(1, ctx_interval // interval_ns)
+            if aligned > 1:
+                log.note(
+                    f"محاذاة horizon: {eval_horizon} → {aligned} "
+                    f"(إشارة {ctx_interval}ns / ساعة {interval_ns}ns)"
+                )
+                eval_horizon = aligned
+        horizon = eval_horizon
+
         ssl_result: SSLPipelineResult | None = None
         candidate_list: list[str] = list(hyp_cols)
         depth_specs: tuple[DepthEntrySpec, ...] = ()
         if use_depth_filter:
-            log.step("مسار أحداث العمق داخل الشمعة → مرشّحي دخول", f"interval_ns={interval_ns}")
+            log.step(
+                "مسار أحداث العمق داخل شمعة الإشارة → مرشّحي دخول",
+                f"interval_ns={ctx_interval}",
+            )
             features = attach_depth_path_to_features(
                 features,
                 nq_frame,
-                interval_ns=interval_ns,
+                interval_ns=ctx_interval,
                 progress=log,
                 signal_columns=hyp_cols,
             )
@@ -643,11 +661,9 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
                     z_col="z0",
                     quantile=_SSL_GATE_QUANTILE,
                 )
-                candidate_list = [
-                    *list(gated),
-                    *[c for c in candidate_list if "__depth__" in c],
-                ]
-                log.note(f"مرشّحون بعد البوابة+عمق: {len(candidate_list)}")
+                # احتفظ بالأساس + البوابة + العمق (لا تستبدل الأساس فقط بـ __ssl)
+                candidate_list = list(dict.fromkeys([*hyp_cols, *gated, *candidate_list]))
+                log.note(f"مرشّحون بعد الأساس+البوابة+عمق: {len(candidate_list)}")
 
         seen: set[str] = set()
         uniq: list[str] = []

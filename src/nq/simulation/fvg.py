@@ -4,10 +4,11 @@
 
 * شموع OHLC/V من شريط الصفقات (tape) بنوافذ زمنية سببية.
 * مناطق FVG على إطار أعلى (افتراضيًا 1h) متاحة فقط عند ``bucket_end``.
-* إشارة Failed FVG / Effort-Without-Result على إطار أدنى (افتراضيًا 30m).
+* إشارة Failed FVG / Effort-Without-Result على إطار أدنى (افتراضيًا 30m):
+  حجم مرتفع مع مدى سعري محدود، ثم رفض عند CE (منتصف الفجوة).
 
 منع التسريب: كل ميزة تحمل ``availability_ts = bucket_end``؛ لا تُستخدم منطقة
-FVG قبل اكتمال شمعة التكوين.
+FVG قبل اكتمال شمعة التكوين. الإشارة = نبضة عند إغلاق شمعة الإشارة.
 """
 
 from __future__ import annotations
@@ -246,12 +247,11 @@ def _pick_failed_fvg(
     candidates.sort(key=lambda f: _as_int(f[AVAILABILITY_TS]), reverse=True)
     for fvg in candidates:
         fvg_type = str(fvg["fvg_type"])
-        fvg_low = _as_float(fvg["fvg_low"])
-        fvg_high = _as_float(fvg["fvg_high"])
         fvg_mid = _as_float(fvg["fvg_mid"])
-        if fvg_type == "Bull" and (close <= fvg_mid or close < fvg_high):
+        # فشل عند CE: أُغلق تحت منتصف فجوة صاعدة → SHORT؛ فوق منتصف هابطة → LONG
+        if fvg_type == "Bull" and close < fvg_mid:
             return SIGNAL_FAIL_BULL_SHORT, fvg
-        if fvg_type == "Bear" and (close >= fvg_mid or close > fvg_low):
+        if fvg_type == "Bear" and close > fvg_mid:
             return SIGNAL_FAIL_BEAR_LONG, fvg
     return 0.0, None
 
@@ -301,7 +301,9 @@ def failed_fvg_from_bars(
         effort_vol = volume / float(vol_sma)
         base["effort_range_ratio"] = effort_range
         base["effort_volume_ratio"] = effort_vol
-        if effort_range <= vol_price_mult or effort_vol <= vol_volume_mult:
+        # جهد بلا نتيجة: حجم مرتفع مع مدى سعري ضعيف (لا اندفاع سعري كبير)
+        # vol_price_mult = سقف لنسبة المدى؛ vol_volume_mult = أرضية لنسبة الحجم
+        if effort_vol <= vol_volume_mult or effort_range > vol_price_mult:
             out.append(base)
             continue
 

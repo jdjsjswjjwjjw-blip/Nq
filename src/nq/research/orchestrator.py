@@ -257,7 +257,7 @@ def _attach_failed_fvg(
     *,
     progress: PipelineProgress | None = None,
 ) -> pl.DataFrame:
-    """يلحق إشارة Failed FVG بإطار البحث الموحّد (asof خلفي — بلا تسريب)."""
+    """يلحق إشارة Failed FVG بإطار البحث الموحّد (نبضة تطابقية — بلا sticky)."""
     log = progress if progress is not None else PipelineProgress(enabled=False)
     fvg = failed_fvg_features(nq, progress=log)
     if fvg.height == 0 or features.height == 0:
@@ -278,11 +278,10 @@ def _attach_failed_fvg(
     ]
     right = fvg.select(keep).sort(AVAILABILITY_TS)
     left = features.sort(AVAILABILITY_TS)
-    # تجنّب تضارب أعمدة إن وُجدت سابقًا
     drop_existing = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
     if drop_existing:
         left = left.drop(drop_existing)
-    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
+    joined = left.join(right, on=AVAILABILITY_TS, how="left")
     return joined.with_columns(
         pl.col("fail_fvg").fill_null(0.0),
         pl.col("effort_range_ratio").fill_null(0.0),
