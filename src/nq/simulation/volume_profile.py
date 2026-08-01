@@ -226,9 +226,15 @@ def developing_value_area(
     if trades.height == 0:
         return empty
 
-    per_price = trades.group_by([BUCKET_START, "price"]).agg(
-        pl.col("size").cast(pl.Int64).sum().alias("volume"),
-        pl.col(BUCKET_END).first(),
+    # ترتيب حتمي قبل التجميع — وإلا ترتيب group_by غير مستقر يكسر التراكم
+    trades = trades.sort([BUCKET_START, "price"])
+    per_price = (
+        trades.group_by([BUCKET_START, "price"], maintain_order=True)
+        .agg(
+            pl.col("size").cast(pl.Int64).sum().alias("volume"),
+            pl.col(BUCKET_END).first(),
+        )
+        .sort([BUCKET_START, "price"])
     )
 
     rows: list[dict[str, int]] = []
