@@ -31,6 +31,8 @@ from nq.alpha.symbolic_gp import (  # noqa: E402
     require_gp_deps,
     search_symbolic_hypotheses,
 )
+from nq.contracts.temporal import AVAILABILITY_TS  # noqa: E402
+from nq.core.temporal_policy import TemporalPolicy  # noqa: E402
 from nq.research.orchestrator import PipelineConfig, run_research_pipeline  # noqa: E402
 from nq.research.progress import PipelineProgress  # noqa: E402
 
@@ -110,6 +112,19 @@ def main() -> None:  # noqa: PLR0915
         progress.op(f"symbolic features ({len(feats)}): {feats}")
 
     price_col = "nq_close" if "nq_close" in frame.columns else str(frame.columns[-1])
+    times = frame[AVAILABILITY_TS].to_numpy()
+    policy = TemporalPolicy.for_run(
+        interval_ns=cfg.interval_ns,
+        horizon=args.horizon,
+        config_path=args.config if args.config.is_file() else None,
+    )
+    embargo = policy.embargo_time_units(interval_ns=cfg.interval_ns, times=times)
+    purge_samples = policy.purge_samples()
+    if progress is not None:
+        progress.op(
+            f"temporal: embargo={embargo} · purge={purge_samples} · "
+            f"interval_ns={cfg.interval_ns} · horizon={args.horizon}"
+        )
     result = search_symbolic_hypotheses(
         frame,
         feats,
@@ -117,11 +132,14 @@ def main() -> None:  # noqa: PLR0915
         horizon=args.horizon,
         backend=args.backend,
         n_splits=args.n_splits,
+        embargo=embargo,
+        purge_samples=purge_samples,
         population_size=args.population,
         generations=args.generations,
         max_depth=args.max_depth,
         n_programs=args.n_programs,
         n_permutations=args.n_permutations,
+        selection_aware_null=True,
         seed=args.seed,
         progress=progress,
     )

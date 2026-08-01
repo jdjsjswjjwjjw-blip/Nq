@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import random
 from collections.abc import Sequence
 from contextlib import suppress
@@ -126,12 +127,14 @@ def _spearman_ic(pred: FloatArray, y: FloatArray) -> float:
 
 
 def _unique_name(prefix: str, expression: str, used: set[str]) -> str:
-    base = f"{prefix}__{abs(hash(expression)) % 10_000_000:07d}"
-    name = base
+    """اسم مستقر عبر العمليات — ``hash()`` بايثون مملّح لكل عملية فلا يُستخدم."""
+    digest = hashlib.sha1(f"{prefix}|{expression}".encode("utf-8")).hexdigest()[:10]
+    name = f"{prefix}__{digest}"
     i = 0
     while name in used:
         i += 1
-        name = f"{base}_{i}"
+        digest = hashlib.sha1(f"{prefix}|{expression}|{i}".encode("utf-8")).hexdigest()[:10]
+        name = f"{prefix}__{digest}"
     used.add(name)
     return name
 
@@ -484,7 +487,7 @@ def _apply_deap_expression(
         return np.zeros(x.shape[0], dtype=np.float64)
 
 
-def search_symbolic_hypotheses(
+def search_symbolic_hypotheses(  # noqa: PLR0912, PLR0915
     frame: pl.DataFrame,
     feature_columns: Sequence[str],
     *,
@@ -499,6 +502,7 @@ def search_symbolic_hypotheses(
     max_depth: int = 3,
     n_programs: int = 2,
     n_permutations: int = 100,
+    selection_aware_null: bool = True,
     seed: int = 0,
     progress: ProgressLike | None = None,
 ) -> SymbolicSearchResult:
@@ -508,6 +512,9 @@ def search_symbolic_hypotheses(
     الأفضل بـ |IC| تدريب ويُقاس على الاختبار (نفس فلسفة شبكة FVG/Breakout).
 
     افتراضيًا ``purge_samples >= horizon`` لعزل أهداف العائد الأمامي عن كتلة الاختبار.
+
+    ``selection_aware_null=True`` (افتراضي): p-value عبر إعادة اختيار أفضل برنامج
+    مكتشف في كل طيّة تحت عوائد مخلوطة — دون إعادة تطوّر GP (مكلف).
     """
     require_gp_deps()
     work = frame.sort(AVAILABILITY_TS)
@@ -537,12 +544,16 @@ def search_symbolic_hypotheses(
     if progress is not None:
         progress.op(
             f"symbolic WF: {len(folds)} folds · backend={backend} · "
-            f"pop={population_size} · gens={generations}"
+            f"pop={population_size} · gens={generations} · "
+            f"embargo={embargo} · purge={effective_purge} · "
+            f"selection_null={selection_aware_null}"
         )
 
     all_programs: list[SymbolicProgram] = []
+    fold_programs: list[list[SymbolicProgram]] = []
     fold_rows: list[dict[str, float | int | str]] = []
     oos_values = np.full(work.height, np.nan, dtype=np.float64)
+    oos_fwd = np.full(work.height, np.nan, dtype=np.float64)
     forward = align_forward_returns(work[price_col].to_numpy().astype(np.float64), horizon=horizon)
     rng = np.random.default_rng(seed)
 
@@ -568,6 +579,7 @@ def search_symbolic_hypotheses(
             progress=progress,
         )
         if not programs:
+            fold_programs.append([])
             fold_rows.append(
                 {
                     "fold": fold_i,
@@ -582,24 +594,16 @@ def search_symbolic_hypotheses(
         # اختر أفضل |IC| تدريب
         best = max(programs, key=lambda p: abs(p.train_ic))
         all_programs.extend(programs)
+        fold_programs.append(list(programs))
         test_ic = _spearman_ic(best.values[fold.test_idx], forward[fold.test_idx])
-        # دلالة سريعة على الاختبار
-        ev = evaluate_signal(
-            best.name,
-            best.values[fold.test_idx],
-            forward[fold.test_idx],
-            n_permutations=n_permutations,
-            rng=rng,
-            progress=progress,
-            progress_label=f"sym-fold{fold_i + 1}",
-        )
         oos_values[fold.test_idx] = best.values[fold.test_idx]
+        oos_fwd[fold.test_idx] = forward[fold.test_idx]
         fold_rows.append(
             {
                 "fold": fold_i,
                 "selected": best.name,
                 "train_ic": float(best.train_ic),
-                "test_ic": float(ev.ic),
+                "test_ic": float(test_ic),
                 "expression": best.expression,
                 "backend": best.backend,
             }
@@ -616,19 +620,62 @@ def search_symbolic_hypotheses(
     unique_programs = tuple(by_name.values())
     out_frame = materialize_programs_on_frame(work, unique_programs)
 
-    mask = np.isfinite(oos_values) & np.isfinite(forward)
+    mask = np.isfinite(oos_values) & np.isfinite(oos_fwd)
     oos_n = int(mask.sum())
     if oos_n >= _MIN_IC_SAMPLES and float(np.std(oos_values[mask])) > 0:
-        oos_ev = evaluate_signal(
-            "symbolic_wf",
-            oos_values[mask],
-            forward[mask],
-            n_permutations=n_permutations,
-            rng=rng,
-            progress=progress,
-            progress_label="sym-oos-perm",
+        oos_ic = float(
+            information_coefficient(oos_values[mask], oos_fwd[mask], method="spearman")
         )
-        oos_ic, oos_p = float(oos_ev.ic), float(oos_ev.ic_pvalue)
+        if selection_aware_null and n_permutations > 0 and any(fold_programs):
+            if progress is not None:
+                progress.op(
+                    f"symbolic selection-under-null: {n_permutations} تبديل · "
+                    f"fold_programs={sum(len(p) for p in fold_programs)}"
+                )
+            null_ics = np.empty(n_permutations, dtype=np.float64)
+            for p_i in range(n_permutations):
+                perm_fwd = rng.permutation(forward)
+                null_oos = np.full(work.height, np.nan, dtype=np.float64)
+                null_y = np.full(work.height, np.nan, dtype=np.float64)
+                for fold_i, fold in enumerate(folds):
+                    progs = fold_programs[fold_i]
+                    if not progs:
+                        continue
+                    best_null = max(
+                        progs,
+                        key=lambda prog: abs(
+                            _spearman_ic(prog.values[fold.train_idx], perm_fwd[fold.train_idx])
+                        ),
+                    )
+                    null_oos[fold.test_idx] = best_null.values[fold.test_idx]
+                    null_y[fold.test_idx] = perm_fwd[fold.test_idx]
+                nmask = np.isfinite(null_oos) & np.isfinite(null_y)
+                if int(nmask.sum()) >= _MIN_IC_SAMPLES and float(np.std(null_oos[nmask])) > 0:
+                    null_ics[p_i] = float(
+                        information_coefficient(
+                            null_oos[nmask], null_y[nmask], method="spearman"
+                        )
+                    )
+                else:
+                    null_ics[p_i] = 0.0
+                if progress is not None and (
+                    (p_i + 1) % max(1, n_permutations // 10) == 0
+                ):
+                    progress.heartbeat(p_i + 1, n_permutations, label="sym-selection-null")
+            oos_p = float(
+                (int(np.sum(np.abs(null_ics) >= abs(oos_ic))) + 1) / (n_permutations + 1)
+            )
+        else:
+            oos_ev = evaluate_signal(
+                "symbolic_wf",
+                oos_values[mask],
+                oos_fwd[mask],
+                n_permutations=n_permutations,
+                rng=rng,
+                progress=progress,
+                progress_label="sym-oos-perm",
+            )
+            oos_ic, oos_p = float(oos_ev.ic), float(oos_ev.ic_pvalue)
     else:
         oos_ic, oos_p = 0.0, 1.0
 
@@ -655,21 +702,24 @@ def search_symbolic_hypotheses(
 
 
 def default_symbolic_feature_columns() -> tuple[str, ...]:
-    """ميزات طرفية افتراضية للمعادلات (سببية / موجودة في خط البحث)."""
+    """ميزات طرفية افتراضية — أنطولوجيا واحدة: deltas/trap/fail + ``vp_*`` (لا خلط streaming VA).
+
+    تُستبعد ``near_vah`` / ``in_value_area`` / ``poc_dist_norm`` (مسار التيك) حتى لا
+    تُخلط مع أعمدة الملف الحجمي المجمّع ``vp_*`` في نفس فضاء البحث.
+    """
     return (
         "nq_delta",
         "mnq_delta",
         "trap_setup",
         "phase_balance",
         "phase_expansion",
-        "in_value_area",
-        "near_vah",
-        "poc_dist_norm",
         "fail_fvg",
         "fail_breakout",
         "vp_balance",
         "vp_imbalance",
         "vp_expansion",
+        "vp_close_in_value",
+        "vp_flip_to_imbalance",
     )
 
 
