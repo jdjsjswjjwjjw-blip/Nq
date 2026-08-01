@@ -22,7 +22,11 @@ import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.determinism import seed_everything
-from nq.core.temporal_policy import TemporalPolicy
+from nq.core.temporal_policy import (
+    TemporalPolicy,
+    align_horizon_to_context,
+    resolve_grid_context_interval,
+)
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
 from nq.research.assistant import ResearchAssistant, ResearchReport
@@ -40,6 +44,7 @@ from nq.research.understanding import (
     write_understanding_outputs,
 )
 from nq.simulation.breakout import (
+    FB_PULSE_ZERO_FILL,
     HoldMode,
     SignalPriority,
     VolMode,
@@ -79,6 +84,9 @@ _VOLUME_FEATURE_COLUMNS = (
     "fb_vol_imbalance",
     "fb_absorption",
 )
+
+# نفس سياسة النبضة في الخط الموحّد — لا تصفير الجهد عند غياب التطابق
+_VOLUME_PULSE_ZERO_FILL = FB_PULSE_ZERO_FILL & set(_VOLUME_FEATURE_COLUMNS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -501,8 +509,15 @@ def _attach_volume_context(
     )
     keep = [c for c in (AVAILABILITY_TS, *_VOLUME_FEATURE_COLUMNS) if c in fb.columns]
     if len(keep) < _MIN_VOLUME_KEEP or features.height == 0:
-        zeros = [pl.lit(0.0).alias(c) for c in _VOLUME_FEATURE_COLUMNS if c not in features.columns]
-        return features.with_columns(zeros) if zeros else features
+        missing: list[pl.Expr] = []
+        for c in _VOLUME_FEATURE_COLUMNS:
+            if c in features.columns:
+                continue
+            if c in _VOLUME_PULSE_ZERO_FILL:
+                missing.append(pl.lit(0.0).alias(c))
+            else:
+                missing.append(pl.lit(None).cast(pl.Float64).alias(c))
+        return features.with_columns(missing) if missing else features
     right = fb.select(keep).sort(AVAILABILITY_TS)
     left = features.sort(AVAILABILITY_TS)
     drop = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
@@ -510,7 +525,12 @@ def _attach_volume_context(
         left = left.drop(drop)
     # نبضة عند أوقات إشارة السياق فقط
     joined = left.join(right, on=AVAILABILITY_TS, how="left")
-    fills = [pl.col(c).fill_null(0.0) for c in _VOLUME_FEATURE_COLUMNS if c in joined.columns]
+    # صفر للنبضة فقط؛ نسب الجهد/الحجم تبقى null إن غاب التطابق (كالموحّد)
+    fills = [
+        pl.col(c).fill_null(0.0)
+        for c in _VOLUME_FEATURE_COLUMNS
+        if c in joined.columns and c in _VOLUME_PULSE_ZERO_FILL
+    ]
     return joined.with_columns(fills) if fills else joined
 
 
@@ -627,12 +647,20 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             if col in features.columns:
                 features = features.with_columns(pl.col(col).fill_null(0.0))
 
-        # سياق فوليوم بإطار النواة الغالب (لا 30m ثابت يخالف 15m)
-        ctx_interval = int(max((s.signal_interval_ns for s in grid), default=30 * NS_PER_MIN))
+        # سياق فوليوم/عمق/أفق: أطول TF في الشبكة (صريح عند الاختلاط)
+        ctx_interval, mixed_tf = resolve_grid_context_interval(
+            [s.signal_interval_ns for s in grid],
+            default_ns=30 * NS_PER_MIN,
+        )
         ctx_mode: VolMode = "bar"
         modes = {s.vol_mode for s in grid}
         if len(modes) == 1:
             ctx_mode = next(iter(modes))
+        if mixed_tf:
+            log.note(
+                f"شبكة TF مختلطة — سياق الفوليوم/العمق/الأفق على max="
+                f"{ctx_interval}ns (مرشّحات أقصر تُقيَّم تحت أفق أطول)"
+            )
         log.step(
             "إلحاق سياق فوليوم سببي (نبضة تطابقية)",
             f"interval_ns={ctx_interval} · vol_mode={ctx_mode}",
@@ -648,15 +676,16 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         log.note(f"أعمدة فوليوم: {[c for c in _VOLUME_FEATURE_COLUMNS if c in features.columns]}")
 
         # أفق التقييم: حاذِ نبضة الإشارة مع ساعة البحث (افتراضيًا)
-        eval_horizon = int(horizon)
-        if eval_horizon <= 1 and interval_ns > 0:
-            aligned = max(1, ctx_interval // interval_ns)
-            if aligned > 1:
-                log.note(
-                    f"محاذاة horizon: {eval_horizon} → {aligned} "
-                    f"(إشارة {ctx_interval}ns / ساعة {interval_ns}ns)"
-                )
-                eval_horizon = aligned
+        eval_horizon = align_horizon_to_context(
+            horizon,
+            research_interval_ns=interval_ns,
+            context_interval_ns=ctx_interval,
+        )
+        if eval_horizon != int(horizon):
+            log.note(
+                f"محاذاة horizon: {horizon} → {eval_horizon} "
+                f"(سياق {ctx_interval}ns / ساعة {interval_ns}ns)"
+            )
         horizon = eval_horizon
 
         ssl_result: SSLPipelineResult | None = None

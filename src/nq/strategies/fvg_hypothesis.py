@@ -23,7 +23,11 @@ import polars as pl
 from nq.alpha.signals import align_forward_returns, evaluate_signal, screen_signals
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.determinism import seed_everything
-from nq.core.temporal_policy import TemporalPolicy
+from nq.core.temporal_policy import (
+    TemporalPolicy,
+    align_horizon_to_context,
+    resolve_grid_context_interval,
+)
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.splitting import purged_walk_forward_split
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
@@ -587,16 +591,25 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
                 features = features.with_columns(pl.col(col).fill_null(0.0))
         log.note(f"features={features.height:,} صف × {features.width} عمود")
 
-        ctx_interval = int(max((s.signal_interval_ns for s in grid), default=30 * NS_PER_MIN))
-        eval_horizon = int(horizon)
-        if eval_horizon <= 1 and interval_ns > 0:
-            aligned = max(1, ctx_interval // interval_ns)
-            if aligned > 1:
-                log.note(
-                    f"محاذاة horizon: {eval_horizon} → {aligned} "
-                    f"(إشارة {ctx_interval}ns / ساعة {interval_ns}ns)"
-                )
-                eval_horizon = aligned
+        ctx_interval, mixed_tf = resolve_grid_context_interval(
+            [s.signal_interval_ns for s in grid],
+            default_ns=30 * NS_PER_MIN,
+        )
+        if mixed_tf:
+            log.note(
+                f"شبكة TF مختلطة — سياق العمق/الأفق على max={ctx_interval}ns "
+                f"(مرشّحات أقصر تُقيَّم تحت أفق أطول)"
+            )
+        eval_horizon = align_horizon_to_context(
+            horizon,
+            research_interval_ns=interval_ns,
+            context_interval_ns=ctx_interval,
+        )
+        if eval_horizon != int(horizon):
+            log.note(
+                f"محاذاة horizon: {horizon} → {eval_horizon} "
+                f"(سياق {ctx_interval}ns / ساعة {interval_ns}ns)"
+            )
         horizon = eval_horizon
 
         ssl_result: SSLPipelineResult | None = None

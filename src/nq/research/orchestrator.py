@@ -37,13 +37,19 @@ from nq.research.assistant import LanguageModel, ResearchAssistant
 from nq.research.progress import PipelineProgress, resolve_progress
 from nq.research.unified import UnifiedResearchReport, build_unified_report
 from nq.simulation.auction import auction_signal_frame
-from nq.simulation.breakout import failed_breakout_features
+from nq.simulation.bottom_book import (
+    BOTTOM_BOOK_COLUMNS,
+    attach_bottom_book_asof,
+    bottom_book_features_at_bar_close,
+)
+from nq.simulation.breakout import FB_PULSE_ZERO_FILL, failed_breakout_features
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.depth_lifecycle import (
     attach_depth_asof,
     depth_at_bar_close,
     depth_at_bar_close_multi,
 )
+from nq.simulation.depth_noise import DepthNoiseConfig, filter_depth_noise
 from nq.simulation.fvg import failed_fvg_features
 
 if TYPE_CHECKING:
@@ -160,6 +166,13 @@ class PipelineConfig:
     feature_mode: FeatureMode = "streaming"
     signal_columns: tuple[str, ...] | None = None
     quiet: bool = False
+    # [streaming] — ساعة البحث vs دقة ميكرو
+    research_interval_ns: int | None = None
+    micro_interval_ns: int = 100_000_000
+    use_micro_interval: bool = False
+    # عمق موحّد: ضوضاء + أسفل الدفتر
+    filter_depth_noise: bool = True
+    include_bottom_book: bool = True
 
     @classmethod
     def from_toml(cls, path: Path | str) -> PipelineConfig:
@@ -173,13 +186,28 @@ class PipelineConfig:
         data = raw.get("data", {})
         signals = raw.get("signals", {})
         features_cfg = raw.get("features", {})
+        streaming = raw.get("streaming", {})
         det = raw.get("determinism", {})
         run_cfg = raw.get("run", {})
         max_rows_raw = data.get("max_rows")
         max_rows = None if max_rows_raw in (None, 0) else int(max_rows_raw)
         signal_cols = signals.get("columns")
+
+        temporal_iv = int(temporal.get("interval_ns", 1_000_000_000))
+        research_iv_raw = streaming.get("research_interval_ns")
+        research_iv = int(research_iv_raw) if research_iv_raw is not None else None
+        micro_iv = int(streaming.get("micro_interval_ns", 100_000_000))
+        use_micro = bool(streaming.get("use_micro_interval", False))
+        # ترتيب الأولوية: micro (إن طُلب) → research_interval من [streaming] → temporal
+        if use_micro:
+            interval_ns = micro_iv
+        elif research_iv is not None:
+            interval_ns = research_iv
+        else:
+            interval_ns = temporal_iv
+
         return cls(
-            interval_ns=int(temporal.get("interval_ns", 1_000_000_000)),
+            interval_ns=interval_ns,
             horizon=int(temporal.get("horizon", 1)),
             latency_ns=int(cross.get("latency_ns", 0)),
             lead_lag_window=int(cross.get("lead_lag_window", 2)),
@@ -203,6 +231,11 @@ class PipelineConfig:
             signal_columns=tuple(signal_cols) if signal_cols else None,
             quiet=bool(run_cfg.get("quiet", False)),
             parallel_coverage=bool(run_cfg.get("parallel_coverage", False)),
+            research_interval_ns=research_iv,
+            micro_interval_ns=micro_iv,
+            use_micro_interval=use_micro,
+            filter_depth_noise=bool(raw.get("depth", {}).get("filter_noise", True)),
+            include_bottom_book=bool(raw.get("depth", {}).get("include_bottom_book", True)),
         )
 
 
@@ -314,6 +347,17 @@ def _attach_auction_vp(
     return joined.with_columns(fills) if fills else joined
 
 
+def _fb_empty_column_exprs() -> list[pl.Expr]:
+    """أعمدة FB عند غياب الصفوف: نبضة=0 · جهد/عمق=null (لا تطابق ≠ صفر)."""
+    exprs: list[pl.Expr] = []
+    for col in _FB_SIGNAL_COLUMNS:
+        if col in FB_PULSE_ZERO_FILL:
+            exprs.append(pl.lit(0.0).alias(col))
+        else:
+            exprs.append(pl.lit(None).cast(pl.Float64).alias(col))
+    return exprs
+
+
 def _attach_failed_breakout(  # noqa: PLR0915
     features: pl.DataFrame,
     nq: pl.DataFrame,
@@ -321,16 +365,19 @@ def _attach_failed_breakout(  # noqa: PLR0915
     depth_30m: pl.DataFrame | None = None,
     progress: PipelineProgress | None = None,
 ) -> pl.DataFrame:
-    """يلحق Failed Breakout asof خلفي — إشارة + عمق عند مستوى الكسر (سببي)."""
+    """يلحق Failed Breakout بنبضة تطابقية + عمق عند مستوى الكسر (سببي).
+
+    ``fail_breakout`` نبضة عند ``availability_ts`` فقط (ليست sticky asof).
+    ``fb_depth_at_break``: NaN = لا تطابق مستوى / لا دفتر؛ 0.0 = تطابق بحجم صفر.
+    """
     import numpy as np  # noqa: PLC0415
 
     log = progress if progress is not None else PipelineProgress(enabled=False)
     log.op("failed_breakout_features (إشارة فوليوم)")
     fb = failed_breakout_features(nq, progress=log)
-    zero_exprs = [pl.lit(0.0).alias(c) for c in _FB_SIGNAL_COLUMNS]
     if fb.height == 0 or features.height == 0:
-        log.op("Failed Breakout: لا صفوف — أعمدة صفرية")
-        return features.with_columns(zero_exprs)
+        log.op("Failed Breakout: لا صفوف — نبضة=0 · عمق/جهد=null")
+        return features.with_columns(_fb_empty_column_exprs())
 
     # عمق عند إغلاق شمعة الإشارة (30m) — يُعاد استخدام المسح الموحّد إن وُجد
     interval_30m = 30 * 60 * 1_000_000_000
@@ -381,14 +428,13 @@ def _attach_failed_breakout(  # noqa: PLR0915
         level_arr = fb["fb_break_level"].to_numpy().astype(np.float64)
         signal_arr = fb["fail_breakout"].to_numpy().astype(np.float64)
         n_fb = int(fb.height)
-        at_break = np.zeros(n_fb, dtype=np.float64)
+        at_break = np.full(n_fb, np.nan, dtype=np.float64)
 
         def _stack(cols: list[str], *, fill: float) -> np.ndarray:
             cols_present = [c for c in cols if c in fb.columns]
             if not cols_present:
                 return np.full((n_fb, len(cols)), fill, dtype=np.float64)
-            mat = np.column_stack([fb[c].to_numpy().astype(np.float64) for c in cols])
-            return mat
+            return np.column_stack([fb[c].to_numpy().astype(np.float64) for c in cols])
 
         bid_px = _stack(levels_bid_px, fill=np.nan)
         bid_sz = _stack(levels_bid_sz, fill=0.0)
@@ -399,7 +445,6 @@ def _attach_failed_breakout(  # noqa: PLR0915
             idx = np.flatnonzero(mask)
             if idx.size == 0:
                 return
-            # dist shape: (n_active, n_levels)
             dist = np.abs(px[idx] - level_arr[idx][:, None])
             dist = np.where(np.isfinite(px[idx]), dist, np.inf)
             best_j = np.argmin(dist, axis=1)
@@ -412,12 +457,8 @@ def _attach_failed_breakout(  # noqa: PLR0915
 
         log.op(f"حساب fb_depth_at_break على {n_fb:,} صف (متّجهي · match≤{match_tol})")
         active = (level_arr > 0) & (signal_arr != 0.0)
-        # NaN = لا تطابق مستوى؛ 0.0 = تطابق بحجم صفر — يُميَّزان عن بعض
-        at_break[:] = np.nan
         _assign(active & (signal_arr < 0), ask_px, ask_sz)
         _assign(active & (signal_arr > 0), bid_px, bid_sz)
-        # صفوف بلا إشارة تبقى بلا عمق عند الكسر
-        at_break[~active] = np.nan
         fb = fb.with_columns(
             pl.Series("fb_depth_at_break", at_break),
             pl.col("depth_imbalance").alias("fb_depth_imbalance"),
@@ -426,12 +467,12 @@ def _attach_failed_breakout(  # noqa: PLR0915
         )
         log.op("أعمدة عمق FB جاهزة (at_break / imbalance / cum)")
     else:
-        log.op("عمق 30m فارغ — أعمدة عمق FB صفرية")
+        log.op("عمق 30m فارغ — fb_depth_* = null (لا تطابق دفتر)")
         fb = fb.with_columns(
-            pl.lit(0.0).alias("fb_depth_at_break"),
-            pl.lit(0.0).alias("fb_depth_imbalance"),
-            pl.lit(0.0).alias("fb_depth_cum_bid"),
-            pl.lit(0.0).alias("fb_depth_cum_ask"),
+            pl.lit(None).cast(pl.Float64).alias("fb_depth_at_break"),
+            pl.lit(None).cast(pl.Float64).alias("fb_depth_imbalance"),
+            pl.lit(None).cast(pl.Float64).alias("fb_depth_cum_bid"),
+            pl.lit(None).cast(pl.Float64).alias("fb_depth_cum_ask"),
         )
 
     keep = [c for c in (AVAILABILITY_TS, *_FB_SIGNAL_COLUMNS) if c in fb.columns]
@@ -440,19 +481,11 @@ def _attach_failed_breakout(  # noqa: PLR0915
     drop_existing = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
     if drop_existing:
         left = left.drop(drop_existing)
-    # نبضة تطابقية عند إغلاق شمعة الإشارة — لا sticky asof على ساعة البحث
     joined = left.join(right, on=AVAILABILITY_TS, how="left")
-    # صفر للإشارة الاتجاهية / مقاييس النبضة؛ عمق/جهد يبقيان null إن غاب التطابق
-    zero_ok = {
-        "fail_breakout",
-        "fb_vol_imbalance",
-        "fb_delta",
-        "fb_cum_delta",
-        "fb_absorption",
-        "fb_depth_imbalance",
-    }
     fills = [
-        pl.col(c).fill_null(0.0) for c in _FB_SIGNAL_COLUMNS if c in joined.columns and c in zero_ok
+        pl.col(c).fill_null(0.0)
+        for c in _FB_SIGNAL_COLUMNS
+        if c in joined.columns and c in FB_PULSE_ZERO_FILL
     ]
     return joined.with_columns(fills) if fills else joined
 
@@ -463,25 +496,49 @@ def _attach_causal_depth(
     *,
     interval_ns: int,
     depth: pl.DataFrame | None = None,
+    cleaned_mbo: pl.DataFrame | None = None,
+    filter_noise: bool = True,
+    include_bottom_book: bool = True,
     progress: PipelineProgress | None = None,
 ) -> pl.DataFrame:
-    """يلحق سلم عمق NQ عند إغلاق كل فاصل بحثي (مراقبة + تنفيذ/خروج)."""
+    """يلحق سلم عمق NQ (+ أسفل الدفتر) عند إغلاق كل فاصل بحثي.
+
+    يصفّي ضوضاء العمق سببيًا قبل اللقطة عندما لا تُمرَّر ``cleaned_mbo``.
+    """
     log = progress if progress is not None else PipelineProgress(enabled=False)
+    mbo = cleaned_mbo
+    if mbo is None:
+        if filter_noise:
+            log.op(f"depth_noise_filter قبل لقطة العمق · events={nq.height:,}")
+            mbo = filter_depth_noise(nq, config=DepthNoiseConfig())
+            log.op(f"بعد الفلتر: {mbo.height:,} حدث (أُسقط {nq.height - mbo.height:,})")
+        else:
+            mbo = nq
     if depth is None:
         log.op(f"depth_at_bar_close ساعة البحث · levels=5 · interval_ns={interval_ns}")
-        depth = depth_at_bar_close(nq, interval_ns=interval_ns, n_levels=5, progress=log)
+        depth = depth_at_bar_close(mbo, interval_ns=interval_ns, n_levels=5, progress=log)
     else:
         log.op("إعادة استخدام عمق ساعة البحث من المسح الموحّد")
+    out = features
     if depth.height == 0:
-        log.op("عمق: لا لقطات — تخطّي")
-        return features
-    # لا تستبدل nq_bid/nq_ask إن وُجدت من streaming؛ أبقِ أعمدة depth_*
-    cols = [c for c in depth.columns if c.startswith("depth_")]
-    # إن لم توجد عروض L1 في الإطار، ألحقها من لقطة العمق
-    if "nq_bid" not in features.columns and "nq_bid" in depth.columns:
-        cols = [*cols, "nq_bid", "nq_ask"]
-    out = attach_depth_asof(features, depth, columns=cols)
-    log.op(f"عمق مُلحق: {len(cols)} عمود · rows={out.height:,}")
+        log.op("عمق: لا لقطات — تخطّي L1–L5")
+    else:
+        cols = [c for c in depth.columns if c.startswith("depth_")]
+        if "nq_bid" not in out.columns and "nq_bid" in depth.columns:
+            cols = [*cols, "nq_bid", "nq_ask"]
+        out = attach_depth_asof(out, depth, columns=cols, fill_missing=False)
+        log.op(f"عمق مُلحق: {len(cols)} عمود · rows={out.height:,}")
+
+    if include_bottom_book:
+        log.op(f"bottom_book L2–L5 · interval_ns={interval_ns}")
+        bottom = bottom_book_features_at_bar_close(
+            mbo,
+            interval_ns=interval_ns,
+            filter_noise=False,
+            progress=log,
+        )
+        out = attach_bottom_book_asof(out, bottom)
+        log.op(f"bottom_book مُلحق: {len(BOTTOM_BOOK_COLUMNS)} عمود")
     return out
 
 
@@ -492,13 +549,19 @@ def _build_research_features(
     *,
     progress: PipelineProgress | None = None,
 ) -> tuple[pl.DataFrame, TickStream | None]:
-    """يبني إطار البحث: streaming (افتراضي) أو batch، ثم FVG/Auction asof.
+    """يبني إطار البحث: streaming/batch ثم عمق (+noise/bottom) ثم FVG نبضة / Auction asof / FB نبضة.
 
     يُعيد أيضًا ``TickStream`` عند الوضع streaming لإعادة استخدامه في SSL-tick
     بدون إعادة بناء آلة الحالة.
     """
     log = progress if progress is not None else PipelineProgress(enabled=False)
     tick_stream: TickStream | None = None
+    if cfg.use_micro_interval:
+        log.note(
+            f"ساعة البحث = micro_interval_ns={cfg.micro_interval_ns} (use_micro_interval=true)"
+        )
+    elif cfg.research_interval_ns is not None:
+        log.note(f"ساعة البحث من [streaming].research_interval_ns={cfg.research_interval_ns}")
     if cfg.feature_mode == "streaming":
         log.step(
             "بناء الميزات (streaming state-machine)",
@@ -528,11 +591,17 @@ def _build_research_features(
     log.note(f"إطار الميزات الأساسي: {features.height:,} صف × {features.width} عمود")
 
     interval_30m = 30 * 60 * 1_000_000_000
+    cleaned_nq = nq
+    if cfg.filter_depth_noise:
+        log.step("فلتر ضوضاء العمق (سببي) قبل لقطات الدفتر")
+        cleaned_nq = filter_depth_noise(nq, config=DepthNoiseConfig())
+        log.op(f"depth_noise: {nq.height:,} → {cleaned_nq.height:,}")
+
     depth_by_iv: dict[int, pl.DataFrame] = {}
     if cfg.include_failed_breakout and cfg.interval_ns != interval_30m:
         log.step("إلحاق عمق الدفتر السببي (مسح موحّد: ساعة البحث + 30m)")
         depth_by_iv = depth_at_bar_close_multi(
-            nq,
+            cleaned_nq,
             interval_ns_list=(cfg.interval_ns, interval_30m),
             n_levels=5,
             progress=log,
@@ -542,11 +611,22 @@ def _build_research_features(
             nq,
             interval_ns=cfg.interval_ns,
             depth=depth_by_iv[cfg.interval_ns],
+            cleaned_mbo=cleaned_nq,
+            filter_noise=False,
+            include_bottom_book=cfg.include_bottom_book,
             progress=log,
         )
     else:
         log.step("إلحاق عمق الدفتر السببي (دخول/مراقبة/تنفيذ/خروج)")
-        features = _attach_causal_depth(features, nq, interval_ns=cfg.interval_ns, progress=log)
+        features = _attach_causal_depth(
+            features,
+            nq,
+            interval_ns=cfg.interval_ns,
+            cleaned_mbo=cleaned_nq,
+            filter_noise=False,
+            include_bottom_book=cfg.include_bottom_book,
+            progress=log,
+        )
 
     if cfg.include_failed_fvg:
         log.step("إلحاق Failed FVG (نبضة تطابقية)")

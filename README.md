@@ -234,7 +234,7 @@ python scripts/run_week.py \
 
 | مبدأ | التطبيق |
 |------|---------|
-| منع التسريب | إشارات asof خلفي؛ اختيار الإعداد على **train فقط**؛ قياس OOS على **test** (purged walk-forward) |
+| منع التسريب | نبضة تطابقية لـ fail_*؛ asof خلفي للحالة المستمرة (VP/عمق)؛ اختيار الإعداد على **train فقط**؛ قياس OOS على **test** (purged walk-forward) |
 | صرامة كمية | IC + permutation؛ BH استكشافي على الشبكة؛ الحكم = IC خارج العينة |
 | أداء | كاش شموع OHLCV حسب `interval_ns` |
 | MBO فقط | الفرضيات من شريط صفقات MBO → OHLCV → FVG |
@@ -383,8 +383,9 @@ python scripts/run_fail_breakout_days.py \
 ```
 
 > **Day-parallel والمبادئ الأربعة:** التوازي على **مستوى الملف اليومي** فقط
-> (`ProcessPool`). داخل كل يوم يبقى نفس المحرّك السببي (asof خلفي + purged WF).
-> `manifest.json` / `summary.md` وصفيان — **لا** يختاران فرضية موحّدة عبر الشهر.
+> (`ProcessPool`). داخل كل يوم يبقى نفس المحرّك السببي (نبضة fail_* + asof للحالة
+> المستمرة + purged WF). `manifest.json` / `summary.md` وصفيان — **لا** يختاران
+> فرضية موحّدة عبر الشهر.
 
 مع `--search` (افتراضي): SSL يولّد **مرشّحي تعزيز** (`ssl_abs_q*`, `ssl_sign_*`, `ctx_*` بما فيها فلاتر فوليوم)
 فوق نواة Failed Breakout، ثم walk-forward يختار الأفضل خارج العينة.
@@ -404,7 +405,7 @@ python scripts/run_fail_breakout_days.py \
 | `fb_bar_volume` / `fb_cum_volume` | حجم فردي / تراكمي |
 | `fb_delta` / `fb_cum_delta` | دلتا / دلتا تراكمية |
 | `fb_absorption` / `fb_vol_imbalance` | امتصاص / اختلال حجم |
-| `fb_depth_at_break` | سيولة ظاهرة عند مستوى الكسر (من السلم) |
+| `fb_depth_at_break` | سيولة ظاهرة عند مستوى الكسر؛ `NaN` = لا تطابق / لا دفتر (ليس صفرًا) |
 | `depth_cum_*` / `depth_*_sz_k` | سلم عمق L1–L5 للمراقبة والتنفيذ/الخروج |
 | `*__enh__*` | تعزيزات SSL/سياق/فوليوم مرشّحة (عند `--search`) |
 
@@ -501,12 +502,13 @@ load_mbo_frame (Databento normalize + null-price sanitize + max_rows)
        # availability_ts = event_ts؛ عيّنة = آخر حالة في كل interval
        # عمق: VAH/VAL/trail + stream_*_liq (لا طمس الدفتر)
   → [features.mode=batch] cross_market_features   # نوافذ مجمّعة (اختياري)
-  → depth_at_bar_close (L1–L5) asof خلفي         # دخول/مراقبة/تنفيذ/خروج
-  → asof-join failed_fvg_features  # fail_fvg, effort_*  (خلفي فقط)
-  → asof-join auction_signal_frame # vp_balance, vp_imbalance, … (خلفي فقط)
-  → asof-join failed_breakout_features
+  → filter_depth_noise (سببي) ثم depth_at_bar_close (L1–L5) asof خلفي
+  → bottom_book L2–L5 / iceberg asof خلفي         # دخول/مراقبة/تنفيذ/خروج
+  → pulse-join failed_fvg_features  # fail_fvg, effort_*  (تطابق availability_ts فقط)
+  → asof-join auction_signal_frame # vp_balance, vp_imbalance, … (حالة مستمرة)
+  → pulse-join failed_breakout_features
        # fail_breakout + فوليوم (bar/cum/delta/effort_result)
-       # + fb_depth_at_break من سلم الدفتر عند مستوى الكسر
+       # + fb_depth_at_break (NaN = لا تطابق مستوى؛ ليس sticky asof)
   → ┌ run_ssl_tick_pipeline  أو  run_ssl_pipeline
     ├ run_coverage_on_features     # كتل: streaming + order_book_depth + FB
     └ discover_alpha_from_features # IC؛ intraday = depth-walk إن وُجد سلم

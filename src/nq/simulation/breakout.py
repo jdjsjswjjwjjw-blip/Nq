@@ -51,6 +51,17 @@ VolMode = Literal["bar", "cum", "delta", "effort_result"]
 SignalPriority = Literal["structure_first", "volume_first"]
 HoldMode = Literal["none", "persist", "absorption", "imbalance"]
 
+# أعمدة نبضة تُصفَّر عند غياب التطابق الزمني؛ الجهد/العمق يبقيان null (لا تطابق ≠ صفر).
+FB_PULSE_ZERO_FILL: Final[frozenset[str]] = frozenset(
+    {
+        "fail_breakout",
+        "fb_vol_imbalance",
+        "fb_delta",
+        "fb_cum_delta",
+        "fb_absorption",
+    }
+)
+
 _DEFAULT_LOOKBACK = 5
 _DEFAULT_ATR_WINDOW = 20
 _DEFAULT_VOL_WINDOW = 20
@@ -506,6 +517,7 @@ def failed_breakout_features(
 
 
 __all__ = [
+    "FB_PULSE_ZERO_FILL",
     "NS_PER_MIN",
     "SIGNAL_FB_LONG",
     "SIGNAL_FB_SHORT",
