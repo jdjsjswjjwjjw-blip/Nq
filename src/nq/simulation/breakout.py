@@ -80,6 +80,13 @@ _EMPTY_FB_SCHEMA: Final[dict[str, pl.DataType]] = {
     "fb_risk_pts": pl.Float64(),
 }
 
+# مرشّح قبل فلتر hold — عمود داخلي يُحذف من المخرج العام
+_FB_EFFORT_PREV: Final = "fb_effort_volume_prev"
+_CANDIDATE_SCHEMA: Final[dict[str, pl.DataType]] = {
+    **_EMPTY_FB_SCHEMA,
+    _FB_EFFORT_PREV: pl.Float64(),
+}
+
 
 def _ensure_flow_columns(bars: pl.DataFrame) -> pl.DataFrame:
     """يضمن أعمدة تدفّق على الشموع (للبيانات الاصطناعية بلا buy/sell)."""
@@ -179,33 +186,52 @@ def _volume_gate(  # noqa: PLR0911
     return effort_v > vol_mult and result_effort > result_mult
 
 
-def _hold_gate(
+def apply_hold_mode_filter(
+    candidates: pl.DataFrame,
     *,
-    mode: HoldMode,
-    effort_v_prev: float,
-    result_effort: float,
-    imbalance: float,
-    signal_side: float,
-    vol_mult: float,
-    result_mult: float,
-    imbalance_min: float,
-) -> bool:
-    """شروط hold سببية عند لحظة الدخول فقط (ماضٍ + شمعة الإشارة)."""
-    if mode == "none":
-        return True
-    if mode == "persist":
-        return effort_v_prev > vol_mult * _PERSIST_FRACTION
-    if mode == "absorption":
-        return result_effort > result_mult
-    # mode == "imbalance"
-    if signal_side == SIGNAL_FB_SHORT:
-        return imbalance > imbalance_min
-    if signal_side == SIGNAL_FB_LONG:
-        return imbalance < -imbalance_min
-    return False
+    hold_mode: HoldMode = "none",
+    vol_mult: float = _DEFAULT_VOL_MULT,
+    result_mult: float = _DEFAULT_RESULT_MULT,
+    imbalance_min: float = _DEFAULT_IMBALANCE_MIN,
+) -> pl.DataFrame:
+    """فلتر hold رخيص على مرشّحي مسح واحد — بلا إعادة مسح الشموع.
+
+    المدخل قد يحتوي ``fb_effort_volume_prev``؛ المخرج يطابق ``_EMPTY_FB_SCHEMA``.
+    """
+    if hold_mode not in ("none", "persist", "absorption", "imbalance"):
+        raise ValueError(f"unknown hold_mode: {hold_mode!r}")
+    if candidates.height == 0:
+        return pl.DataFrame(schema=_EMPTY_FB_SCHEMA)
+
+    work = candidates
+    if hold_mode == "persist":
+        prev = pl.col(_FB_EFFORT_PREV) if _FB_EFFORT_PREV in work.columns else pl.lit(0.0)
+        work = work.filter(prev > vol_mult * _PERSIST_FRACTION)
+    elif hold_mode == "absorption":
+        work = work.filter(pl.col("fb_effort_result_ratio") > result_mult)
+    elif hold_mode == "imbalance":
+        work = work.filter(
+            (
+                (pl.col("fail_breakout") == SIGNAL_FB_SHORT)
+                & (pl.col("fb_vol_imbalance") > imbalance_min)
+            )
+            | (
+                (pl.col("fail_breakout") == SIGNAL_FB_LONG)
+                & (pl.col("fb_vol_imbalance") < -imbalance_min)
+            )
+        )
+
+    drop = [c for c in work.columns if c not in _EMPTY_FB_SCHEMA]
+    if drop:
+        work = work.drop(drop)
+    # أعمدة ناقصة؟ أعد ترتيباً مطابقاً للمخطط
+    missing = [c for c in _EMPTY_FB_SCHEMA if c not in work.columns]
+    if missing:
+        work = work.with_columns([pl.lit(None).cast(_EMPTY_FB_SCHEMA[c]).alias(c) for c in missing])
+    return work.select(list(_EMPTY_FB_SCHEMA)).sort(AVAILABILITY_TS)
 
 
-def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
+def failed_breakout_candidates_from_bars(  # noqa: PLR0912, PLR0915
     signal_bars: pl.DataFrame,
     *,
     trend_bars: pl.DataFrame | None = None,
@@ -218,25 +244,14 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
     result_mult: float = _DEFAULT_RESULT_MULT,
     vol_mode: VolMode = "bar",
     priority: SignalPriority = "structure_first",
-    hold_mode: HoldMode = "none",
-    imbalance_min: float = _DEFAULT_IMBALANCE_MIN,
     sma_period: int = _DEFAULT_SMA_PERIOD,
     require_sma_filter: bool = True,
     rth_only: bool = True,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """يبني إشارة Failed Breakout من شموع مكتملة (سببي + فوليوم).
+    """مسح مرشّحي Failed Breakout **بدون** فلتر hold (لإعادة استخدام المسح).
 
-    Parameters
-    ----------
-    lookback:
-        عدد الشموع **السابقة فقط** لمستوى المدى (لا تشمل الشمعة الحالية).
-    vol_mode:
-        وضع فرضية الفوليوم: ``bar`` | ``cum`` | ``delta`` | ``effort_result``.
-    priority:
-        ``structure_first`` (كسر ثم فوليوم) أو ``volume_first`` (فوليوم ثم كسر).
-    hold_mode:
-        تركيب hold سببي عند الدخول: ``none`` | ``persist`` | ``absorption`` | ``imbalance``.
+    يضيف ``fb_effort_volume_prev`` لتمكين ``apply_hold_mode_filter`` لاحقًا.
     """
     if lookback < 1:
         raise ValueError(f"lookback must be >= 1, got {lookback}")
@@ -244,12 +259,10 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
         raise ValueError(f"unknown vol_mode: {vol_mode!r}")
     if priority not in ("structure_first", "volume_first"):
         raise ValueError(f"unknown priority: {priority!r}")
-    if hold_mode not in ("none", "persist", "absorption", "imbalance"):
-        raise ValueError(f"unknown hold_mode: {hold_mode!r}")
     if signal_bars.height < max(_MIN_BARS, lookback + atr_window):
         if progress is not None:
-            progress.op(f"failed_breakout_from_bars: تخطّي — شموع غير كافية ({signal_bars.height})")
-        return pl.DataFrame(schema=_EMPTY_FB_SCHEMA)
+            progress.op(f"failed_breakout_candidates: تخطّي — شموع غير كافية ({signal_bars.height})")
+        return pl.DataFrame(schema=_CANDIDATE_SCHEMA)
 
     work = _with_volume_baselines(
         signal_bars,
@@ -290,8 +303,8 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
     n_scan = len(closes) - lookback
     if progress is not None:
         progress.op(
-            f"failed_breakout_from_bars: مسح {n_scan:,} شمعة · "
-            f"mode={vol_mode} · priority={priority} · hold={hold_mode}"
+            f"failed_breakout_candidates: مسح {n_scan:,} شمعة · "
+            f"mode={vol_mode} · priority={priority}"
         )
     for j in range(lookback, len(closes)):
         if progress is not None:
@@ -332,7 +345,6 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
         a_sma = absorption_smas[j]
         result_effort = absorp_j / float(a_sma) if a_sma is not None and float(a_sma) > 0 else 0.0
 
-        # جهد حجم الشمعة السابقة (سببي لـ hold=persist)
         effort_v_prev = 0.0
         if j >= 1:
             prev_sma = vol_smas[j - 1]
@@ -340,8 +352,6 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
                 effort_v_prev = float(volumes[j - 1]) / float(prev_sma)
 
         range_ok = effort_r > range_mult
-
-        # مدى الشموع السابقة فقط — بلا الشمعة الحالية
         prior_h = max(float(highs[k]) for k in range(j - lookback, j))
         prior_l = min(float(lows[k]) for k in range(j - lookback, j))
         h = float(highs[j])
@@ -353,7 +363,6 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
         sma_ok_long = (not require_sma_filter) or (sma is not None and c > float(sma))
         struct_short = h > prior_h and c < prior_h and sma_ok_short
         struct_long = low_j < prior_l and c > prior_l and sma_ok_long
-
         imbalance = delta_j / vol_j if vol_j > 0 else 0.0
 
         signal = 0.0
@@ -380,21 +389,7 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
                 result_mult=result_mult,
                 signal_side=side,
             )
-            hold_ok = _hold_gate(
-                mode=hold_mode,
-                effort_v_prev=effort_v_prev,
-                result_effort=result_effort,
-                imbalance=imbalance,
-                signal_side=side,
-                vol_mult=vol_mult,
-                result_mult=result_mult,
-                imbalance_min=imbalance_min,
-            )
-            if priority == "volume_first":
-                # الفوليوم يولّد؛ البنية + المدى يؤكّدان؛ hold جودة الدخول
-                accepted = vol_ok and range_ok and hold_ok
-            else:
-                accepted = vol_ok and hold_ok
+            accepted = vol_ok and range_ok if priority == "volume_first" else vol_ok
             if accepted:
                 signal = side
                 level = lvl
@@ -422,12 +417,65 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
                 "fb_vol_imbalance": imbalance,
                 "fb_absorption": absorp_j,
                 "fb_risk_pts": float(risk),
+                _FB_EFFORT_PREV: float(effort_v_prev),
             }
         )
 
     if not rows:
-        return pl.DataFrame(schema=_EMPTY_FB_SCHEMA)
+        return pl.DataFrame(schema=_CANDIDATE_SCHEMA)
     return pl.DataFrame(rows).sort(AVAILABILITY_TS)
+
+
+def failed_breakout_from_bars(
+    signal_bars: pl.DataFrame,
+    *,
+    trend_bars: pl.DataFrame | None = None,
+    lookback: int = _DEFAULT_LOOKBACK,
+    atr_window: int = _DEFAULT_ATR_WINDOW,
+    vol_window: int = _DEFAULT_VOL_WINDOW,
+    cum_window: int = _DEFAULT_CUM_WINDOW,
+    range_mult: float = _DEFAULT_RANGE_MULT,
+    vol_mult: float = _DEFAULT_VOL_MULT,
+    result_mult: float = _DEFAULT_RESULT_MULT,
+    vol_mode: VolMode = "bar",
+    priority: SignalPriority = "structure_first",
+    hold_mode: HoldMode = "none",
+    imbalance_min: float = _DEFAULT_IMBALANCE_MIN,
+    sma_period: int = _DEFAULT_SMA_PERIOD,
+    require_sma_filter: bool = True,
+    rth_only: bool = True,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
+    """يبني إشارة Failed Breakout من شموع مكتملة (سببي + فوليوم).
+
+    المسح مرة واحدة ثم ``apply_hold_mode_filter`` — نفس الأرقام، جاهز لكاش التجسيد.
+    """
+    if hold_mode not in ("none", "persist", "absorption", "imbalance"):
+        raise ValueError(f"unknown hold_mode: {hold_mode!r}")
+    candidates = failed_breakout_candidates_from_bars(
+        signal_bars,
+        trend_bars=trend_bars,
+        lookback=lookback,
+        atr_window=atr_window,
+        vol_window=vol_window,
+        cum_window=cum_window,
+        range_mult=range_mult,
+        vol_mult=vol_mult,
+        result_mult=result_mult,
+        vol_mode=vol_mode,
+        priority=priority,
+        sma_period=sma_period,
+        require_sma_filter=require_sma_filter,
+        rth_only=rth_only,
+        progress=progress,
+    )
+    return apply_hold_mode_filter(
+        candidates,
+        hold_mode=hold_mode,
+        vol_mult=vol_mult,
+        result_mult=result_mult,
+        imbalance_min=imbalance_min,
+    )
 
 
 def failed_breakout_features(
@@ -494,6 +542,8 @@ __all__ = [
     "HoldMode",
     "SignalPriority",
     "VolMode",
+    "apply_hold_mode_filter",
+    "failed_breakout_candidates_from_bars",
     "failed_breakout_features",
     "failed_breakout_from_bars",
 ]
