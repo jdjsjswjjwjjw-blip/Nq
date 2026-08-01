@@ -58,11 +58,19 @@ def main() -> None:
         output_dir=args.output,
         quiet=args.quiet,
     )
-    print(result.unified.to_markdown())
-    print(f"\nsignals: {result.signal_columns}")
+    # الحكم = تقرير walk-forward (لا شاشة العيّنة الكاملة وحدها)
+    print(result.report.to_markdown())
+    print(
+        f"\nWF best={result.best_signal!r} · oos_ic={result.oos_ic:.4g} · "
+        f"p={result.oos_pvalue:.4g} · n={result.oos_n}"
+    )
+    print(f"signals: {result.signal_columns}")
     print(f"features: {result.features.height} rows")
     print(f"outputs: {args.output.resolve()}/")
     for name in (
+        "vp_walk_forward_report.md",
+        "vp_fold_selections.parquet",
+        "vp_oos_summary.parquet",
         "report.md",
         "features.parquet",
         "ssl_metrics.parquet",
@@ -79,8 +87,12 @@ def main() -> None:
         "vp_flip_to_imbalance",
     ):
         assert col in result.features.columns, f"missing {col}"
-    if result.alpha.evaluations.height > 0:
-        print(result.alpha.evaluations)
+    if not args.quiet:
+        print(
+            "\n[ملاحظة] report.md / alpha_evaluations من العيّنة الكاملة "
+            "استكشافية؛ الحكم = vp_walk_forward_report.md",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":
