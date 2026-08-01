@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 import pytest
@@ -69,7 +71,7 @@ def test_count_signal_hits() -> None:
     assert count_signal_hits(features, ["a", "b", "missing"]) == 3
 
 
-def test_fb_search_skips_ssl_when_base_hits_insufficient(tmp_path) -> None:
+def test_fb_search_skips_ssl_when_base_hits_insufficient(tmp_path: Path) -> None:
     """يوم بلا إشارات FB كافية → لا يبني tick_stream SSL."""
     nq, _ = _paired_streams(400, seed=9)
     result = search_fail_breakout_hypotheses(

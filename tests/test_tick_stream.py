@@ -74,5 +74,5 @@ def test_nq_only_tick_stream_does_not_double_events() -> None:
     assert "nq_best_bid_norm" in single.frame.columns
     assert "mnq_best_bid_norm" in single.frame.columns
     # دفتر MNQ فارغ في المسار الأحادي
-    assert float(single.frame["mnq_best_bid_norm"].abs().max()) == 0.0
+    assert single.frame["mnq_best_bid_norm"].abs().max() == 0.0
     assert set(single.frame["mask_path"].to_list()).issubset({int(MaskPath.STANDALONE)})

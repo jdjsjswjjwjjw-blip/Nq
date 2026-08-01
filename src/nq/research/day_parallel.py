@@ -26,7 +26,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from hashlib import blake2b
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 FbDayMode = Literal["search", "unified"]
 
@@ -131,16 +131,16 @@ class DayParallelManifest:
         if ok_specs:
             counts = Counter(ok_specs)
             lines.extend(["", "## Descriptive frequency of daily winners (not a selector)", ""])
-            for spec, n in counts.most_common():
-                lines.append(f"- `{spec}`: {n}/{len(ok_specs)}")
+            for spec, count in counts.most_common():
+                lines.append(f"- `{spec}`: {count}/{len(ok_specs)}")
         fails = [r for r in self.results if not r.ok]
         if fails:
             lines.extend(["", "## Failures", ""])
             for r in fails:
                 lines.append(f"- `{r.day_id}`: {r.error}")
         lines.extend(["", "## Notes", ""])
-        for n in self.notes:
-            lines.append(f"- {n}")
+        for note in self.notes:
+            lines.append(f"- {note}")
         return "\n".join(lines) + "\n"
 
 
@@ -222,7 +222,7 @@ def _run_one_day(payload: dict[str, Any]) -> DayJobResult:
     mnq_raw = payload.get("mnq_path")
     mnq_path = Path(mnq_raw) if mnq_raw else None
     out = Path(payload["output_dir"])
-    mode: FbDayMode = payload["mode"]  # type: ignore[assignment]
+    mode = cast(FbDayMode, payload["mode"])
     seed = int(payload["seed"])
     quiet = bool(payload.get("quiet", True))
 
@@ -233,13 +233,14 @@ def _run_one_day(payload: dict[str, Any]) -> DayJobResult:
                 search_fail_breakout_hypotheses,
             )
 
-            result = search_fail_breakout_hypotheses(
+            search_result = search_fail_breakout_hypotheses(
                 nq_path,
                 mnq_path,
                 horizon=int(payload.get("horizon", 1)),
                 use_ssl_gate=bool(payload.get("use_ssl_gate", True)),
                 enhance_with_ssl=bool(payload.get("enhance_with_ssl", True)),
                 use_depth_filter=bool(payload.get("use_depth_filter", True)),
+                compose_hold=bool(payload.get("compose_hold", False)),
                 n_splits=int(payload.get("n_splits", 3)),
                 n_permutations=int(payload.get("n_permutations", 100)),
                 max_rows=payload.get("max_rows"),
@@ -257,16 +258,16 @@ def _run_one_day(payload: dict[str, Any]) -> DayJobResult:
                 mnq_path=str(mnq_path) if mnq_path else None,
                 output_dir=str(out.resolve()),
                 mode=mode,
-                best_oos_spec=result.best_oos_spec,
-                oos_selected_ic=float(result.oos_selected_ic),
-                n_candidates=len(result.candidate_columns),
-                n_features=int(result.features.height),
+                best_oos_spec=search_result.best_oos_spec,
+                oos_selected_ic=float(search_result.oos_selected_ic),
+                n_candidates=len(search_result.candidate_columns),
+                n_features=int(search_result.features.height),
                 seed=seed,
             )
 
         from nq.strategies.fail_breakout import run_fail_breakout_research  # noqa: PLC0415
 
-        result = run_fail_breakout_research(
+        unified_result = run_fail_breakout_research(
             nq_path,
             mnq_path,
             horizon=int(payload.get("horizon", 1)),
@@ -283,8 +284,8 @@ def _run_one_day(payload: dict[str, Any]) -> DayJobResult:
             mode=mode,
             best_oos_spec=None,
             oos_selected_ic=None,
-            n_candidates=len(result.signal_columns),
-            n_features=int(result.features.height),
+            n_candidates=len(unified_result.signal_columns),
+            n_features=int(unified_result.features.height),
             seed=seed,
         )
     except Exception as exc:
@@ -316,6 +317,7 @@ def run_fail_breakout_day_parallel(
     use_ssl_gate: bool = True,
     enhance_with_ssl: bool = True,
     use_depth_filter: bool = True,
+    compose_hold: bool = False,
     lean_filters: bool = True,
     exploratory: bool = False,
     understand: bool = False,
@@ -362,6 +364,7 @@ def run_fail_breakout_day_parallel(
                 "use_ssl_gate": use_ssl_gate,
                 "enhance_with_ssl": enhance_with_ssl,
                 "use_depth_filter": use_depth_filter,
+                "compose_hold": compose_hold,
                 "lean_filters": lean_filters,
                 "exploratory": exploratory,
                 "understand": understand,

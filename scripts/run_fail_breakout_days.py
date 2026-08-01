@@ -135,6 +135,11 @@ def main() -> None:
         help="مع --search: شبكة فوليوم كاملة بلا تعزيز SSL",
     )
     parser.add_argument(
+        "--compose-hold",
+        action="store_true",
+        help="مع --search: تركيب volume-first × hold داخل الكسر",
+    )
+    parser.add_argument(
         "--no-depth-filter",
         action="store_true",
         help="مع --search: تعطيل فلتر مسار العمق",
@@ -228,6 +233,7 @@ def main() -> None:
         use_ssl_gate=not args.no_ssl_gate,
         enhance_with_ssl=not args.no_enhance,
         use_depth_filter=not args.no_depth_filter,
+        compose_hold=args.compose_hold,
         lean_filters=not args.no_lean_filters,
         exploratory=args.exploratory,
         understand=args.understand,

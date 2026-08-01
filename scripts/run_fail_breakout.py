@@ -9,6 +9,10 @@
 
     # شبكة فوليوم كاملة (~144 فرضية: bar/cum/delta/effort_result) بلا تعزيز SSL
     python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --search --no-enhance
+
+    # تركيب volume-first + hold داخل الكسر (الفوليوم يولّد · البنية تؤكّد)
+    python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --search --compose-hold
+    python scripts/run_fail_breakout.py --nq ... --search --compose-hold --no-enhance --horizon 2
 """
 
 from __future__ import annotations
@@ -37,7 +41,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Failed Breakout volume research — causal close entry; "
-            "capacity-correct walk-forward volume hypotheses + SSL sift"
+            "capacity-correct walk-forward volume hypotheses + SSL sift; "
+            "optional volume-first hold composition"
         )
     )
     parser.add_argument("--nq", type=Path, required=True, help="مسار NQ MBO")
@@ -49,11 +54,24 @@ def main() -> None:
         default=None,
         help=f"حد صفوف MBO (موصى به للبحث: {RECOMMENDED_MAX_ROWS:,})",
     )
-    parser.add_argument("--horizon", type=int, default=1)
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=1,
+        help="أفق hold التنفيذي عند التقييم (شموع ساعة البحث)",
+    )
     parser.add_argument(
         "--search",
         action="store_true",
         help="بحث فرضيات فوليوم بـ walk-forward + تعزيزات/بوابة SSL",
+    )
+    parser.add_argument(
+        "--compose-hold",
+        action="store_true",
+        help=(
+            "مع --search: يولّف استراتيجيات volume-first × hold "
+            "(persist/absorption/imbalance) داخل الكسر"
+        ),
     )
     parser.add_argument(
         "--no-ssl-gate",
@@ -101,11 +119,18 @@ def main() -> None:
         raise FileNotFoundError(f"MNQ MBO not found: {args.mnq.resolve()}")
 
     if args.search:
-        mode = (
-            "شبكة فوليوم كاملة (--no-enhance)"
-            if args.no_enhance
-            else "نواة فوليوم + تعزيزات SSL (capacity-correct)"
-        )
+        if args.compose_hold:
+            mode = (
+                "تركيب volume-first+hold كامل (--no-enhance)"
+                if args.no_enhance
+                else "نواة volume-first+hold + تعزيزات SSL"
+            )
+        else:
+            mode = (
+                "شبكة فوليوم كاملة (--no-enhance)"
+                if args.no_enhance
+                else "نواة فوليوم + تعزيزات SSL (capacity-correct)"
+            )
     else:
         mode = "خط Failed Breakout (فوليوم)"
     if not args.quiet:
@@ -123,6 +148,7 @@ def main() -> None:
             use_ssl_gate=not args.no_ssl_gate,
             enhance_with_ssl=not args.no_enhance,
             use_depth_filter=not args.no_depth_filter,
+            compose_hold=args.compose_hold,
             n_splits=args.n_splits,
             n_permutations=args.n_permutations,
             max_rows=args.max_rows,
@@ -157,31 +183,6 @@ def main() -> None:
     print(f"\nsignals: {result.signal_columns}")
     print(f"features: {result.features.height} rows")
     print(f"outputs: {args.output.resolve()}/")
-    for name in (
-        "report.md",
-        "features.parquet",
-        "ssl_metrics.parquet",
-        "coverage_metrics.parquet",
-        "alpha_evaluations.parquet",
-        "progress.log",
-    ):
-        path = args.output / name
-        if path.is_file():
-            print(f"  - {name}")
-    assert "fail_breakout" in result.features.columns
-    for col in (
-        "fb_effort_volume_ratio",
-        "fb_effort_result_ratio",
-        "fb_cum_volume",
-        "fb_delta",
-        "fb_absorption",
-    ):
-        assert col in result.features.columns, f"missing volume column {col}"
-    if "fb_entry_ref" in result.features.columns:
-        print(
-            "entry_model: fb_entry_ref=signal_bar_close (executable); "
-            "fb_break_level=analytic only"
-        )
 
 
 if __name__ == "__main__":

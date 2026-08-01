@@ -2,10 +2,13 @@
 
 * شبكة واسعة من أوضاع الفوليوم: فردي (bar) / تراكمي (cum) /
   دلتا (delta) / جهد مقابل نتيجة (effort_result).
+* تركيب volume-first + hold: الفوليوم يولّد المرشّح، بنية الكسر تؤكّد،
+  و``hold_mode`` يصف جودة الدخول السببية (persist/absorption/imbalance).
 * اختيار walk-forward purged (train فقط → OOS).
 * بوابة SSL سببية + تعزيزات سياق/فوليوم — لا إعادة كتابة القاعدة أثناء التدريب.
 
 الدخول التقييمي عبر مسار الألفا (close/bid-ask) — ليس ملء عند ``fb_break_level``.
+أفق الـ hold التنفيذي = ``horizon`` عند التقييم.
 """
 
 from __future__ import annotations
@@ -36,7 +39,13 @@ from nq.research.understanding import (
     run_understanding_layers,
     write_understanding_outputs,
 )
-from nq.simulation.breakout import VolMode, failed_breakout_features, failed_breakout_from_bars
+from nq.simulation.breakout import (
+    HoldMode,
+    SignalPriority,
+    VolMode,
+    failed_breakout_features,
+    failed_breakout_from_bars,
+)
 from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import NS_PER_MIN, build_ohlcv_bars
 from nq.strategies.depth_entry_filter import (
@@ -74,7 +83,7 @@ _VOLUME_FEATURE_COLUMNS = (
 
 @dataclass(frozen=True, slots=True)
 class BreakoutHypothesisSpec:
-    """فرضية Failed Breakout بإطار + إعدادات فوليوم/جهد ثابتة."""
+    """فرضية Failed Breakout بإطار + إعدادات فوليوم/جهد/hold ثابتة."""
 
     name: str
     signal_interval_ns: int
@@ -86,6 +95,8 @@ class BreakoutHypothesisSpec:
     vol_window: int = 20
     cum_window: int = 5
     vol_mode: VolMode = "bar"
+    priority: SignalPriority = "structure_first"
+    hold_mode: HoldMode = "none"
     sma_period: int = 50
     require_sma_filter: bool = True
 
@@ -294,6 +305,88 @@ def core_breakout_grid() -> tuple[BreakoutHypothesisSpec, ...]:
     )
 
 
+def volume_hold_compose_grid() -> tuple[BreakoutHypothesisSpec, ...]:
+    """يولّف استراتيجيات volume-first × hold داخل الكسر (حتمي، بلا SMA يومي).
+
+    الأبعاد:
+    * إطار 15m/30m
+    * lookback ∈ {3,5}
+    * vol_mode ∈ {bar, cum, delta, effort_result}
+    * hold_mode ∈ {none, persist, absorption, imbalance}
+    * ملفات عتبة فوليوم مضغوطة
+    * priority=volume_first دائمًا · nosma (مناسب لشرائح يومية)
+    """
+    signal_mins = (15, 30)
+    lookbacks = (3, 5)
+    vol_modes: tuple[VolMode, ...] = ("bar", "cum", "delta", "effort_result")
+    hold_modes: tuple[HoldMode, ...] = ("none", "persist", "absorption", "imbalance")
+    vol_profiles = (
+        (20, 1.5, 1.5, 5),
+        (40, 2.0, 1.8, 8),
+    )
+    specs: list[BreakoutHypothesisSpec] = []
+    for sig_m in signal_mins:
+        for lb in lookbacks:
+            for mode in vol_modes:
+                for hold in hold_modes:
+                    for vw, vm, rm, cw in vol_profiles:
+                        name = (
+                            f"vh_s{sig_m}_lb{lb}_{mode}_hold{hold}_"
+                            f"vw{vw}_v{_tag_float(vm)}_er{_tag_float(rm)}"
+                        )
+                        specs.append(
+                            BreakoutHypothesisSpec(
+                                name=name,
+                                signal_interval_ns=sig_m * NS_PER_MIN,
+                                trend_interval_ns=60 * NS_PER_MIN,
+                                lookback=lb,
+                                range_mult=1.05,
+                                vol_mult=vm,
+                                result_mult=rm,
+                                vol_window=vw,
+                                cum_window=cw,
+                                vol_mode=mode,
+                                priority="volume_first",
+                                hold_mode=hold,
+                                require_sma_filter=False,
+                            )
+                        )
+    return tuple(specs)
+
+
+def core_volume_hold_grid() -> tuple[BreakoutHypothesisSpec, ...]:
+    """نواة volume-first + hold — لتوليد تعزيزات SSL فوق التركيب."""
+    frames = (
+        (15, 3, 10, 1.2, 1.2, 3),
+        (30, 5, 20, 1.5, 1.5, 5),
+    )
+    vol_modes: tuple[VolMode, ...] = ("bar", "cum", "delta", "effort_result")
+    hold_modes: tuple[HoldMode, ...] = ("none", "persist", "absorption", "imbalance")
+    specs: list[BreakoutHypothesisSpec] = []
+    for sig_m, lb, vw, vm, rm, cw in frames:
+        for mode in vol_modes:
+            for hold in hold_modes:
+                name = f"vhcore_s{sig_m}_{mode}_hold{hold}"
+                specs.append(
+                    BreakoutHypothesisSpec(
+                        name=name,
+                        signal_interval_ns=sig_m * NS_PER_MIN,
+                        trend_interval_ns=60 * NS_PER_MIN,
+                        lookback=lb,
+                        range_mult=1.05,
+                        vol_mult=vm,
+                        result_mult=rm,
+                        vol_window=vw,
+                        cum_window=cw,
+                        vol_mode=mode,
+                        priority="volume_first",
+                        hold_mode=hold,
+                        require_sma_filter=False,
+                    )
+                )
+    return tuple(specs)
+
+
 def materialize_breakout_hypotheses(
     nq: pl.DataFrame,
     specs: Sequence[BreakoutHypothesisSpec],
@@ -331,6 +424,7 @@ def materialize_breakout_hypotheses(
         if log is not None:
             log.op(
                 f"فرضية [{i}/{n_specs}] {spec.name} · mode={spec.vol_mode} · "
+                f"priority={spec.priority} · hold={spec.hold_mode} · "
                 f"lb={spec.lookback} · v={spec.vol_mult}"
             )
         raw = failed_breakout_from_bars(
@@ -343,6 +437,8 @@ def materialize_breakout_hypotheses(
             vol_window=spec.vol_window,
             cum_window=spec.cum_window,
             vol_mode=spec.vol_mode,
+            priority=spec.priority,
+            hold_mode=spec.hold_mode,
             sma_period=spec.sma_period,
             require_sma_filter=spec.require_sma_filter,
             progress=log,
@@ -405,6 +501,7 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     use_ssl_gate: bool = True,
     enhance_with_ssl: bool = True,
     use_depth_filter: bool = True,
+    compose_hold: bool = False,
     ssl_window: int = 5,
     ssl_components: int = 4,
     n_splits: int = 3,
@@ -428,9 +525,13 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     ثم يختار بـ walk-forward (OOS هو الحكم).
     بدون تعزيز: الشبكة الكاملة ``volume_breakout_grid`` (~144 فرضية).
 
+    ``compose_hold=True``: يولّف volume-first × hold
+    (``core_volume_hold_grid`` مع تعزيز / ``volume_hold_compose_grid`` بدونه).
+
     ``lean_filters`` (افتراضي): كمّيات عمق/تعزيز مضغوطة ضمن القدرة.
     ``exploratory``: شاشة BH اختيارية (ليست أساس الاختيار — مغلقة افتراضيًا).
     ترتيب المرشّحين = IC فقط؛ permutation على OOS المجمّع.
+    أفق الـ hold التنفيذي = ``horizon``.
     """
     log = resolve_progress(progress, quiet=quiet)
     need_ssl = use_ssl_gate or enhance_with_ssl
@@ -443,8 +544,13 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         out_early = Path(output_dir)
         out_early.mkdir(parents=True, exist_ok=True)
         log.attach_log(out_early / "progress.log")
+    title = (
+        "بحث تركيب volume-first + hold داخل الكسر"
+        if compose_hold
+        else "بحث فرضيات Failed Breakout (فوليوم) + تعزيزات SSL + فلتر عمق"
+    )
     log.begin(
-        "بحث فرضيات Failed Breakout (فوليوم) + تعزيزات SSL + فلتر عمق",
+        title,
         total_steps=6 + ssl_steps + depth_steps + save_step + understand_steps + explor_step,
     )
     log.line("كل عملية تُطبع سطرًا بسطر — راقب progress.log أو stderr")
@@ -470,6 +576,12 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
 
         if specs is not None:
             grid = tuple(specs)
+        elif compose_hold and enhance_with_ssl:
+            grid = core_volume_hold_grid()
+            log.note(f"نواة volume-first+hold ({len(grid)}) لتوليد تعزيزات SSL")
+        elif compose_hold:
+            grid = volume_hold_compose_grid()
+            log.note(f"شبكة تركيب volume-first+hold: {len(grid)} فرضية")
         elif enhance_with_ssl:
             grid = core_breakout_grid()
             log.note(f"نواة فوليوم مضغوطة ({len(grid)}) لتوليد تعزيزات SSL")
@@ -649,9 +761,10 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         assistant = ResearchAssistant(alpha=alpha)
         detail = (
             f"best_oos_spec={best!r}; volume_specs={len(grid)}; "
+            f"compose_hold={compose_hold}; "
             f"enhancements={len(enhancement_columns)}; depth_filters={len(depth_columns)}; "
             f"lean_filters={lean_filters}; enhance_won={enh_won}; depth_won={depth_won}; "
-            f"walk-forward nested selection"
+            f"horizon={horizon}; walk-forward nested selection"
         )
         evidence = Evidence(
             id="fb_search:oos_ic",
@@ -762,8 +875,10 @@ __all__ = [
     "BreakoutHypothesisSpec",
     "classic_breakout_grid",
     "core_breakout_grid",
+    "core_volume_hold_grid",
     "default_breakout_grid",
     "materialize_breakout_hypotheses",
     "search_fail_breakout_hypotheses",
     "volume_breakout_grid",
+    "volume_hold_compose_grid",
 ]

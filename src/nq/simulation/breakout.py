@@ -1,4 +1,4 @@
-"""محاكي Failed Breakout السببي — من MBO فقط، بتركيز فوليوم.
+"""محاكي Failed Breakout سببي — من MBO فقط، بتركيز فوليوم.
 
 منطق الإشارة (عند إغلاق الشمعة فقط):
 
@@ -9,6 +9,14 @@
   - ``delta``: |Δ| / متوسط |Δ| ماضٍ + اتفاق اتجاه العدوان مع فشل الكسر.
   - ``effort_result``: جهد حجم عالٍ مع نتيجة سعرية ضعيفة
     (امتصاص = volume/(range+ε) أعلى من ماضٍ) — جهد بلا نتيجة.
+* أولوية الإشارة (``priority``):
+  - ``structure_first``: الكسر الفاشل أولًا ثم بوابة فوليوم (الافتراضي التاريخي).
+  - ``volume_first``: حدث الفوليوم يولّد المرشّح ثم بنية الكسر تؤكّد.
+* أوضاع hold سببية عند الدخول (لا look-ahead للخروج):
+  - ``none``: بلا شرط hold إضافي.
+  - ``persist``: جهد حجم الشمعة السابقة مرتفع أيضًا (بناء/استمرار فوليوم).
+  - ``absorption``: امتصاص عالٍ = حجم يُمسَك بلا نتيجة سعرية.
+  - ``imbalance``: اختلال تدفق يتفق مع فشل الكسر.
 * كسر لأعلى ثم إغلاق تحت مستوى آخر N شموع مكتملة → SHORT.
 * كسر لأسفل ثم إغلاق فوق المستوى → LONG.
 * تأكيد اتجاه اختياري عبر SMA على إطار أعلى (asof خلفي).
@@ -18,6 +26,7 @@
 * الإشارة تُعلن عند ``availability_ts = bucket_end`` (إغلاق الشمعة).
 * ``fail_breakout`` اتجاه فقط ∈ {-1,0,+1} — التقييم عبر مسار الألفا.
 * ``fb_break_level`` تحليلي؛ ``fb_entry_ref`` = إغلاق شمعة الإشارة.
+* أفق الـ hold التنفيذي يُحدَّد عند التقييم (``--horizon``) — ليس داخل الميزة.
 """
 
 from __future__ import annotations
@@ -36,6 +45,8 @@ SIGNAL_FB_SHORT: Final = -1.0
 SIGNAL_FB_LONG: Final = 1.0
 
 VolMode = Literal["bar", "cum", "delta", "effort_result"]
+SignalPriority = Literal["structure_first", "volume_first"]
+HoldMode = Literal["none", "persist", "absorption", "imbalance"]
 
 _DEFAULT_LOOKBACK = 5
 _DEFAULT_ATR_WINDOW = 20
@@ -45,6 +56,8 @@ _DEFAULT_SMA_PERIOD = 50
 _DEFAULT_RANGE_MULT = 1.1
 _DEFAULT_VOL_MULT = 1.2
 _DEFAULT_RESULT_MULT = 1.2
+_DEFAULT_IMBALANCE_MIN = 0.15
+_PERSIST_FRACTION = 0.85
 _MIN_BARS = 30
 _EPS = 1e-9
 
@@ -166,6 +179,32 @@ def _volume_gate(  # noqa: PLR0911
     return effort_v > vol_mult and result_effort > result_mult
 
 
+def _hold_gate(
+    *,
+    mode: HoldMode,
+    effort_v_prev: float,
+    result_effort: float,
+    imbalance: float,
+    signal_side: float,
+    vol_mult: float,
+    result_mult: float,
+    imbalance_min: float,
+) -> bool:
+    """شروط hold سببية عند لحظة الدخول فقط (ماضٍ + شمعة الإشارة)."""
+    if mode == "none":
+        return True
+    if mode == "persist":
+        return effort_v_prev > vol_mult * _PERSIST_FRACTION
+    if mode == "absorption":
+        return result_effort > result_mult
+    # mode == "imbalance"
+    if signal_side == SIGNAL_FB_SHORT:
+        return imbalance > imbalance_min
+    if signal_side == SIGNAL_FB_LONG:
+        return imbalance < -imbalance_min
+    return False
+
+
 def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
     signal_bars: pl.DataFrame,
     *,
@@ -178,6 +217,9 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
     vol_mult: float = _DEFAULT_VOL_MULT,
     result_mult: float = _DEFAULT_RESULT_MULT,
     vol_mode: VolMode = "bar",
+    priority: SignalPriority = "structure_first",
+    hold_mode: HoldMode = "none",
+    imbalance_min: float = _DEFAULT_IMBALANCE_MIN,
     sma_period: int = _DEFAULT_SMA_PERIOD,
     require_sma_filter: bool = True,
     rth_only: bool = True,
@@ -191,11 +233,19 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
         عدد الشموع **السابقة فقط** لمستوى المدى (لا تشمل الشمعة الحالية).
     vol_mode:
         وضع فرضية الفوليوم: ``bar`` | ``cum`` | ``delta`` | ``effort_result``.
+    priority:
+        ``structure_first`` (كسر ثم فوليوم) أو ``volume_first`` (فوليوم ثم كسر).
+    hold_mode:
+        تركيب hold سببي عند الدخول: ``none`` | ``persist`` | ``absorption`` | ``imbalance``.
     """
     if lookback < 1:
         raise ValueError(f"lookback must be >= 1, got {lookback}")
     if vol_mode not in ("bar", "cum", "delta", "effort_result"):
         raise ValueError(f"unknown vol_mode: {vol_mode!r}")
+    if priority not in ("structure_first", "volume_first"):
+        raise ValueError(f"unknown priority: {priority!r}")
+    if hold_mode not in ("none", "persist", "absorption", "imbalance"):
+        raise ValueError(f"unknown hold_mode: {hold_mode!r}")
     if signal_bars.height < max(_MIN_BARS, lookback + atr_window):
         if progress is not None:
             progress.op(f"failed_breakout_from_bars: تخطّي — شموع غير كافية ({signal_bars.height})")
@@ -239,7 +289,10 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
     rows: list[dict[str, float | int]] = []
     n_scan = len(closes) - lookback
     if progress is not None:
-        progress.op(f"failed_breakout_from_bars: مسح {n_scan:,} شمعة · mode={vol_mode}")
+        progress.op(
+            f"failed_breakout_from_bars: مسح {n_scan:,} شمعة · "
+            f"mode={vol_mode} · priority={priority} · hold={hold_mode}"
+        )
     for j in range(lookback, len(closes)):
         if progress is not None:
             done = j - lookback + 1
@@ -279,8 +332,14 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
         a_sma = absorption_smas[j]
         result_effort = absorp_j / float(a_sma) if a_sma is not None and float(a_sma) > 0 else 0.0
 
-        if effort_r <= range_mult:
-            continue
+        # جهد حجم الشمعة السابقة (سببي لـ hold=persist)
+        effort_v_prev = 0.0
+        if j >= 1:
+            prev_sma = vol_smas[j - 1]
+            if prev_sma is not None and float(prev_sma) > 0.0:
+                effort_v_prev = float(volumes[j - 1]) / float(prev_sma)
+
+        range_ok = effort_r > range_mult
 
         # مدى الشموع السابقة فقط — بلا الشمعة الحالية
         prior_h = max(float(highs[k]) for k in range(j - lookback, j))
@@ -290,50 +349,61 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
         c = float(closes[j])
         sma = smas[j]
 
+        sma_ok_short = (not require_sma_filter) or (sma is not None and c < float(sma))
+        sma_ok_long = (not require_sma_filter) or (sma is not None and c > float(sma))
+        struct_short = h > prior_h and c < prior_h and sma_ok_short
+        struct_long = low_j < prior_l and c > prior_l and sma_ok_long
+
+        imbalance = delta_j / vol_j if vol_j > 0 else 0.0
+
         signal = 0.0
         level = 0.0
         risk = 0.0
 
-        # كسر لأعلى وفشل → SHORT
-        if h > prior_h and c < prior_h:  # noqa: SIM102
-            if (not require_sma_filter) or (sma is not None and c < float(sma)):  # noqa: SIM102
-                if _volume_gate(
-                    mode=vol_mode,
-                    effort_v=effort_v,
-                    cum_effort=cum_effort,
-                    delta_effort=delta_effort,
-                    result_effort=result_effort,
-                    delta=delta_j,
-                    vol_mult=vol_mult,
-                    result_mult=result_mult,
-                    signal_side=SIGNAL_FB_SHORT,
-                ):
-                    signal = SIGNAL_FB_SHORT
-                    level = prior_h
-                    risk = max(1.5, h - prior_h)
+        if priority == "structure_first" and not range_ok:
+            continue
 
-        # كسر لأسفل وفشل → LONG
-        if signal == 0.0 and low_j < prior_l and c > prior_l:  # noqa: SIM102
-            if (not require_sma_filter) or (sma is not None and c > float(sma)):  # noqa: SIM102
-                if _volume_gate(
-                    mode=vol_mode,
-                    effort_v=effort_v,
-                    cum_effort=cum_effort,
-                    delta_effort=delta_effort,
-                    result_effort=result_effort,
-                    delta=delta_j,
-                    vol_mult=vol_mult,
-                    result_mult=result_mult,
-                    signal_side=SIGNAL_FB_LONG,
-                ):
-                    signal = SIGNAL_FB_LONG
-                    level = prior_l
-                    risk = max(1.5, prior_l - low_j)
+        for side, is_struct, lvl, risk_pts in (
+            (SIGNAL_FB_SHORT, struct_short, prior_h, max(1.5, h - prior_h)),
+            (SIGNAL_FB_LONG, struct_long, prior_l, max(1.5, prior_l - low_j)),
+        ):
+            if not is_struct:
+                continue
+            vol_ok = _volume_gate(
+                mode=vol_mode,
+                effort_v=effort_v,
+                cum_effort=cum_effort,
+                delta_effort=delta_effort,
+                result_effort=result_effort,
+                delta=delta_j,
+                vol_mult=vol_mult,
+                result_mult=result_mult,
+                signal_side=side,
+            )
+            hold_ok = _hold_gate(
+                mode=hold_mode,
+                effort_v_prev=effort_v_prev,
+                result_effort=result_effort,
+                imbalance=imbalance,
+                signal_side=side,
+                vol_mult=vol_mult,
+                result_mult=result_mult,
+                imbalance_min=imbalance_min,
+            )
+            if priority == "volume_first":
+                # الفوليوم يولّد؛ البنية + المدى يؤكّدان؛ hold جودة الدخول
+                accepted = vol_ok and range_ok and hold_ok
+            else:
+                accepted = vol_ok and hold_ok
+            if accepted:
+                signal = side
+                level = lvl
+                risk = risk_pts
+                break
 
         if signal == 0.0:
             continue
 
-        imbalance = delta_j / vol_j if vol_j > 0 else 0.0
         rows.append(
             {
                 BUCKET_START: int(starts[j]),
@@ -373,6 +443,9 @@ def failed_breakout_features(
     vol_mult: float = _DEFAULT_VOL_MULT,
     result_mult: float = _DEFAULT_RESULT_MULT,
     vol_mode: VolMode = "bar",
+    priority: SignalPriority = "structure_first",
+    hold_mode: HoldMode = "none",
+    imbalance_min: float = _DEFAULT_IMBALANCE_MIN,
     sma_period: int = _DEFAULT_SMA_PERIOD,
     require_sma_filter: bool = True,
     rth_only: bool = True,
@@ -382,7 +455,8 @@ def failed_breakout_features(
     if progress is not None:
         progress.op(
             f"failed_breakout_features: OHLCV signal={signal_interval_ns} · "
-            f"trend={trend_interval_ns} · أحداث={frame.height:,}"
+            f"trend={trend_interval_ns} · أحداث={frame.height:,} · "
+            f"priority={priority} · hold={hold_mode}"
         )
     signal_bars = build_ohlcv_bars(frame, interval_ns=signal_interval_ns)
     if progress is not None:
@@ -403,6 +477,9 @@ def failed_breakout_features(
         vol_mult=vol_mult,
         result_mult=result_mult,
         vol_mode=vol_mode,
+        priority=priority,
+        hold_mode=hold_mode,
+        imbalance_min=imbalance_min,
         sma_period=sma_period,
         require_sma_filter=require_sma_filter,
         rth_only=rth_only,
@@ -414,6 +491,8 @@ __all__ = [
     "NS_PER_MIN",
     "SIGNAL_FB_LONG",
     "SIGNAL_FB_SHORT",
+    "HoldMode",
+    "SignalPriority",
     "VolMode",
     "failed_breakout_features",
     "failed_breakout_from_bars",

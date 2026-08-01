@@ -100,6 +100,7 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 | `run_fail_fvg --search --understand` | نفس البحث + طبقات فهم كمية (OOS) | نعم — تشخيص بعد الاختيار فقط | + `understanding/` |
 | `run_fail_breakout` | Failed Breakout (فوليوم + عمق دفتر) | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
 | `run_fail_breakout --search` | شبكة فوليوم (~144) / نواة+SSL | نعم — walk-forward بلا تسريب | تقرير بحث + folds + screen |
+| `run_fail_breakout --search --compose-hold` | تركيب volume-first × hold داخل الكسر | نعم — فوليوم يولّد · بنية تؤكّد | نفس مخرجات البحث |
 | `run_fail_breakout --search --understand` | نفس البحث + طبقات فهم كمية (OOS) | نعم — تشخيص بعد الاختيار فقط | + `understanding/` |
 | `run_fail_breakout_days` | نفس FB على شرائح يومية متوازية | نعم — كل يوم كون سببي مغلق؛ لا اختيار عبر الأيام | `manifest.json` + مجلد/يوم |
 | `run_symbolic_search` | DEAP + gplearn (معادلات بلا `if`) | نعم — WF فوق ميزات الخط · يحتاج `nq[gp]` | programs.json + folds + signals |
@@ -109,6 +110,7 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 > لو عايز فرضية واحدة للفرز → الأمر المنفصل المناسب (نفس المعالجة والمخرجات).  
 > لو عايز **أفضل تايم فريم/إعدادات** لـ FVG → `run_fail_fvg --search`.  
 > لو عايز Failed Breakout (فوليوم + عمق) → `run_fail_breakout` أو `--search`.  
+> لو عايز يولّف استراتيجيات volume-first + hold داخل الكسر → `--search --compose-hold`.  
 > لو عايز **تفسير كمي بعد الاختيار** (لماذا فازت الإشارة؟) → أضف `--understand` مع `--search`.  
 > لو عايز **معادلات رمزية بلا if** → `pip install 'nq[gp]'` ثم `run_symbolic_search`.
 
@@ -307,6 +309,20 @@ SSL هنا **بوابة ظرف** (`z0` + كمّية ماضية)، مش مولّ�
 | `delta` | \|Δ\| عالٍ + اتفاق عدوان الشراء/البيع مع فشل الكسر |
 | `effort_result` | جهد حجم عالٍ + امتصاص عالٍ (حجم كبير / مدى صغير) = جهد بلا نتيجة |
 
+| أولوية (`priority`) | المعنى |
+|---------------------|--------|
+| `structure_first` | الكسر الفاشل أولًا ثم بوابة فوليوم (الافتراضي التاريخي) |
+| `volume_first` | **حدث الفوليوم يولّد** المرشّح ثم بنية الكسر تؤكّد |
+
+| hold عند الدخول (`hold_mode`) | المعنى (سببي — بلا look-ahead للخروج) |
+|-------------------------------|----------------------------------------|
+| `none` | بلا شرط hold إضافي |
+| `persist` | جهد حجم الشمعة السابقة مرتفع أيضًا (بناء فوليوم) |
+| `absorption` | امتصاص عالٍ = حجم يُمسَك بلا نتيجة سعرية |
+| `imbalance` | اختلال تدفّق يتفق مع فشل الكسر |
+
+أفق الـ hold التنفيذي عند التقييم = `--horizon` (شموع ساعة البحث).
+
 | مرحلة | العمق |
 |--------|--------|
 | دخول | `depth_*` عند إغلاق الشمعة + `fb_depth_at_break` عند مستوى الكسر |
@@ -327,6 +343,20 @@ python scripts/run_fail_breakout.py \
   --max-rows 500000 \
   --output data/runs/fail_breakout_search
 
+# تركيب volume-first × hold داخل الكسر (الفوليوم يولّد · البنية تؤكّد)
+python scripts/run_fail_breakout.py \
+  --nq /path/to/nq.parquet \
+  --search --compose-hold \
+  --horizon 2 \
+  --max-rows 500000 \
+  --output data/runs/fail_breakout_hold
+
+# شبكة تركيب كاملة بلا تعزيز SSL
+python scripts/run_fail_breakout.py \
+  --nq /path/to/nq.parquet \
+  --search --compose-hold --no-enhance \
+  --max-rows 500000
+
 # نفس البحث + فهم كمي بعد الاختيار
 python scripts/run_fail_breakout.py \
   --nq /path/to/nq.parquet \
@@ -346,7 +376,7 @@ python scripts/run_fail_breakout_days.py \
   --mnq-dir /data/mnq \
   --jobs 30 \
   --threads-per-worker 2 \
-  --search \
+  --search --compose-hold \
   --n-splits 3 \
   --n-permutations 100 \
   --output data/runs/fail_breakout_month
@@ -358,6 +388,9 @@ python scripts/run_fail_breakout_days.py \
 
 مع `--search` (افتراضي): SSL يولّد **مرشّحي تعزيز** (`ssl_abs_q*`, `ssl_sign_*`, `ctx_*` بما فيها فلاتر فوليوم)
 فوق نواة Failed Breakout، ثم walk-forward يختار الأفضل خارج العينة.
+
+مع `--search --compose-hold`: المحرّك **يولّف** فرضيات `volume_first × hold_mode × vol_mode`
+(نواة مع تعزيز / شبكة كاملة مع `--no-enhance`) ثم نفس التنخيل OOS.
 
 `--understand` (اختياري مع `--search`): طبقات فهم كمية بعد الاختيار — انظر **§2b**. لا تغيّر `best_oos_spec`.
 
@@ -611,6 +644,7 @@ Nq/
 | 9 | مراقب التغطية M9 | ✅ |
 | — | عمق سببي دخول/مراقبة/تنفيذ/خروج (L1–L5) | ✅ |
 | — | فرضيات فوليوم FB (bar/cum/delta/effort_result) | ✅ |
+| — | تركيب volume-first + hold داخل الكسر (`--compose-hold`) | ✅ |
 | — | فلتر دخول مسار أحداث العمق (`__depth__*`) | ✅ |
 | — | طبقات فهم كمية OOS (`--understand`) | ✅ |
 
