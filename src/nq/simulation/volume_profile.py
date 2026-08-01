@@ -198,49 +198,70 @@ def developing_value_area(
     *,
     interval_ns: int,
     fraction: float = _DEFAULT_VALUE_AREA_FRACTION,
+    cumulative: bool = False,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يحسب منطقة القيمة لكل نافذة زمنية ويقيس هجرة القيمة عبرها (سببي).
 
+    * ``cumulative=False``: ملف مستقل لكل نافذة (micro-profile).
+    * ``cumulative=True``: ملف متطوّر تراكمي عبر النوافذ (قبول/رفض القيمة الجلسي)
+      — الوضع الصحيح لمحاكي المزاد.
+
     الأعمدة: ``bucket_start``, ``poc``, ``vah``, ``val``, ``total_volume``,
-    ``poc_migration`` (إزاحة POC عن النافذة السابقة), ``bucket_end``,
-    ``availability_ts``. كل صف متاح فقط عند ``bucket_end``.
+    ``poc_migration``, ``bucket_end``, ``availability_ts``.
     """
     trades = extract_trades(add_time_bucket(frame, interval_ns=interval_ns))
+    empty = pl.DataFrame(
+        schema={
+            BUCKET_START: pl.Int64(),
+            "poc": pl.Int64(),
+            "vah": pl.Int64(),
+            "val": pl.Int64(),
+            "total_volume": pl.Int64(),
+            "poc_migration": pl.Int64(),
+            BUCKET_END: pl.Int64(),
+            AVAILABILITY_TS: pl.Int64(),
+        }
+    )
     if trades.height == 0:
-        return pl.DataFrame(
-            schema={
-                BUCKET_START: pl.Int64(),
-                "poc": pl.Int64(),
-                "vah": pl.Int64(),
-                "val": pl.Int64(),
-                "total_volume": pl.Int64(),
-                "poc_migration": pl.Int64(),
-                BUCKET_END: pl.Int64(),
-                AVAILABILITY_TS: pl.Int64(),
-            }
-        )
+        return empty
 
-    per_price = trades.group_by([BUCKET_START, "price"]).agg(
-        pl.col("size").cast(pl.Int64).sum().alias("volume"),
-        pl.col(BUCKET_END).first(),
+    # ترتيب حتمي قبل التجميع — وإلا ترتيب group_by غير مستقر يكسر التراكم
+    trades = trades.sort([BUCKET_START, "price"])
+    per_price = (
+        trades.group_by([BUCKET_START, "price"], maintain_order=True)
+        .agg(
+            pl.col("size").cast(pl.Int64).sum().alias("volume"),
+            pl.col(BUCKET_END).first(),
+        )
+        .sort([BUCKET_START, "price"])
     )
 
     rows: list[dict[str, int]] = []
     groups = list(per_price.group_by([BUCKET_START], maintain_order=True))
     n_buckets = len(groups)
     if progress is not None:
-        progress.op(f"developing_value_area: {n_buckets:,} نافذة · interval_ns={interval_ns}")
+        mode = "تراكمي" if cumulative else "لكل-نافذة"
+        progress.op(
+            f"developing_value_area: {n_buckets:,} نافذة · interval_ns={interval_ns} · {mode}"
+        )
+
+    running: DevelopingVolumeProfile | None = (
+        DevelopingVolumeProfile(fraction=fraction) if cumulative else None
+    )
     for i, ((bucket_start,), group) in enumerate(groups, start=1):
         if progress is not None:
             progress.heartbeat(i, n_buckets, label="value_area")
         sorted_group = group.sort("price")
-        va = value_area_from_levels(
-            sorted_group["price"].to_list(),
-            sorted_group["volume"].to_list(),
-            fraction=fraction,
-        )
-        if va is None:  # pragma: no cover - group is always non-empty here
+        prices = sorted_group["price"].to_list()
+        volumes = sorted_group["volume"].to_list()
+        if cumulative and running is not None:
+            for px, vol in zip(prices, volumes, strict=True):
+                running.add_trade(int(px), int(vol))
+            va = running.value_area()
+        else:
+            va = value_area_from_levels(prices, volumes, fraction=fraction)
+        if va is None:  # pragma: no cover
             continue
         rows.append(
             {
@@ -253,6 +274,8 @@ def developing_value_area(
             }
         )
 
+    if not rows:
+        return empty
     result = pl.DataFrame(rows).sort(BUCKET_START)
     return result.with_columns(
         pl.col("poc").diff().fill_null(0).alias("poc_migration"),

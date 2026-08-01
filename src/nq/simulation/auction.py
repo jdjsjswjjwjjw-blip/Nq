@@ -3,14 +3,12 @@
 يستند إلى نظرية المزاد ومنطقة القيمة لوصف حالة السوق لكل نافذة زمنية:
 
 * التوازن/الاختلال (Balance / Imbalance): السوق **متوازن** حين يُغلق داخل منطقة
-  القيمة (قبول القيمة، ``close_in_value``) دون تمدّد مدى؛ و**مختلّ** حين يُغلق
-  خارج منطقة القيمة (رفض/قبول بعيدًا عن القيمة → اتجاه) أو مع تمدّد مدى. الانقلاب
-  من متوازن إلى مختلّ يُكشَف بتغيّر ``is_balanced`` من ``True`` إلى ``False``.
-  (تبقى ``in_value_fraction`` مقياسًا مُبلَّغًا مساعدًا.)
-* التمدّد (Expansion): ``expansion_ratio = range_t / range_{t-1}`` حيث
-  ``range = high - low`` للنافذة؛ علم ``is_expansion`` عند تجاوز العتبة.
-* دفاع الارتداد (Pullback Defense): حين تصنع النافذة نهايةً جديدة (قمة/قاع) ثم
-  يعود الإغلاق داخل منطقة القيمة — أي أن الامتداد لم يُدافَع عنه وارتد إلى القيمة.
+  القيمة الجلسية المتطوّرة (قبول القيمة، ``close_in_value``) دون تمدّد مدى،
+  ومع بقاء حصّة حجم **النافذة الحالية** داخل [VAL,VAH] فوق العتبة. و**مختلّ**
+  حين يُغلق خارج القيمة أو مع تمدّد. ``in_value_fraction`` ذو معنى فقط مع
+  VA تراكمي (لا micro-profile معزول لكل نافذة).
+* التمدّد (Expansion): ``expansion_ratio = range_t / range_{t-1}``.
+* دفاع الارتداد (Pullback Defense): نهاية جديدة ثم إغلاق داخل القيمة.
 
 كل الحالات سببية: كل صف يعتمد على نافذته والنوافذ السابقة فقط، ومتاح عند
 ``bucket_end``.
@@ -41,12 +39,14 @@ def auction_states(
 ) -> pl.DataFrame:
     """يصنّف حالة المزاد لكل نافذة زمنية (متاح عند ``bucket_end``).
 
-    الأعمدة تشمل: ``poc``, ``vah``, ``val``, ``high``, ``low``, ``close``,
-    ``range``, ``in_value_fraction``, ``is_balanced``, ``expansion_ratio``,
-    ``is_expansion``, ``made_new_high``, ``made_new_low``, ``pullback_defended``.
+    يستخدم منطقة قيمة **تراكمية** عبر النوافذ (قبول/رفض القيمة الجلسي).
     """
     dva = developing_value_area(
-        frame, interval_ns=interval_ns, fraction=fraction, progress=progress
+        frame,
+        interval_ns=interval_ns,
+        fraction=fraction,
+        cumulative=True,
+        progress=progress,
     )
     if dva.height == 0:
         return dva.with_columns(
@@ -64,7 +64,7 @@ def auction_states(
         pl.col("size").cast(pl.Int64).sum().alias("bucket_volume"),
     )
 
-    # حجم الصفقات داخل منطقة القيمة [val, vah] لكل نافذة.
+    # حجم صفقات النافذة الحالية داخل منطقة القيمة الجلسية المتطوّرة
     va_bounds = dva.select(BUCKET_START, "vah", "val")
     in_value = (
         trades.join(va_bounds, on=BUCKET_START, how="left")
@@ -108,8 +108,7 @@ def auction_states(
         closed_in_value.alias("close_in_value"),
         is_expansion.alias("is_expansion"),
     ).with_columns(
-        # التوازن (rotational): أُغلق داخل منطقة القيمة (قبول للقيمة) دون تمدّد مدى،
-        # مع بقاء حصّة الحجم داخل القيمة فوق العتبة. غير ذلك = اختلال (اتجاه/رفض القيمة).
+        # مع VA تراكمي: حصّة حجم النافذة داخل القيمة مقياس حيّ (قد تكون < fraction)
         (
             pl.col("close_in_value")
             & ~pl.col("is_expansion")

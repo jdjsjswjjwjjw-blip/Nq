@@ -23,7 +23,7 @@ from nq.research.orchestrator import (
     UnifiedResearchResult,
     run_research_pipeline,
 )
-from nq.research.progress import PipelineProgress, resolve_progress
+from nq.research.progress import resolve_progress
 from nq.research.unified import UnifiedResearchReport
 from nq.strategies.fvg_hypothesis import walk_forward_select_hypotheses
 
@@ -200,6 +200,23 @@ def run_vp_auction_research(
         findings,
         title="Volume Profile / Auction — Walk-Forward Selection",
     )
+
+    if output_dir is not None:
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        fold_df.write_parquet(out / "vp_fold_selections.parquet")
+        (out / "vp_walk_forward_report.md").write_text(report.to_markdown(), encoding="utf-8")
+        summary = pl.DataFrame(
+            {
+                "best_signal": [best],
+                "oos_ic": [oos_ic],
+                "oos_pvalue": [oos_p],
+                "oos_n": [oos_n],
+                "exploratory_full_sample": [exploratory_full_sample],
+            }
+        )
+        summary.write_parquet(out / "vp_oos_summary.parquet")
+        log.note(f"مخرجات WF محفوظة في {out.resolve()}")
 
     return VpAuctionResearchResult.from_unified(
         result,
