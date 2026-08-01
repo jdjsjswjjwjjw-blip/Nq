@@ -15,9 +15,11 @@ from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import NS_30M, build_ohlcv_bars
 from nq.strategies.breakout_hypothesis import (
     BreakoutHypothesisSpec,
+    core_volume_hold_grid,
     default_breakout_grid,
     materialize_breakout_hypotheses,
     volume_breakout_grid,
+    volume_hold_compose_grid,
 )
 from nq.strategies.fail_breakout import run_fail_breakout_research
 from tests.test_coverage import _paired_streams
@@ -230,6 +232,53 @@ def test_volume_baselines_past_only_stable() -> None:
     a = past.select(AVAILABILITY_TS, *cols).sort(AVAILABILITY_TS)
     b = past2.select(AVAILABILITY_TS, *cols).sort(AVAILABILITY_TS)
     assert a.equals(b)
+
+
+def test_volume_first_emits_on_volume_event() -> None:
+    """volume_first: حدث الفوليوم + بنية الكسر → إشارة."""
+    bars = _synthetic_signal_bars()
+    out = failed_breakout_from_bars(
+        bars,
+        lookback=5,
+        require_sma_filter=False,
+        rth_only=False,
+        range_mult=1.05,
+        vol_mult=1.05,
+        priority="volume_first",
+        hold_mode="none",
+        vol_mode="bar",
+    )
+    assert out.height >= 1
+    assert set(out["fail_breakout"].unique().to_list()).issubset({-1.0, 1.0})
+
+
+def test_hold_persist_is_stricter_than_none() -> None:
+    """hold=persist يضيّق الإشارات مقارنة بـ none (سببي، بلا look-ahead)."""
+    bars = _synthetic_signal_bars(100)
+    base_kw = dict(
+        lookback=5,
+        require_sma_filter=False,
+        rth_only=False,
+        range_mult=1.05,
+        vol_mult=1.05,
+        priority="volume_first",
+        vol_mode="bar",
+    )
+    none_hits = failed_breakout_from_bars(bars, hold_mode="none", **base_kw).height
+    persist_hits = failed_breakout_from_bars(bars, hold_mode="persist", **base_kw).height
+    assert persist_hits <= none_hits
+
+
+def test_volume_hold_compose_grid_all_volume_first() -> None:
+    compose = volume_hold_compose_grid()
+    core = core_volume_hold_grid()
+    assert len(compose) == 2 * 2 * 4 * 4 * 2  # sig × lb × mode × hold × profile
+    assert len(core) == 2 * 4 * 4
+    assert all(s.priority == "volume_first" for s in compose)
+    assert all(s.priority == "volume_first" for s in core)
+    holds = {s.hold_mode for s in compose}
+    assert holds == {"none", "persist", "absorption", "imbalance"}
+    assert all(not s.require_sma_filter for s in compose)
 
 
 def test_ohlcv_bars_include_flow_columns() -> None:
