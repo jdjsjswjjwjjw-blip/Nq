@@ -255,17 +255,28 @@ def test_volume_first_emits_on_volume_event() -> None:
 def test_hold_persist_is_stricter_than_none() -> None:
     """hold=persist يضيّق الإشارات مقارنة بـ none (سببي، بلا look-ahead)."""
     bars = _synthetic_signal_bars(100)
-    base_kw = dict(
+    none_hits = failed_breakout_from_bars(
+        bars,
         lookback=5,
         require_sma_filter=False,
         rth_only=False,
         range_mult=1.05,
         vol_mult=1.05,
         priority="volume_first",
+        hold_mode="none",
         vol_mode="bar",
-    )
-    none_hits = failed_breakout_from_bars(bars, hold_mode="none", **base_kw).height
-    persist_hits = failed_breakout_from_bars(bars, hold_mode="persist", **base_kw).height
+    ).height
+    persist_hits = failed_breakout_from_bars(
+        bars,
+        lookback=5,
+        require_sma_filter=False,
+        rth_only=False,
+        range_mult=1.05,
+        vol_mult=1.05,
+        priority="volume_first",
+        hold_mode="persist",
+        vol_mode="bar",
+    ).height
     assert persist_hits <= none_hits
 
 
