@@ -456,12 +456,13 @@ def materialize_breakout_hypotheses(
             )
             if col in out.columns:
                 out = out.drop(col)
-            out = out.join_asof(right, on=AVAILABILITY_TS, strategy="backward").with_columns(
+            # join تطابقي — نبضة عند bucket_end فقط (لا sticky asof على ساعة أدق)
+            out = out.join(right, on=AVAILABILITY_TS, how="left").with_columns(
                 pl.col(col).fill_null(0.0)
             )
             if log is not None:
                 n_sig = int((raw["fail_breakout"] != 0).sum())
-                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف")
+                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف (pulse join)")
         if log is not None:
             log.heartbeat(i, n_specs, label="materialize_FB", force=True)
     if log is not None:
@@ -475,7 +476,7 @@ def _attach_volume_context(
     *,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """يلحق أعمدة فوليوم سببية افتراضية للتعزيز/السياق (asof خلفي)."""
+    """يلحق أعمدة فوليوم سببية افتراضية للتعزيز/السياق (نبضة تطابقية)."""
     fb = failed_breakout_features(nq, require_sma_filter=False, rth_only=False, progress=progress)
     keep = [c for c in (AVAILABILITY_TS, *_VOLUME_FEATURE_COLUMNS) if c in fb.columns]
     if len(keep) < _MIN_VOLUME_KEEP or features.height == 0:
@@ -486,7 +487,7 @@ def _attach_volume_context(
     drop = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
     if drop:
         left = left.drop(drop)
-    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
+    joined = left.join(right, on=AVAILABILITY_TS, how="left")
     fills = [pl.col(c).fill_null(0.0) for c in _VOLUME_FEATURE_COLUMNS if c in joined.columns]
     return joined.with_columns(fills) if fills else joined
 

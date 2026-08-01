@@ -23,6 +23,7 @@ import polars as pl
 
 from nq.contracts.mbo import MboAction
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS, SEQUENCE
+from nq.core.session import session_date_from_ns
 from nq.core.time import sort_causal
 from nq.orderbook.book import OrderBook
 from nq.research.progress import ProgressLike
@@ -90,6 +91,7 @@ PHASE_NAMES: Final = (
     "phase_expansion",
 )
 CROSS_NAMES: Final = (
+    "nq_signed_vol",
     "mnq_signed_vol",
     "trap_setup",
 )
@@ -188,18 +190,21 @@ def _phase_one_hot(phase: MarketPhase) -> tuple[float, float]:
 
 
 def _trap_setup(
-    mnq_delta: int,
-    nq_mid: float,
-    mnq_mid: float,
-    nq_high: float,
-    mnq_high: float,
+    mnq_event_delta: int,
     *,
+    mnq_new_high: bool,
+    mnq_new_low: bool,
+    nq_new_high: bool,
+    nq_new_low: bool,
     min_delta: int = 1,
 ) -> float:
-    """إعداد مصيدة سببي: MNQ يتحرك عدوانيًا دون قمة NQ جديدة."""
-    if mnq_delta >= min_delta and mnq_mid >= mnq_high and nq_mid < nq_high:
+    """إعداد مصيدة سببي: MNQ قمة/قاع جلسة جديدة بعدوانية دون تأكيد NQ.
+
+    يطابق فلسفة ``cross_market_features`` (جلسة + دلتا الحدث/الفاصل)، لا قمم عمرية.
+    """
+    if mnq_event_delta >= min_delta and mnq_new_high and not nq_new_high:
         return 1.0
-    if mnq_delta <= -min_delta and mnq_mid <= mnq_high and nq_mid > nq_high:
+    if mnq_event_delta <= -min_delta and mnq_new_low and not nq_new_low:
         return -1.0
     return 0.0
 
@@ -236,8 +241,10 @@ def _tick_row(
     mnq_book: OrderBook,
     nq_profile: DevelopingVolumeProfile,
     regime_tracker: CausalRegimeTracker,
+    nq_signed: int,
     mnq_signed: int,
     nq_high: float,
+    nq_low: float,
     mnq_high: float,
     mnq_low: float,
     ref_price: float,
@@ -245,6 +252,8 @@ def _tick_row(
 ) -> tuple[
     dict[str, float | int],
     int,
+    int,
+    float,
     float,
     float,
     float,
@@ -255,25 +264,40 @@ def _tick_row(
     book = nq_book if is_nq else mnq_book
     book.apply(str(action), str(side), int(price), int(size), int(order_id))
 
+    event_nq_delta = 0
+    event_mnq_delta = 0
     if is_nq and str(action) == _TRADE:
         nq_profile.add_trade(int(price), int(size))
+        trade_size = int(size)
+        event_nq_delta = trade_size if str(side) == _BID else -trade_size
+        nq_signed += event_nq_delta
 
     if not is_nq and str(action) == _TRADE:
         trade_size = int(size)
-        signed = trade_size if str(side) == _BID else -trade_size
-        mnq_signed += signed
+        event_mnq_delta = trade_size if str(side) == _BID else -trade_size
+        mnq_signed += event_mnq_delta
 
     nq_row = _book_row(nq_book, ref_price=ref_price)
     mnq_row = _book_row(mnq_book, ref_price=ref_price)
     nq_mid = nq_row[5] * ref_price
     mnq_mid = mnq_row[5] * ref_price
 
+    # قمم/قيعان الجلسة قبل التحديث — تطابق shift(1) في المسار المجمّع
+    prev_nq_high, prev_nq_low = nq_high, nq_low
+    prev_mnq_high, prev_mnq_low = mnq_high, mnq_low
+
     if nq_mid > 0:
-        nq_high = max(nq_high, nq_mid)
+        nq_high = max(nq_high, nq_mid) if nq_high > 0 else nq_mid
+        nq_low = min(nq_low, nq_mid) if nq_low > 0 else nq_mid
 
     if mnq_mid > 0:
-        mnq_high = max(mnq_high, mnq_mid)
-        mnq_low = mnq_mid if mnq_low == 0.0 else min(mnq_low, mnq_mid)
+        mnq_high = max(mnq_high, mnq_mid) if mnq_high > 0 else mnq_mid
+        mnq_low = min(mnq_low, mnq_mid) if mnq_low > 0 else mnq_mid
+
+    nq_new_high = prev_nq_high > 0 and nq_mid > prev_nq_high
+    nq_new_low = prev_nq_low > 0 and nq_mid < prev_nq_low
+    mnq_new_high = prev_mnq_high > 0 and mnq_mid > prev_mnq_high
+    mnq_new_low = prev_mnq_low > 0 and mnq_mid < prev_mnq_low
 
     va = nq_profile.value_area()
     vp_feats = nq_profile.features_at_mid(
@@ -282,7 +306,13 @@ def _tick_row(
     depth_feats = _book_depth_features(nq_book, va)
     phase = MarketPhase(regime_tracker.update(_regime_features(vp_feats, depth_feats)))
     phase_oh = _phase_one_hot(phase)
-    trap = _trap_setup(mnq_signed, nq_mid, mnq_mid, nq_high, mnq_high)
+    trap = _trap_setup(
+        event_mnq_delta,
+        mnq_new_high=mnq_new_high,
+        mnq_new_low=mnq_new_low,
+        nq_new_high=nq_new_high,
+        nq_new_low=nq_new_low,
+    )
     mask_path = MaskPath.CROSS_TRAP if abs(trap) > 0 else MaskPath.STANDALONE
 
     row: dict[str, float | int] = {
@@ -297,11 +327,21 @@ def _tick_row(
         **dict(zip(BOOK_DEPTH_NAMES, depth_feats, strict=True)),
         **dict(zip(VP_NAMES, vp_feats, strict=True)),
         **dict(zip(PHASE_NAMES, phase_oh, strict=True)),
+        "nq_signed_vol": float(nq_signed),
         "mnq_signed_vol": float(mnq_signed),
         "trap_setup": trap,
     }
     next_prev_nq_mid = nq_mid if nq_mid > 0 else prev_nq_mid
-    return row, mnq_signed, nq_high, mnq_high, mnq_low, next_prev_nq_mid
+    return (
+        row,
+        nq_signed,
+        mnq_signed,
+        nq_high,
+        nq_low,
+        mnq_high,
+        mnq_low,
+        next_prev_nq_mid,
+    )
 
 
 def build_tick_stream(
@@ -336,11 +376,14 @@ def build_tick_stream(
     mnq_book = OrderBook()
     nq_profile = DevelopingVolumeProfile()
     regime_tracker = CausalRegimeTracker(min_samples=8, refit_interval=16)
+    nq_signed = 0
     mnq_signed = 0
     nq_high = 0.0
+    nq_low = 0.0
     mnq_high = 0.0
     mnq_low = 0.0
     ref_price = _REF_PRICE
+    current_session: str | None = None
 
     rows: list[dict[str, float | int]] = []
     actions = combined["action"].to_list()
@@ -375,7 +418,29 @@ def build_tick_stream(
         ),
         start=1,
     ):
-        row, mnq_signed, nq_high, mnq_high, mnq_low, prev_nq_mid = _tick_row(
+        session = session_date_from_ns(int(ts))
+        if current_session is None:
+            current_session = session
+        elif session != current_session:
+            # إعادة تصفير يومية ET — قمم/قيعان ودلتا موقّعة للجلسة فقط
+            nq_signed = 0
+            mnq_signed = 0
+            nq_high = 0.0
+            nq_low = 0.0
+            mnq_high = 0.0
+            mnq_low = 0.0
+            current_session = session
+
+        (
+            row,
+            nq_signed,
+            mnq_signed,
+            nq_high,
+            nq_low,
+            mnq_high,
+            mnq_low,
+            prev_nq_mid,
+        ) = _tick_row(
             action=str(action),
             side=str(side),
             price=int(price),
@@ -389,8 +454,10 @@ def build_tick_stream(
             mnq_book=mnq_book,
             nq_profile=nq_profile,
             regime_tracker=regime_tracker,
+            nq_signed=nq_signed,
             mnq_signed=mnq_signed,
             nq_high=nq_high,
+            nq_low=nq_low,
             mnq_high=mnq_high,
             mnq_low=mnq_low,
             ref_price=ref_price,

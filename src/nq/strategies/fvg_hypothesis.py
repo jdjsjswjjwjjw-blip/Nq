@@ -214,12 +214,12 @@ def materialize_fvg_hypotheses(
             )
             if col in out.columns:
                 out = out.drop(col)
-            out = out.join_asof(right, on=AVAILABILITY_TS, strategy="backward").with_columns(
+            out = out.join(right, on=AVAILABILITY_TS, how="left").with_columns(
                 pl.col(col).fill_null(0.0)
             )
             if log is not None:
                 n_sig = int((raw["fail_fvg"] != 0).sum())
-                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف")
+                log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف (pulse join)")
         if log is not None:
             log.heartbeat(i, n_specs, label="materialize_FVG", force=True)
     if log is not None:

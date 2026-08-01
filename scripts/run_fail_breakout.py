@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """تشغيل بحث Failed Breakout — تركيز فوليوم فوق الخط الموحّد.
 
-    # خط أساسي (إشارة + أعمدة فوليوم سببية)
+    # استكشافي كامل العيّنة (BH screen — ليس اختيار WF/OOS)
     python scripts/run_fail_breakout.py --nq data/raw/nq.parquet --max-rows 500000
 
     # بحث نواة فوليوم + تعزيزات SSL (تنخيل walk-forward)
@@ -36,6 +36,11 @@ from nq.research.capacity import RECOMMENDED_MAX_ROWS, SEARCH_N_PERMUTATIONS  # 
 from nq.strategies.breakout_hypothesis import search_fail_breakout_hypotheses  # noqa: E402
 from nq.strategies.fail_breakout import run_fail_breakout_research  # noqa: E402
 
+_EXPLORATORY_BANNER = (
+    "[nq] NOTE: default mode (no --search) is an exploratory full-sample BH screen — "
+    "not purged walk-forward hypothesis selection. Use --search for OOS selection."
+)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -43,7 +48,12 @@ def main() -> None:
             "Failed Breakout volume research — causal close entry; "
             "capacity-correct walk-forward volume hypotheses + SSL sift; "
             "optional volume-first hold composition"
-        )
+        ),
+        epilog=(
+            "Without --search the pipeline runs an exploratory full-sample screen "
+            "(not OOS/WF selection of the best volume core / enhancements)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--nq", type=Path, required=True, help="مسار NQ MBO")
     parser.add_argument("--mnq", type=Path, default=None, help="مسار MNQ اختياري")
@@ -132,13 +142,15 @@ def main() -> None:
                 else "نواة فوليوم + تعزيزات SSL (capacity-correct)"
             )
     else:
-        mode = "خط Failed Breakout (فوليوم)"
+        mode = "استكشاف كامل العيّنة (بدون --search)"
     if not args.quiet:
         print(
             f"[nq] ========== بدء: run_fail_breakout · {mode} ==========",
             file=sys.stderr,
             flush=True,
         )
+        if not args.search:
+            print(_EXPLORATORY_BANNER, file=sys.stderr, flush=True)
 
     if args.search:
         result = search_fail_breakout_hypotheses(

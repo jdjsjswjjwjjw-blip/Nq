@@ -257,7 +257,7 @@ def _attach_failed_fvg(
     *,
     progress: PipelineProgress | None = None,
 ) -> pl.DataFrame:
-    """يلحق إشارة Failed FVG بإطار البحث الموحّد (asof خلفي — بلا تسريب)."""
+    """يلحق إشارة Failed FVG بإطار البحث الموحّد (نبضة تطابقية — بلا sticky)."""
     log = progress if progress is not None else PipelineProgress(enabled=False)
     fvg = failed_fvg_features(nq, progress=log)
     if fvg.height == 0 or features.height == 0:
@@ -282,7 +282,7 @@ def _attach_failed_fvg(
     drop_existing = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
     if drop_existing:
         left = left.drop(drop_existing)
-    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
+    joined = left.join(right, on=AVAILABILITY_TS, how="left")
     return joined.with_columns(
         pl.col("fail_fvg").fill_null(0.0),
         pl.col("effort_range_ratio").fill_null(0.0),
@@ -437,8 +437,22 @@ def _attach_failed_breakout(  # noqa: PLR0915
     drop_existing = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
     if drop_existing:
         left = left.drop(drop_existing)
-    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
-    fills = [pl.col(c).fill_null(0.0) for c in _FB_SIGNAL_COLUMNS if c in joined.columns]
+    # نبضة تطابقية عند إغلاق شمعة الإشارة — لا sticky asof على ساعة البحث
+    joined = left.join(right, on=AVAILABILITY_TS, how="left")
+    # صفر للإشارة الاتجاهية / مقاييس النبضة؛ عمق/جهد يبقيان null إن غاب التطابق
+    zero_ok = {
+        "fail_breakout",
+        "fb_vol_imbalance",
+        "fb_delta",
+        "fb_cum_delta",
+        "fb_absorption",
+        "fb_depth_imbalance",
+    }
+    fills = [
+        pl.col(c).fill_null(0.0)
+        for c in _FB_SIGNAL_COLUMNS
+        if c in joined.columns and c in zero_ok
+    ]
     return joined.with_columns(fills) if fills else joined
 
 
@@ -534,8 +548,8 @@ def _build_research_features(
         features = _attach_causal_depth(features, nq, interval_ns=cfg.interval_ns, progress=log)
 
     if cfg.include_failed_fvg:
-        log.step("إلحاق Failed FVG (asof خلفي)")
-        log.op("failed_fvg_features + join_asof backward")
+        log.step("إلحاق Failed FVG (نبضة تطابقية)")
+        log.op("failed_fvg_features + pulse join (exact availability_ts)")
         features = _attach_failed_fvg(features, nq, progress=log)
         log.op(f"بعد FVG: {features.height:,} صف")
     if cfg.include_auction_vp:
@@ -545,7 +559,7 @@ def _build_research_features(
         log.op(f"بعد Auction/VP: {features.height:,} صف")
     if cfg.include_failed_breakout:
         log.step("إلحاق Failed Breakout + عمق عند مستوى الكسر")
-        log.op("failed_breakout_features + depth_at_break(30m) + join_asof backward")
+        log.op("failed_breakout_features + depth_at_break(30m) + pulse join")
         features = _attach_failed_breakout(
             features,
             nq,
