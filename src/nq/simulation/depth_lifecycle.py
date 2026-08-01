@@ -45,6 +45,11 @@ DEPTH_PATH_COLUMNS: Final[tuple[str, ...]] = (
     "depth_path_ask_drain",
     "depth_path_pressure",
     "depth_path_n_events",
+    # مسار أغنى من open/close فقط — حدّ أقصى/أدنى اختلال داخل الشمعة
+    "depth_path_imbalance_max",
+    "depth_path_imbalance_min",
+    "depth_path_l2_l5_bid_drain",
+    "depth_path_l2_l5_ask_drain",
 )
 
 
@@ -276,11 +281,13 @@ def depth_event_path_at_bar_close(  # noqa: PLR0915
     * ``depth_path_bid/ask_drain`` — سحب سيولة نسبي من افتتاح المسار إلى الإغلاق
     * ``depth_path_pressure`` — ``ask_drain - bid_drain`` (موجب ≈ ضغط صاعد سببيًا)
     * ``depth_path_n_events`` — عدد أحداث MBO داخل الشمعة
+    * ``depth_path_imbalance_max/min`` — أقصى/أدنى اختلال لُوحظ داخل الشمعة
+    * ``depth_path_l2_l5_*_drain`` — استنزاف سيولة خلف L1 (حافة أسفل الدفتر)
 
-    تسريع آمن (نفس الأرقام):
+    تسريع آمن (نفس الأرقام لـ open/close الأساسي):
     * كل حدث يحدّث الدفتر (``apply``) — سببية كاملة.
-    * قياس السيولة فقط عند **أول** حدث في الشمعة وعند **إغلاقها**
-      (ليس ``snapshot`` كامل لكل حدث).
+    * قياس السيولة الكلية عند **أول** حدث وعند **الإغلاق**؛ اختلال المسار يُحدَّث
+      كل حدث عبر ``path_liquidity`` الخفيف (بدون لقطة L1–L5 كاملة).
     """
     if interval_ns < 1:
         raise ValueError(f"interval_ns must be >= 1, got {interval_ns}")
@@ -310,7 +317,7 @@ def depth_event_path_at_bar_close(  # noqa: PLR0915
     if log is not None:
         log.op(
             f"depth_event_path: {n:,} حدث → مسار داخل الشمعة · "
-            f"interval_ns={interval_ns} · sample=open/close"
+            f"interval_ns={interval_ns} · sample=path+close"
         )
 
     rows: list[dict[str, float | int]] = []
@@ -320,21 +327,36 @@ def depth_event_path_at_bar_close(  # noqa: PLR0915
     open_imb = 0.0
     open_bid = 0.0
     open_ask = 0.0
+    open_l25_bid = 0.0
+    open_l25_ask = 0.0
+    imb_max = 0.0
+    imb_min = 0.0
     opened = False
     hb_every = 5_000 if n else 1
     next_hb = hb_every
+
+    def _l2_l5(side: str) -> float:
+        levels = book.top_n(side, n_levels)
+        if len(levels) <= 1:
+            return 0.0
+        return float(sum(sz for _, sz in levels[1:]))
 
     def _emit(bucket_start: int) -> None:
         nonlocal opened
         if not opened:
             return
-        # حالة الدفتر = بعد آخر حدث في الشمعة السابقة (قبل apply للشمعة الجديدة)
         close_bid, close_ask, close_imb = book.path_liquidity(n_levels)
+        close_l25_bid = _l2_l5("B")
+        close_l25_ask = _l2_l5("A")
         bucket_end = bucket_start + interval_ns
         bid_base = max(open_bid, 1.0)
         ask_base = max(open_ask, 1.0)
         bid_drain = max(0.0, (open_bid - close_bid) / bid_base)
         ask_drain = max(0.0, (open_ask - close_ask) / ask_base)
+        l25_bid_base = max(open_l25_bid, 1.0)
+        l25_ask_base = max(open_l25_ask, 1.0)
+        l25_bid_drain = max(0.0, (open_l25_bid - close_l25_bid) / l25_bid_base)
+        l25_ask_drain = max(0.0, (open_l25_ask - close_l25_ask) / l25_ask_base)
         rows.append(
             {
                 AVAILABILITY_TS: bucket_end,
@@ -347,6 +369,10 @@ def depth_event_path_at_bar_close(  # noqa: PLR0915
                 "depth_path_ask_drain": float(ask_drain),
                 "depth_path_pressure": float(ask_drain - bid_drain),
                 "depth_path_n_events": float(n_events),
+                "depth_path_imbalance_max": float(imb_max),
+                "depth_path_imbalance_min": float(imb_min),
+                "depth_path_l2_l5_bid_drain": float(l25_bid_drain),
+                "depth_path_l2_l5_ask_drain": float(l25_ask_drain),
             }
         )
         opened = False
@@ -365,9 +391,19 @@ def depth_event_path_at_bar_close(  # noqa: PLR0915
         book.apply(str(actions[i]), str(sides[i]), int(prices[i]), int(sizes[i]), int(order_ids[i]))
         last_event = ts
         n_events += 1
+        _bid, _ask, cur_imb = book.path_liquidity(n_levels)
         if not opened:
-            open_bid, open_ask, open_imb = book.path_liquidity(n_levels)
+            open_bid, open_ask, open_imb = _bid, _ask, cur_imb
+            open_l25_bid = _l2_l5("B")
+            open_l25_ask = _l2_l5("A")
+            imb_max = cur_imb
+            imb_min = cur_imb
             opened = True
+        else:
+            if cur_imb > imb_max:
+                imb_max = cur_imb
+            if cur_imb < imb_min:
+                imb_min = cur_imb
         done = i + 1
         if log is not None and (done >= next_hb or done == n):
             log.heartbeat(done, n, label="depth_path", force=True, every=hb_every)
@@ -388,8 +424,14 @@ def attach_depth_asof(
     depth: pl.DataFrame,
     *,
     columns: Sequence[str] | None = None,
+    fill_missing: bool = False,
 ) -> pl.DataFrame:
-    """يلحق أعمدة عمق بـ asof خلفي على ``availability_ts``."""
+    """يلحق أعمدة عمق بـ asof خلفي على ``availability_ts``.
+
+    افتراضيًا **لا** يملأ القيم الناقصة بأصفار — ``null`` يعني «لا لقطة عمق
+    سابقة» وليس دفترًا فارغًا. مرّر ``fill_missing=True`` فقط إن احتجت توافقًا
+    قديمًا صريحًا.
+    """
     if features.height == 0 or depth.height == 0:
         return features
     if AVAILABILITY_TS not in features.columns or AVAILABILITY_TS not in depth.columns:
@@ -410,6 +452,8 @@ def attach_depth_asof(
     if drop:
         left = left.drop(drop)
     joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
+    if not fill_missing:
+        return joined
     fill_cols = []
     for c in cols:
         if c not in joined.columns:

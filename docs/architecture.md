@@ -1,6 +1,6 @@
 # المخطط المعماري التفصيلي (Detailed Architecture)
 
-يمثّل هذا المستند المصدر المرجعي الكامل لتدفّق النظام من بيانات MBO الخام
+يمثّل هذا المستند المصدر المرجعي لتدفّق النظام من بيانات MBO الخام
 وصولًا إلى إشارات الألفا. كل طبقة تُشتق سببيًا وزمنيًا من الطبقة التي تسبقها،
 دون أي تسريب زمني.
 
@@ -37,7 +37,13 @@ Simulation Layer
       │       ├── Resting Orders
       │       ├── Pulling Liquidity
       │       ├── Adding Liquidity
-      │       └── Iceberg Detection
+      │       ├── Iceberg Detection (wired into bottom-book / research)
+      │       └── Depth Noise Filter (cancel storm / flicker / spoof)
+      │
+      ├── Depth Lifecycle + Bottom Book (L2–L5)
+      │       ├── Bar-close snapshots (shared multi-interval pass)
+      │       ├── Intra-bar path metrics (imbalance max/min, L2–L5 drain)
+      │       └── Absorption / queue depletion / live iceberg hit
       │
       ├── Auction Market Simulator
       │       ├── Balance
@@ -57,71 +63,24 @@ Feature Store
       │
       ▼
 =====================================================
-Self-Supervised Foundation Model
+Self-Supervised Layer (implemented)
 =====================================================
 
-      ├── Temporal Representation Learning
-      │       ├── Event Sequence Encoding
-      │       ├── Queue Evolution
-      │       ├── Time Dependency Learning
-      │       └── Event Transition Modeling
-      │
-      ├── Hierarchical Representation Learning
-      │       ├── Event Level
-      │       ├── Price Level
-      │       ├── Order Book Level
-      │       ├── Auction Level
-      │       └── Session Level
-      │
-      ├── Multi-Scale Representation Learning
-      │       ├── Microseconds
-      │       ├── Milliseconds
-      │       ├── Seconds
-      │       ├── Minutes
-      │       └── Multi-Horizon Context
-      │
-      ├── Contrastive Self-Supervised Learning
-      │       ├── Positive Pair Mining
-      │       ├── Negative Pair Mining
-      │       ├── Regime Discrimination
-      │       └── Representation Consistency
-      │
-      ├── Masked Modeling
-      │       ├── Masked Event Prediction
-      │       ├── Masked Order Reconstruction
-      │       ├── Masked Queue Recovery
-      │       └── Missing State Completion
-      │
-      ├── World Model / Predictive Modeling
-      │       ├── Next State Prediction
-      │       ├── Future Liquidity Prediction
-      │       ├── Future Queue Evolution
-      │       ├── Price Impact Prediction
-      │       └── Counterfactual Simulation
-      │
-      ├── Memory Mechanism
-      │       ├── Long Context Memory
-      │       ├── Session Memory
-      │       ├── Episodic Memory
-      │       └── Persistent Market Memory
-      │
-      ├── Latent State Learning
-      │       ├── Market Embeddings
-      │       ├── Regime Embeddings
-      │       ├── Liquidity Embeddings
-      │       └── Auction Embeddings
-      │
-      ├── Cross-Market Representation Learning
-      │       ├── NQ ↔ MNQ
-      │       ├── Cross-Asset Correlation
-      │       ├── Lead/Lag Embeddings
-      │       └── Shared Latent Space
-      │
-      └── Causal Representation Learning
-              ├── Causal Discovery
-              ├── Intervention Modeling
-              ├── Structural Dependencies
-              └── Cause vs Correlation
+  الحالة الفعلية في الكود (ليست foundation model كامل):
+
+      ├── Causal feature windows (tick / bucket)
+      ├── PCAEncoder — تمثيلات منخفضة الأبعاد (z0…zk)
+      ├── Walk-forward fit فقط على كتلة التدريب (purged + embargo)
+      ├── Masked reconstruction MSE (خفيف)
+      ├── Simple contrastive / world-model heads على z
+      └── Causal SSL gates & enhancements
+              ├── join_asof(backward) للتمثيلات
+              ├── عتبات |z| من كمّية ماضية فقط (shift+rolling)
+              └── اختيار المرشّحين بـ WF + selection-under-null
+
+  ما هو *مخطط مستقبلي* وليس منفَّذًا كشبكة عميقة هنا:
+  contrastive pair mining الكامل، world-model تنبؤي عميق،
+  hierarchical multi-scale transformer، memory episodic طويل.
 
       │
       ▼
@@ -143,9 +102,9 @@ Structural Coverage Monitor (Milestone 9)
       ▼
 Statistical Testing
       │
-      ├── Significance Testing
-      ├── Robustness Testing
-      ├── Out-of-Sample Validation
+      ├── Significance Testing (permutation)
+      ├── Selection-aware null (re-select under shuffled labels)
+      ├── Out-of-Sample Validation (purged walk-forward)
       ├── Regime Validation
       └── Hypothesis Verification
       │
@@ -156,8 +115,6 @@ LLM Research Assistant
       ├── Representation Interpretation
       ├── Market Microstructure Reasoning
       ├── Hypothesis Generation
-      ├── Explain Hidden Behaviors
-      ├── Compare Market Regimes
       ├── Research Planning
       └── Automatic Report Writing
       │
@@ -167,3 +124,10 @@ Trading Hypotheses
 Discovered Market Structures
 Novel Alpha Signals
 ```
+
+## مبادئ ملزمة
+
+1. **صفر تسريب زمني** — PIT / causal / purged WF / asof backward / purge ≥ horizon
+2. **صرامة كمية** — IC + permutation؛ للشبكات الكبيرة selection-under-null
+3. **أداء** — Polars + مرور دفتر موحّد متعدد الفواصل؛ فلترة ضوضاء قبل المسار
+4. **MBO فقط** — لا مصادر أسعار خارج عقد MBO

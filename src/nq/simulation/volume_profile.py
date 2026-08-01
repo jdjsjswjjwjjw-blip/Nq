@@ -18,12 +18,15 @@ from dataclasses import dataclass, field
 
 import polars as pl
 
+from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 
 _DEFAULT_VALUE_AREA_FRACTION = 0.7
-_PRICE_SCALE: float = 1_000_000  # خطوة ~1$ لعقود NQ تقريبًا (fixed-point)
+#: حجم تيك NQ بالوحدات الثابتة (0.25$ → fixed-point). كان 1e6 خطأً مقياسًا.
+_NQ_TICK_SIZE: float = 0.25
+_TICK_FIXED: float = float(round(_NQ_TICK_SIZE / PRICE_SCALE))
 
 
 def build_volume_profile(frame: pl.DataFrame) -> pl.DataFrame:
@@ -166,7 +169,8 @@ class DevelopingVolumeProfile:
         area = va if va is not None else self.value_area()
         if area is None:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        scale = near_ticks * _PRICE_SCALE
+        # near_ticks = عدد تيكات NQ (0.25$) بوحدة السعر الثابتة — لا مقياس وهمي
+        scale = float(near_ticks) * _TICK_FIXED
         poc_d = (mid - area.poc) / ref_price
         vah_d = (mid - area.vah) / ref_price
         val_d = (mid - area.val) / ref_price

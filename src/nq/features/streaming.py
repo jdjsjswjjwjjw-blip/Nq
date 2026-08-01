@@ -100,11 +100,16 @@ def sample_streaming_to_interval(
     *,
     interval_ns: int,
 ) -> pl.DataFrame:
-    """آخر حالة لحظية داخل كل فاصل.
+    """آخر حالة لحظية داخل كل فاصل (``sample_mode=last_state``).
 
     الحالة تُحدَّث حدثًا بحدث؛ عند أخذ عيّنة بحثية تُثبَّت
     ``availability_ts = bucket_end`` حتى تُحاذى مع M9/الألفا على ساعة موحّدة،
     بينما المحتوى نفسه هو آخر حالة سببية داخل الفاصل.
+
+    تحذير دقة: فاصل كبير (مثل 1s) يطمس تطوّر الميكرو-هيكل داخل الشمعة.
+    للبحوث الدقيقة اختر ``interval_ns`` أصغر (انظر ``[streaming]`` في
+    ``configs/default.toml``) أو استخدم مسار أحداث العمق / bottom-book
+    التي تحتفظ بدقة الحدث داخل الشمعة قبل النشر عند ``bucket_end``.
     """
     if interval_ns < 1:
         raise ValueError(f"interval_ns must be >= 1, got {interval_ns}")

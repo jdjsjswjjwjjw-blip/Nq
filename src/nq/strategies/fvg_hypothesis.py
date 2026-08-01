@@ -238,6 +238,11 @@ def apply_causal_ssl_gate(
     """بوابة SSL سببية: asof خلفي + كمّية ماضية لـ ``|z|`` (بدون مستقبل).
 
     يُنتج أعمدة ``{signal}__ssl`` = الإشارة × بوابة (0/1).
+
+    التداخل مع WF: العتبة عند الصف ``t`` تستخدم فقط ``|z|`` حتى ``t-1``
+    (``shift(1).rolling_quantile``) — مجمّدة على الماضي فقط، وليست مُعاد
+    تقديرها من العيّنة الكاملة. اختيار أي عمود مُبوَّب يتم داخل
+    ``walk_forward_select_hypotheses`` مع selection-under-null.
     """
     gated = tuple(f"{c}__ssl" for c in signal_columns)
     if embeddings.height == 0 or z_col not in embeddings.columns:
@@ -290,13 +295,19 @@ def walk_forward_select_hypotheses(
     embargo: int = 0,
     purge_samples: int = 0,
     n_permutations: int = SEARCH_N_PERMUTATIONS,
+    selection_aware_null: bool = True,
     rng: np.random.Generator | None = None,
     progress: ProgressLike | None = None,
 ) -> tuple[pl.DataFrame, float, float, int, str | None]:
     """اختيار فرضية على التدريب فقط؛ قياس IC خارج العينة على الاختبار.
 
     ترتيب المرشّحين داخل كل طيّة = Spearman IC فقط (بلا تبديلات).
-    الدلالة الإحصائية تُحسب مرة واحدة على العوائد المجمّعة خارج العينة.
+    الدلالة الإحصائية:
+
+    * ``selection_aware_null=True`` (افتراضي): لكل تبديل يُعاد اختيار أفضل مرشّح
+      على التدريب تحت العوائد المخلوطة ثم يُقاس IC خارج العينة — يحاسب على
+      ميزانية المرشّحين (selection under the null).
+    * وإلا: تبديل واحد على سلسلة الإشارة المختارة مجمّعة (أضعف عند الشبكات الكبيرة).
 
     يُعيد: (fold_df, oos_ic, oos_pvalue, oos_n, best_name)
     """
@@ -320,21 +331,27 @@ def walk_forward_select_hypotheses(
             log.op(f"walk-forward: تخطّي (cols={len(cols)} · rows={work.height})")
         return empty, 0.0, 1.0, 0, None
 
+    # عزل أفق العائد الأمامي عن كتلة الاختبار
+    effective_purge = max(int(purge_samples), int(horizon))
     folds = purged_walk_forward_split(
         times,
         n_splits=n_splits,
         embargo=embargo,
-        purge_samples=purge_samples,
+        purge_samples=effective_purge,
         min_train_size=max(10, work.height // (n_splits + 2)),
     )
     if log is not None:
         log.op(
             f"walk-forward: {len(folds)} طيّات · candidates={len(cols)} · "
-            f"rank=IC · oos_perm={n_permutations}"
+            f"rank=IC · oos_perm={n_permutations} · "
+            f"selection_null={selection_aware_null} · purge={effective_purge}"
         )
+
+    col_mats = {c: work[c].to_numpy().astype(np.float64) for c in cols}
     rows: list[dict[str, float | int | str]] = []
     oos_values = np.full(work.height, np.nan, dtype=np.float64)
     oos_fwd = np.full(work.height, np.nan, dtype=np.float64)
+
     for fold_i, fold in enumerate(folds):
         if log is not None:
             log.op(
@@ -344,7 +361,7 @@ def walk_forward_select_hypotheses(
         best_name = cols[0]
         best_ic = -1e18
         for col_i, col in enumerate(cols, start=1):
-            vals = work[col].to_numpy().astype(np.float64)
+            vals = col_mats[col]
             ic = _ic_on_slice(vals, forward, fold.train_idx)
             if abs(ic) > abs(best_ic) or (abs(ic) == abs(best_ic) and ic > best_ic):
                 best_ic = ic
@@ -355,7 +372,7 @@ def walk_forward_select_hypotheses(
                     len(cols),
                     label=f"WF fold {fold_i + 1} candidates",
                 )
-        test_vals = work[best_name].to_numpy().astype(np.float64)
+        test_vals = col_mats[best_name]
         test_ic = _ic_on_slice(test_vals, forward, fold.test_idx)
         oos_values[fold.test_idx] = test_vals[fold.test_idx]
         oos_fwd[fold.test_idx] = forward[fold.test_idx]
@@ -377,17 +394,52 @@ def walk_forward_select_hypotheses(
     mask = np.isfinite(oos_values) & np.isfinite(oos_fwd)
     oos_n = int(mask.sum())
     if oos_n >= _MIN_OOS_SAMPLES and float(np.std(oos_values[mask])) > 0:
-        oos_ev = evaluate_signal(
-            "wf_selected",
-            oos_values[mask],
-            oos_fwd[mask],
-            n_permutations=n_permutations,
-            rng=generator,
-            progress=log,
-            progress_label="WF-oos-perm",
-        )
-        oos_ic = float(oos_ev.ic)
-        oos_p = float(oos_ev.ic_pvalue)
+        oos_ic = float(information_coefficient(oos_values[mask], oos_fwd[mask], method="spearman"))
+        if selection_aware_null and n_permutations > 0 and folds:
+            if log is not None:
+                log.op(
+                    f"WF selection-under-null: {n_permutations} تبديل · "
+                    f"candidates={len(cols)}"
+                )
+            null_ics = np.empty(n_permutations, dtype=np.float64)
+            for p_i in range(n_permutations):
+                perm_fwd = generator.permutation(forward)
+                null_oos = np.full(work.height, np.nan, dtype=np.float64)
+                null_y = np.full(work.height, np.nan, dtype=np.float64)
+                for fold in folds:
+                    best_name = cols[0]
+                    best_ic = -1e18
+                    for col in cols:
+                        ic = _ic_on_slice(col_mats[col], perm_fwd, fold.train_idx)
+                        if abs(ic) > abs(best_ic) or (abs(ic) == abs(best_ic) and ic > best_ic):
+                            best_ic = ic
+                            best_name = col
+                    null_oos[fold.test_idx] = col_mats[best_name][fold.test_idx]
+                    null_y[fold.test_idx] = perm_fwd[fold.test_idx]
+                nmask = np.isfinite(null_oos) & np.isfinite(null_y)
+                if int(nmask.sum()) >= _MIN_OOS_SAMPLES and float(np.std(null_oos[nmask])) > 0:
+                    null_ics[p_i] = float(
+                        information_coefficient(
+                            null_oos[nmask], null_y[nmask], method="spearman"
+                        )
+                    )
+                else:
+                    null_ics[p_i] = 0.0
+                if log is not None and ((p_i + 1) % max(1, n_permutations // 10) == 0):
+                    log.heartbeat(p_i + 1, n_permutations, label="WF-selection-null")
+            oos_p = float((int(np.sum(np.abs(null_ics) >= abs(oos_ic))) + 1) / (n_permutations + 1))
+        else:
+            oos_ev = evaluate_signal(
+                "wf_selected",
+                oos_values[mask],
+                oos_fwd[mask],
+                n_permutations=n_permutations,
+                rng=generator,
+                progress=log,
+                progress_label="WF-oos-perm",
+            )
+            oos_ic = float(oos_ev.ic)
+            oos_p = float(oos_ev.ic_pvalue)
     else:
         oos_ic = 0.0
         oos_p = 1.0
@@ -605,7 +657,9 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
                 uniq.append(c)
         candidates = tuple(uniq)
 
-        policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window)
+        policy = TemporalPolicy.for_run(
+            interval_ns=interval_ns, window=ssl_window, horizon=horizon
+        )
         embargo = policy.embargo_time_units(interval_ns=interval_ns)
         log.step(
             "اختيار walk-forward (purged)",

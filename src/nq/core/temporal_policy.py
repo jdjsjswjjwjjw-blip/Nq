@@ -46,7 +46,8 @@ class TemporalPolicy:
             raw = tomllib.load(handle)
         temporal = raw.get("temporal", {})
         embargo = int(temporal.get("embargo_ns", 1_000_000_000))
-        return cls(embargo_ns=embargo)
+        horizon = int(temporal.get("horizon", 1))
+        return cls(embargo_ns=embargo, horizon=horizon)
 
     @classmethod
     def for_run(
@@ -68,10 +69,16 @@ class TemporalPolicy:
         )
 
     def purge_samples(self) -> int:
-        """عدد عيّنات التدريب المُزالة قبل الاختبار بسبب تداخل النوافذ."""
+        """عدد عيّنات التدريب المُزالة قبل الاختبار.
+
+        يشمل تداخل نوافذ SSL **وأفق التقييم** (``horizon``) حتى لا تتسرّب
+        تسمية العائد الأمامي إلى كتلة الاختبار — نفس فلسفة ``symbolic_gp``.
+        """
         if self.window <= 1:
-            return 0
-        return (self.window - 1 + self.stride - 1) // self.stride
+            window_purge = 0
+        else:
+            window_purge = (self.window - 1 + self.stride - 1) // self.stride
+        return max(window_purge, max(int(self.horizon), 0))
 
     def embargo_time_units(
         self,

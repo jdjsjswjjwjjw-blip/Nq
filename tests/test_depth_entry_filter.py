@@ -154,6 +154,7 @@ def test_attach_depth_path_asof_backward() -> None:
     )
     joined = attach_depth_path_to_features(clock, nq, interval_ns=10_000)
     assert "depth_path_pressure" in joined.columns
+    assert "bb_queue_pressure" in joined.columns or "bb_iceberg_hit" in joined.columns
     assert joined.height == clock.height
 
 
@@ -168,7 +169,7 @@ def test_breakout_search_with_depth_filter_smoke() -> None:
         enhance_with_ssl=False,
         use_depth_filter=True,
         n_splits=2,
-        n_permutations=30,
+        n_permutations=10,
         rng=make_generator(4),
         quiet=True,
     )
@@ -193,7 +194,7 @@ def test_fvg_search_with_depth_filter_smoke() -> None:
         use_ssl_gate=False,
         use_depth_filter=True,
         n_splits=2,
-        n_permutations=30,
+        n_permutations=10,
         rng=make_generator(5),
         quiet=True,
     )

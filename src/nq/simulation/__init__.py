@@ -18,9 +18,15 @@
 from __future__ import annotations
 
 from nq.simulation.auction import auction_signal_frame, auction_states
+from nq.simulation.bottom_book import (
+    BOTTOM_BOOK_COLUMNS,
+    attach_bottom_book_asof,
+    bottom_book_features_at_bar_close,
+)
 from nq.simulation.breakout import failed_breakout_features, failed_breakout_from_bars
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 from nq.simulation.cross_market import cross_market_features
+from nq.simulation.depth_noise import DepthNoiseConfig, filter_depth_noise
 from nq.simulation.execution import (
     directional_execution_returns,
     execution_forward_returns,
@@ -45,13 +51,17 @@ from nq.simulation.volume_profile import (
 )
 
 __all__ = [
+    "BOTTOM_BOOK_COLUMNS",
     "BUCKET_END",
     "BUCKET_START",
+    "DepthNoiseConfig",
     "DevelopingVolumeProfile",
     "ValueArea",
     "add_time_bucket",
+    "attach_bottom_book_asof",
     "auction_signal_frame",
     "auction_states",
+    "bottom_book_features_at_bar_close",
     "build_ohlcv_bars",
     "build_volume_profile",
     "classify_nodes",
@@ -66,6 +76,7 @@ __all__ = [
     "failed_breakout_from_bars",
     "failed_fvg_features",
     "failed_fvg_from_bars",
+    "filter_depth_noise",
     "footprint_cells",
     "footprint_summary",
     "liquidity_summary",

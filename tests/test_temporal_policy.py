@@ -8,8 +8,18 @@ from nq.core.temporal_policy import TemporalPolicy
 
 
 def test_purge_samples_for_window() -> None:
-    policy = TemporalPolicy(window=5, stride=1)
+    policy = TemporalPolicy(window=5, stride=1, horizon=1)
     assert policy.purge_samples() == 4
+
+
+def test_purge_samples_at_least_horizon() -> None:
+    policy = TemporalPolicy(window=5, stride=1, horizon=10)
+    assert policy.purge_samples() == 10
+
+
+def test_purge_samples_horizon_when_window_one() -> None:
+    policy = TemporalPolicy(window=1, stride=1, horizon=3)
+    assert policy.purge_samples() == 3
 
 
 def test_embargo_uses_ns_for_production_times() -> None:

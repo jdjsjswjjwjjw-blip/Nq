@@ -70,6 +70,33 @@ def test_developing_volume_profile_incremental() -> None:
     assert feats[5] == 1.0  # in_value_area
 
 
+def test_near_vah_uses_nq_tick_fixed_scale() -> None:
+    """near_vah/val يجب أن تطابق ضمن تيكات NQ الحقيقية (لا مقياس 1e6 الخاطئ)."""
+    from nq.contracts.mbo import PRICE_SCALE
+
+    tick = int(round(0.25 / PRICE_SCALE))
+    profile = DevelopingVolumeProfile()
+    # POC/VAH/VAL حول mid؛ حجم يكفي لمنطقة قيمة
+    base = 20_000 * tick * 4  # سعر وهمي ثابت
+    for px, sz in [(base, 10), (base + tick, 3), (base - tick, 3)]:
+        profile.add_trade(px, sz)
+    va = profile.value_area()
+    assert va is not None
+    # mid على بعد تيك واحد من vah → near ضمن near_ticks=2
+    mid = float(va.vah + tick)
+    _poc_d, _vah_d, _val_d, near_vah, near_val, _in_va = profile.features_at_mid(
+        mid, ref_price=float(base), near_ticks=2, va=va
+    )
+    assert near_vah == 1.0
+    # بعيد بـ 10 تيكات → ليس قريبًا
+    far = float(va.vah + 10 * tick)
+    *_, near_vah_far, _, _ = profile.features_at_mid(
+        far, ref_price=float(base), near_ticks=2, va=va
+    )
+    assert near_vah_far == 0.0
+    _ = near_val
+
+
 def test_developing_value_area_migration() -> None:
     stream = make_stream(
         [

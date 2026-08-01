@@ -34,7 +34,7 @@ IntArray = npt.NDArray[np.int64]
 
 _TRADE = MboAction.TRADE.value
 _BID = "B"
-_NEAR_TICKS = 2  # قرب VAH/VAL بوحدات السعر الثابتة (fixed-point steps)
+_NEAR_TICKS = 2  # قرب VAH/VAL بعدد تيكات NQ (كل تيك = 0.25$)
 _REF_PRICE: Final = 20_000_000_000.0
 
 

@@ -5,8 +5,10 @@
 
 كل بوابة زمنية:
 * embeddings بـ ``join_asof(..., backward)``
-* عتبات ``|z|`` من كمّية ماضية فقط (``shift(1).rolling_quantile``)
+* عتبات ``|z|`` من كمّية ماضية فقط (``shift(1).rolling_quantile``) —
+  مجمّدة على الماضي عند كل صف (ليست fit على العيّنة الكاملة)
 * فلاتر سياق من أعمدة متاحة point-in-time فقط
+* اختيار المرشّح يتم داخل purged WF + selection-under-null
 """
 
 from __future__ import annotations

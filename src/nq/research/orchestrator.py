@@ -323,7 +323,7 @@ def _attach_failed_breakout(  # noqa: PLR0915
     progress: PipelineProgress | None = None,
 ) -> pl.DataFrame:
     """يلحق Failed Breakout asof خلفي — إشارة + عمق عند مستوى الكسر (سببي)."""
-    from nq.contracts.mbo import PRICE_SCALE  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
 
     log = progress if progress is not None else PipelineProgress(enabled=False)
     log.op("failed_breakout_features (إشارة فوليوم)")
@@ -371,46 +371,50 @@ def _attach_failed_breakout(  # noqa: PLR0915
                 "depth_ask_sz_5",
             ],
         )
-        # سيولة ظاهرة عند مستوى الكسر: نبحث أقرب مستوى ضمن السلم
+        # سيولة ظاهرة عند مستوى الكسر: أقرب مستوى ضمن ≤ 4 تيكات (1.0$)
+        # الأسعار بالدولار (بعد PRICE_SCALE في snapshot_to_row) — لا تستخدم PRICE_SCALE*4
+        match_tol = 0.25 * 4
         levels_bid_px = [f"depth_bid_px_{k}" for k in range(1, 6)]
         levels_bid_sz = [f"depth_bid_sz_{k}" for k in range(1, 6)]
         levels_ask_px = [f"depth_ask_px_{k}" for k in range(1, 6)]
         levels_ask_sz = [f"depth_ask_sz_{k}" for k in range(1, 6)]
 
-        def _depth_at_break(row: dict[str, float | int | None]) -> float:
-            level = float(row.get("fb_break_level") or 0.0)
-            signal = float(row.get("fail_breakout") or 0.0)
-            if level <= 0 or signal == 0.0:
-                return 0.0
-            # SHORT بعد فشل كسر أعلى → سيولة عروض عند المستوى؛ LONG → طلبات
-            px_cols = levels_ask_px if signal < 0 else levels_bid_px
-            sz_cols = levels_ask_sz if signal < 0 else levels_bid_sz
-            best = 0.0
-            best_dist = float("inf")
-            for px_c, sz_c in zip(px_cols, sz_cols, strict=True):
-                px = row.get(px_c)
-                sz = row.get(sz_c)
-                if px is None or sz is None:
-                    continue
-                dist = abs(float(px) - level)
-                if dist < best_dist:
-                    best_dist = dist
-                    best = float(sz)
-            # تطابق ضمن تيك تقريبًا
-            if best_dist <= max(PRICE_SCALE * 4, 1e-6):
-                return best
-            return 0.0
+        level_arr = fb["fb_break_level"].to_numpy().astype(np.float64)
+        signal_arr = fb["fail_breakout"].to_numpy().astype(np.float64)
+        n_fb = int(fb.height)
+        at_break = np.zeros(n_fb, dtype=np.float64)
 
-        log.op(f"حساب fb_depth_at_break على {fb.height:,} صف")
-        at_break = []
-        n_fb = fb.height
-        hb_every = max(1, min(500, n_fb // 20 or 1))
-        next_hb = hb_every
-        for i, r in enumerate(fb.iter_rows(named=True), start=1):
-            at_break.append(_depth_at_break(r))
-            if i >= next_hb or i == n_fb:
-                log.heartbeat(i, n_fb, label="fb_depth_at_break", force=True, every=hb_every)
-                next_hb = i + hb_every
+        def _stack(cols: list[str], *, fill: float) -> np.ndarray:
+            cols_present = [c for c in cols if c in fb.columns]
+            if not cols_present:
+                return np.full((n_fb, len(cols)), fill, dtype=np.float64)
+            mat = np.column_stack([fb[c].to_numpy().astype(np.float64) for c in cols])
+            return mat
+
+        bid_px = _stack(levels_bid_px, fill=np.nan)
+        bid_sz = _stack(levels_bid_sz, fill=0.0)
+        ask_px = _stack(levels_ask_px, fill=np.nan)
+        ask_sz = _stack(levels_ask_sz, fill=0.0)
+
+        def _assign(mask: np.ndarray, px: np.ndarray, sz: np.ndarray) -> None:
+            idx = np.flatnonzero(mask)
+            if idx.size == 0:
+                return
+            # dist shape: (n_active, n_levels)
+            dist = np.abs(px[idx] - level_arr[idx][:, None])
+            dist = np.where(np.isfinite(px[idx]), dist, np.inf)
+            best_j = np.argmin(dist, axis=1)
+            best_d = dist[np.arange(idx.size), best_j]
+            ok = best_d <= match_tol
+            if not np.any(ok):
+                return
+            chosen = idx[ok]
+            at_break[chosen] = sz[chosen, best_j[ok]]
+
+        log.op(f"حساب fb_depth_at_break على {n_fb:,} صف (متّجهي · match≤{match_tol})")
+        active = (level_arr > 0) & (signal_arr != 0.0)
+        _assign(active & (signal_arr < 0), ask_px, ask_sz)
+        _assign(active & (signal_arr > 0), bid_px, bid_sz)
         fb = fb.with_columns(
             pl.Series("fb_depth_at_break", at_break),
             pl.col("depth_imbalance").fill_null(0.0).alias("fb_depth_imbalance"),
@@ -590,7 +594,9 @@ def run_ssl_research_pipeline(  # noqa: PLR0915
     generator = rng if rng is not None else np.random.default_rng(0)
     seed = int(generator.integers(0, 2**31))
 
-    policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window)
+    policy = TemporalPolicy.for_run(
+        interval_ns=interval_ns, window=ssl_window, horizon=horizon
+    )
     embargo_val = (
         coverage_embargo
         if coverage_embargo is not None
