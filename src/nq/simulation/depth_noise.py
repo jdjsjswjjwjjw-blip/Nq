@@ -16,7 +16,7 @@ from typing import Final
 
 import polars as pl
 
-from nq.contracts.mbo import MboAction, PRICE_SCALE
+from nq.contracts.mbo import PRICE_SCALE, MboAction
 from nq.contracts.temporal import EVENT_TS
 from nq.core.time import sort_causal
 
@@ -27,7 +27,7 @@ _FILL = MboAction.FILL.value
 _MODIFY = MboAction.MODIFY.value
 
 _DEFAULT_TICK: Final = 0.25
-_TICK_FIXED: Final = int(round(_DEFAULT_TICK / PRICE_SCALE))
+_TICK_FIXED: Final = round(_DEFAULT_TICK / PRICE_SCALE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +43,7 @@ class DepthNoiseConfig:
     spoof_cancel_ns: int = 250_000_000  # 0.25s
 
 
-def filter_depth_noise(
+def filter_depth_noise(  # noqa: PLR0912, PLR0915
     frame: pl.DataFrame,
     *,
     config: DepthNoiseConfig | None = None,
@@ -129,7 +129,7 @@ def filter_depth_noise(
             meta = live.get(oid)
             drop = storm
             if meta is not None:
-                add_ts, add_px, add_side, add_sz = meta
+                add_ts, add_px, _add_side, add_sz = meta
                 dt = ts - add_ts
                 if dt <= cfg.flicker_ns and oid not in executed_oids:
                     drop = True  # flicker

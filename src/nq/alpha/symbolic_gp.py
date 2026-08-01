@@ -128,12 +128,12 @@ def _spearman_ic(pred: FloatArray, y: FloatArray) -> float:
 
 def _unique_name(prefix: str, expression: str, used: set[str]) -> str:
     """اسم مستقر عبر العمليات — ``hash()`` بايثون مملّح لكل عملية فلا يُستخدم."""
-    digest = hashlib.sha1(f"{prefix}|{expression}".encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(f"{prefix}|{expression}".encode()).hexdigest()[:10]
     name = f"{prefix}__{digest}"
     i = 0
     while name in used:
         i += 1
-        digest = hashlib.sha1(f"{prefix}|{expression}|{i}".encode("utf-8")).hexdigest()[:10]
+        digest = hashlib.sha1(f"{prefix}|{expression}|{i}".encode()).hexdigest()[:10]
         name = f"{prefix}__{digest}"
     used.add(name)
     return name
@@ -487,7 +487,7 @@ def _apply_deap_expression(
         return np.zeros(x.shape[0], dtype=np.float64)
 
 
-def search_symbolic_hypotheses(  # noqa: PLR0912, PLR0915
+def search_symbolic_hypotheses(  # noqa: PLR0915
     frame: pl.DataFrame,
     feature_columns: Sequence[str],
     *,

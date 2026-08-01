@@ -74,11 +74,8 @@ class TemporalPolicy:
         يشمل تداخل نوافذ SSL **وأفق التقييم** (``horizon``) حتى لا تتسرّب
         تسمية العائد الأمامي إلى كتلة الاختبار — نفس فلسفة ``symbolic_gp``.
         """
-        if self.window <= 1:
-            window_purge = 0
-        else:
-            window_purge = (self.window - 1 + self.stride - 1) // self.stride
-        return max(window_purge, max(int(self.horizon), 0))
+        window_purge = 0 if self.window <= 1 else (self.window - 1 + self.stride - 1) // self.stride
+        return max(window_purge, int(self.horizon), 0)
 
     def embargo_time_units(
         self,

@@ -218,6 +218,13 @@ def main() -> None:
         file=sys.stderr,
         flush=True,
     )
+    if not args.search:
+        print(
+            "[nq] NOTE: unified mode (no --search) is exploratory full-sample per day — "
+            "not purged walk-forward selection. Prefer --search for OOS judgment.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     manifest = run_fail_breakout_day_parallel(
         days,

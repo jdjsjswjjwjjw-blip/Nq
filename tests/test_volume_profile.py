@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 
+from nq.contracts.mbo import PRICE_SCALE
 from nq.simulation.volume_profile import (
     DevelopingVolumeProfile,
     build_volume_profile,
@@ -72,9 +73,7 @@ def test_developing_volume_profile_incremental() -> None:
 
 def test_near_vah_uses_nq_tick_fixed_scale() -> None:
     """near_vah/val يجب أن تطابق ضمن تيكات NQ الحقيقية (لا مقياس 1e6 الخاطئ)."""
-    from nq.contracts.mbo import PRICE_SCALE
-
-    tick = int(round(0.25 / PRICE_SCALE))
+    tick = round(0.25 / PRICE_SCALE)
     profile = DevelopingVolumeProfile()
     # POC/VAH/VAL حول mid؛ حجم يكفي لمنطقة قيمة
     base = 20_000 * tick * 4  # سعر وهمي ثابت

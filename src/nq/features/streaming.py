@@ -14,7 +14,7 @@ from typing import Final, Literal, overload
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
-from nq.core.session import add_session_columns
+from nq.core.session import SESSION_DATE, add_session_columns
 from nq.models.tick_stream import TICK_FEATURE_NAMES, TickStream, build_tick_stream
 from nq.research.progress import ProgressLike
 
@@ -23,6 +23,7 @@ _REF_PRICE: Final = 20_000_000_000.0
 STREAMING_SIGNAL_COLUMNS: Final[tuple[str, ...]] = (
     "trap_setup",
     "mnq_delta",
+    "nq_delta",
     "nq_return",
     "mnq_return",
     "phase_balance",
@@ -46,6 +47,30 @@ STREAMING_SIGNAL_COLUMNS: Final[tuple[str, ...]] = (
 )
 
 
+def _bucket_signed_deltas(frame: pl.DataFrame) -> pl.DataFrame:
+    """``nq_delta`` / ``mnq_delta`` = حجم موقّع للفاصل (فرق cumsum الجلسة) — يطابق batch."""
+    if frame.height == 0 or SESSION_DATE not in frame.columns:
+        return frame
+    exprs: list[pl.Expr] = []
+    if "mnq_signed_vol" in frame.columns:
+        exprs.append(
+            pl.col("mnq_signed_vol")
+            .diff()
+            .over(SESSION_DATE)
+            .fill_null(pl.col("mnq_signed_vol"))
+            .alias("mnq_delta")
+        )
+    if "nq_signed_vol" in frame.columns:
+        exprs.append(
+            pl.col("nq_signed_vol")
+            .diff()
+            .over(SESSION_DATE)
+            .fill_null(pl.col("nq_signed_vol"))
+            .alias("nq_delta")
+        )
+    return frame.with_columns(exprs) if exprs else frame
+
+
 def _events_from_tick(tick: TickStream, *, progress: ProgressLike | None) -> pl.DataFrame:
     raw = tick.frame
     if raw.height == 0:
@@ -53,14 +78,13 @@ def _events_from_tick(tick: TickStream, *, progress: ProgressLike | None) -> pl.
     if progress is not None:
         progress.op(f"streaming: تحويل أسعار/عوائد من {raw.height:,} حدث")
     ref = _REF_PRICE
-    return raw.with_columns(
+    events = raw.with_columns(
         (pl.col("nq_mid_norm") * ref).alias("nq_close"),
         (pl.col("mnq_mid_norm") * ref).alias("mnq_close"),
         (pl.col("nq_best_bid_norm") * ref).alias("nq_bid"),
         (pl.col("nq_best_ask_norm") * ref).alias("nq_ask"),
         (pl.col("mnq_best_bid_norm") * ref).alias("mnq_bid"),
         (pl.col("mnq_best_ask_norm") * ref).alias("mnq_ask"),
-        pl.col("mnq_signed_vol").alias("mnq_delta"),
         pl.col("nq_vah_bid_liq_log").alias("stream_vah_bid_liq"),
         pl.col("nq_vah_ask_liq_log").alias("stream_vah_ask_liq"),
         pl.col("nq_val_bid_liq_log").alias("stream_val_bid_liq"),
@@ -70,8 +94,10 @@ def _events_from_tick(tick: TickStream, *, progress: ProgressLike | None) -> pl.
     ).with_columns(
         pl.col("nq_close").diff().fill_null(0.0).alias("nq_return"),
         pl.col("mnq_close").diff().fill_null(0.0).alias("mnq_return"),
-        pl.col("nq_close").diff().fill_null(0.0).sign().alias("nq_delta"),
     )
+    # على مستوى الحدث: دلتا = مساهمة الحدث (فرق cumsum الجلسة) — ليست sign(return)
+    events = add_session_columns(events, time_col=AVAILABILITY_TS)
+    return _bucket_signed_deltas(events)
 
 
 def streaming_event_features(
@@ -140,6 +166,10 @@ def _assemble_streaming_frame(
     if progress is not None:
         progress.op(f"عيّنة بحثية على interval_ns={interval_ns} من {events.height:,} حدث")
     sampled = sample_streaming_to_interval(events, interval_ns=interval_ns)
+    # أعد حساب دلتا الفاصل من cumsum الجلسة عند نهاية كل bucket (وليس last(event_delta))
+    if SESSION_DATE not in sampled.columns:
+        sampled = add_session_columns(sampled, time_col=AVAILABILITY_TS)
+    sampled = _bucket_signed_deltas(sampled)
     preferred = (
         AVAILABILITY_TS,
         EVENT_TS,
@@ -186,7 +216,9 @@ def _assemble_streaming_frame(
     frame = sampled.select(ordered)
     if progress is not None:
         progress.op(f"إضافة أعمدة الجلسة — عيّنة={frame.height:,} صف")
-    return add_session_columns(frame, time_col=AVAILABILITY_TS)
+    if SESSION_DATE not in frame.columns:
+        return add_session_columns(frame, time_col=AVAILABILITY_TS)
+    return frame
 
 
 @overload

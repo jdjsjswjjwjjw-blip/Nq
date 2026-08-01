@@ -111,7 +111,7 @@ def attach_depth_path_to_features(
     return out
 
 
-def generate_depth_entry_candidates(
+def generate_depth_entry_candidates(  # noqa: PLR0912, PLR0915
     features: pl.DataFrame,
     base_columns: Sequence[str],
     *,

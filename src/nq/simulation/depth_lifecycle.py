@@ -267,7 +267,7 @@ def depth_at_bar_close(
     )[interval_ns]
 
 
-def depth_event_path_at_bar_close(  # noqa: PLR0915
+def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915
     frame: pl.DataFrame,
     *,
     interval_ns: int,
@@ -400,10 +400,8 @@ def depth_event_path_at_bar_close(  # noqa: PLR0915
             imb_min = cur_imb
             opened = True
         else:
-            if cur_imb > imb_max:
-                imb_max = cur_imb
-            if cur_imb < imb_min:
-                imb_min = cur_imb
+            imb_max = max(imb_max, cur_imb)
+            imb_min = min(imb_min, cur_imb)
         done = i + 1
         if log is not None and (done >= next_hb or done == n):
             log.heartbeat(done, n, label="depth_path", force=True, every=hb_every)

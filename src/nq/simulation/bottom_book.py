@@ -21,6 +21,7 @@ _TRADE = "T"
 _FILL = "F"
 
 _DEFAULT_LEVELS: Final = 5
+_MIN_BOTTOM_LEVELS: Final = 2
 
 #: أعمدة حافة أسفل الدفتر (تُلحق asof خلفي)
 BOTTOM_BOOK_COLUMNS: Final[tuple[str, ...]] = (
@@ -72,8 +73,10 @@ def bottom_book_features_at_bar_close(  # noqa: PLR0912, PLR0915
     """
     if interval_ns < 1:
         raise ValueError(f"interval_ns must be >= 1, got {interval_ns}")
-    if n_levels < 2:
-        raise ValueError(f"n_levels must be >= 2 for bottom-book, got {n_levels}")
+    if n_levels < _MIN_BOTTOM_LEVELS:
+        raise ValueError(
+            f"n_levels must be >= {_MIN_BOTTOM_LEVELS} for bottom-book, got {n_levels}"
+        )
 
     schema: dict[str, pl.DataType] = {
         AVAILABILITY_TS: pl.Int64(),

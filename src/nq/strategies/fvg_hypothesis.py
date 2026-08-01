@@ -295,7 +295,7 @@ def _ic_on_slice(
     return float(information_coefficient(v, f, method="spearman"))
 
 
-def walk_forward_select_hypotheses(
+def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
     features: pl.DataFrame,
     candidate_columns: Sequence[str],
     *,

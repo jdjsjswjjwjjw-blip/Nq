@@ -442,7 +442,7 @@ def _attach_failed_breakout(  # noqa: PLR0915
         left = left.drop(drop_existing)
     # نبضة تطابقية عند إغلاق شمعة الإشارة — لا sticky asof على ساعة البحث
     joined = left.join(right, on=AVAILABILITY_TS, how="left")
-    # صفر للإشارة الاتجاهية فقط؛ عمق/جهد يبقيان null إن غاب التطابق
+    # صفر للإشارة الاتجاهية / مقاييس النبضة؛ عمق/جهد يبقيان null إن غاب التطابق
     zero_ok = {
         "fail_breakout",
         "fb_vol_imbalance",
@@ -551,8 +551,8 @@ def _build_research_features(
         features = _attach_causal_depth(features, nq, interval_ns=cfg.interval_ns, progress=log)
 
     if cfg.include_failed_fvg:
-        log.step("إلحاق Failed FVG (asof خلفي)")
-        log.op("failed_fvg_features + join_asof backward")
+        log.step("إلحاق Failed FVG (نبضة تطابقية)")
+        log.op("failed_fvg_features + pulse join (exact availability_ts)")
         features = _attach_failed_fvg(features, nq, progress=log)
         log.op(f"بعد FVG: {features.height:,} صف")
     if cfg.include_auction_vp:
@@ -562,7 +562,7 @@ def _build_research_features(
         log.op(f"بعد Auction/VP: {features.height:,} صف")
     if cfg.include_failed_breakout:
         log.step("إلحاق Failed Breakout + عمق عند مستوى الكسر")
-        log.op("failed_breakout_features + depth_at_break(30m) + join_asof backward")
+        log.op("failed_breakout_features + depth_at_break(30m) + pulse join")
         features = _attach_failed_breakout(
             features,
             nq,

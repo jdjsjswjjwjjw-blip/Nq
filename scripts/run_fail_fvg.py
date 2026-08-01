@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """تشغيل بحث Failed FVG — أمر منفصل فوق الخط الموحّد (ليس خارج المنظومة).
 
-    # خط أساسي (فرضية افتراضية 30m/1h)
+    # استكشافي كامل العيّنة (BH screen — ليس اختيار WF/OOS)
     python scripts/run_fail_fvg.py --nq data/raw/nq.parquet --max-rows 500000
 
-    # بحث تايم فريم/إعدادات + بوابة SSL سببية (walk-forward بلا تسريب)
+    # بحث تايم فريم/إعدادات + بوابة SSL سببية (walk-forward purged)
     python scripts/run_fail_fvg.py --nq data/raw/nq.parquet --search --max-rows 500000
 """
 
@@ -29,12 +29,22 @@ from nq.research.capacity import RECOMMENDED_MAX_ROWS, SEARCH_N_PERMUTATIONS  # 
 from nq.strategies.fail_fvg import run_fail_fvg_research  # noqa: E402
 from nq.strategies.fvg_hypothesis import search_fail_fvg_hypotheses  # noqa: E402
 
+_EXPLORATORY_BANNER = (
+    "[nq] NOTE: default mode (no --search) is an exploratory full-sample BH screen — "
+    "not purged walk-forward hypothesis selection. Use --search for OOS selection."
+)
 
-def main() -> None:
+
+def main() -> None:  # noqa: PLR0915
     parser = argparse.ArgumentParser(
         description=(
             "Failed FVG research — capacity-correct walk-forward search + causal SSL gate"
-        )
+        ),
+        epilog=(
+            "Without --search the pipeline runs an exploratory full-sample screen "
+            "(not OOS/WF selection of the best TF/settings)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--nq", type=Path, required=True, help="مسار NQ MBO")
     parser.add_argument("--mnq", type=Path, default=None, help="مسار MNQ اختياري (dual)")
@@ -100,9 +110,11 @@ def main() -> None:
     if args.mnq is not None and not args.mnq.is_file():
         raise FileNotFoundError(f"MNQ MBO not found: {args.mnq.resolve()}")
 
-    mode = "بحث فرضيات (--search)" if args.search else "خط Failed FVG"
+    mode = "بحث فرضيات (--search)" if args.search else "استكشاف كامل العيّنة (بدون --search)"
     if not args.quiet:
         print(f"[nq] ========== بدء: run_fail_fvg · {mode} ==========", file=sys.stderr, flush=True)
+        if not args.search:
+            print(_EXPLORATORY_BANNER, file=sys.stderr, flush=True)
 
     if args.search:
         result = search_fail_fvg_hypotheses(

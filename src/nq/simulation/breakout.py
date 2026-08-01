@@ -411,12 +411,8 @@ def failed_breakout_from_bars(  # noqa: PLR0912, PLR0915
                 result_mult=result_mult,
                 imbalance_min=imbalance_min,
             )
-            if priority == "volume_first":
-                # الفوليوم + بنية الكسر؛ المدى السعري اختياري (ليس شرطًا)
-                accepted = vol_ok and hold_ok
-            else:
-                # structure_first: range فُرض أعلاه
-                accepted = vol_ok and hold_ok
+            # volume_first: المدى اختياري؛ structure_first: range فُرض أعلاه
+            accepted = vol_ok and hold_ok
             if accepted:
                 signal = side
                 level = lvl

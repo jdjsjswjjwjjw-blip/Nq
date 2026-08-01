@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 
@@ -72,8 +73,6 @@ def main() -> None:
     cfg = PipelineConfig.from_toml(args.config) if args.config.is_file() else PipelineConfig()
     data: dict[str, object] = {}
     if args.config.is_file():
-        import tomllib
-
         with args.config.open("rb") as handle:
             data = tomllib.load(handle).get("data", {})
 
