@@ -431,11 +431,12 @@ def materialize_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     clock: pl.DataFrame,
     progress: ProgressLike | None = None,
     attach_volume_context: bool = True,
+    bars_cache: dict[int, pl.DataFrame] | None = None,
 ) -> pl.DataFrame:
     """يبني أعمدة فرضيات على ساعة مشتركة (نبضة تطابقية عند bucket_end).
 
     أداء (مبدأ 3) بلا تسريب (مبدأ 1):
-    * كاش OHLCV لكل ``interval_ns`` داخل هذا الاستدعاء فقط.
+    * كاش OHLCV لكل ``interval_ns`` داخل هذا الاستدعاء فقط (أو ``bars_cache`` المُمرَّر).
     * كاش مسح المرشّحين لكل مفتاح بنية/فوليوم؛ ``hold_mode`` = فلتر رخيص.
     * سياق الفوليوم اختياري من كاش الشموع — بلا ``failed_breakout_features`` ثانٍ.
     لا كاش عبر الأيام / عبر استدعاءات — مناسب لـ day-parallel المعزول.
@@ -450,18 +451,18 @@ def materialize_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     if log is not None:
         log.op(f"تجسيد {n_specs} فرضية FB (كاش مسح مشترك · hold رخيص)")
 
-    bars_cache: dict[int, pl.DataFrame] = {}
+    cache = bars_cache if bars_cache is not None else {}
     scan_cache: dict[tuple[object, ...], pl.DataFrame] = {}
     scan_hits = 0
     scan_misses = 0
 
     def _bars(interval_ns: int) -> pl.DataFrame:
-        cached = bars_cache.get(interval_ns)
+        cached = cache.get(interval_ns)
         if cached is None:
             if log is not None:
                 log.op(f"بناء OHLCV interval_ns={interval_ns}")
             cached = build_ohlcv_bars(nq, interval_ns=interval_ns)
-            bars_cache[interval_ns] = cached
+            cache[interval_ns] = cached
             if log is not None:
                 log.op(f"OHLCV جاهز: {cached.height:,} شمعة")
         return cached
@@ -533,7 +534,7 @@ def materialize_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     if attach_volume_context:
         out = _attach_volume_context_from_bars(
             out,
-            bars_cache=bars_cache,
+            bars_cache=cache,
             nq=nq,
             progress=log,
         )
@@ -542,7 +543,7 @@ def materialize_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         log.op(
             f"انتهى تجسيد {n_specs} فرضية · "
             f"مسح فريد={scan_misses} · إعادة استخدام={scan_hits} · "
-            f"OHLCV مخزّن={len(bars_cache)}"
+            f"OHLCV مخزّن={len(cache)}"
         )
     return out
 
@@ -780,13 +781,15 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             progress=log,
         )
         log.step("تجسيد فرضيات FB الفوليوم", f"specs={len(grid)}")
-        # بلا سياق هنا — يُلحق بعد تحديد max(TF) صراحةً
+        # كاش OHLCV مشترك بين التجسيد وسياق الفوليوم (بلا إعادة بناء)
+        bars_cache: dict[int, pl.DataFrame] = {}
         features = materialize_breakout_hypotheses(
             nq_frame,
             grid,
             clock=clock,
             progress=log,
             attach_volume_context=False,
+            bars_cache=bars_cache,
         )
         hyp_cols = [s.column() for s in grid]
         for col in hyp_cols:
@@ -818,6 +821,7 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             vol_mode=ctx_mode,
             rth_only=False,
             progress=log,
+            bars_cache=bars_cache,
         )
         log.note(f"أعمدة فوليوم: {[c for c in _VOLUME_FEATURE_COLUMNS if c in features.columns]}")
 

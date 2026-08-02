@@ -73,11 +73,13 @@ def attach_depth_path_to_features(
     signal_columns: Sequence[str] | None = None,
     filter_noise: bool = True,
     include_bottom_book: bool = True,
+    cleaned_mbo: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """يحسب مسار أحداث العمق (+ أسفل الدفتر) لكل شمعة ويلحقه asof خلفي.
 
     إذا مُرِّرت ``signal_columns`` وكانت كلها صفرًا، يُتخطّى الحساب.
     ``filter_noise`` يصفّي عواصف الإلغاء/الوميض/السبوف سببيًا قبل المسار.
+    ``cleaned_mbo`` إن وُجد يُعاد استخدامه (بلا فلتر ثانٍ) — مشاركة مع مسار موحّد.
     """
     if features.height == 0 or mbo.height == 0:
         return features
@@ -86,12 +88,17 @@ def attach_depth_path_to_features(
             progress.op("depth_event_path: تخطّي — إشارات الأساس كلها صفر")
         return features
 
-    cleaned = filter_depth_noise(mbo, config=DepthNoiseConfig()) if filter_noise else mbo
-    if progress is not None and filter_noise:
-        progress.op(
-            f"depth_noise_filter: {mbo.height:,} → {cleaned.height:,} حدث "
-            f"(أُسقط {mbo.height - cleaned.height:,})"
-        )
+    if cleaned_mbo is not None:
+        cleaned = cleaned_mbo
+        if progress is not None:
+            progress.op(f"depth_noise: إعادة استخدام cleaned_mbo ({cleaned.height:,} حدث)")
+    else:
+        cleaned = filter_depth_noise(mbo, config=DepthNoiseConfig()) if filter_noise else mbo
+        if progress is not None and filter_noise:
+            progress.op(
+                f"depth_noise_filter: {mbo.height:,} → {cleaned.height:,} حدث "
+                f"(أُسقط {mbo.height - cleaned.height:,})"
+            )
 
     path = depth_event_path_at_bar_close(cleaned, interval_ns=interval_ns, progress=progress)
     if progress is not None:

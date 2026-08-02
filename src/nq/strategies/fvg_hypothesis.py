@@ -5,7 +5,8 @@
 1. **التسريب:** كل إشارة سببية (``availability_ts``)؛ اختيار الإعدادات بـ
    walk-forward purged (تدريب → اختيار → اختبار خارج العينة فقط).
 2. **الصرامة:** IC + permutation + BH على المرشّحين؛ مسار OOS هو الحكم.
-3. **الأداء:** كاش شموع OHLCV حسب ``interval_ns``.
+3. **الأداء:** كاش شموع OHLCV + كاش مسح فرضيات متطابقة المفتاح؛
+   ``tick_stream`` مرة واحدة لـ SSL عند البحث.
 4. **MBO فقط:** الفرضيات من ``failed_fvg_from_bars`` على شريط الصفقات.
 
 بوابة SSL: asof خلفي للتمثيلات ``z*`` + عتبة سببية (كمّية ماضية فقط).
@@ -31,6 +32,7 @@ from nq.core.temporal_policy import (
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.splitting import purged_walk_forward_split
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
+from nq.models.tick_stream import build_tick_stream
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.capacity import (
     LEAN_GATE_QUANTILES,
@@ -167,14 +169,28 @@ def core_fvg_grid() -> tuple[FvgHypothesisSpec, ...]:
     return tuple(specs)
 
 
-def materialize_fvg_hypotheses(
+def _fvg_scan_key(spec: FvgHypothesisSpec) -> tuple[object, ...]:
+    """مفتاح كاش مسح FVG — فرضيات بنفس البنية/العتبات تُعاد استخدام مسحها."""
+    return (
+        spec.h1_interval_ns,
+        spec.signal_interval_ns,
+        spec.fvg_window_ns,
+        spec.vol_price_mult,
+        spec.vol_volume_mult,
+    )
+
+
+def materialize_fvg_hypotheses(  # noqa: PLR0915
     nq: pl.DataFrame,
     specs: Sequence[FvgHypothesisSpec],
     *,
     clock: pl.DataFrame,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """يبني أعمدة فرضيات على ساعة تقييم مشتركة (نبضة تطابقية عند bucket_end)."""
+    """يبني أعمدة فرضيات على ساعة تقييم مشتركة (نبضة تطابقية عند bucket_end).
+
+    كاش OHLCV لكل فاصل + كاش مسح بمفتاح البنية (بدون hold) داخل الاستدعاء فقط.
+    """
     if AVAILABILITY_TS not in clock.columns:
         raise ValueError(f"clock requires {AVAILABILITY_TS}")
     if clock.height == 0 or not specs:
@@ -183,9 +199,12 @@ def materialize_fvg_hypotheses(
     log = progress
     n_specs = len(specs)
     if log is not None:
-        log.op(f"تجسيد {n_specs} فرضية FVG (كل فرضية تُطبع)")
+        log.op(f"تجسيد {n_specs} فرضية FVG (كاش مسح مشترك)")
 
     bars_cache: dict[int, pl.DataFrame] = {}
+    scan_cache: dict[tuple[object, ...], pl.DataFrame] = {}
+    scan_hits = 0
+    scan_misses = 0
 
     def _bars(interval_ns: int) -> pl.DataFrame:
         cached = bars_cache.get(interval_ns)
@@ -198,13 +217,14 @@ def materialize_fvg_hypotheses(
                 log.op(f"OHLCV جاهز: {cached.height:,} شمعة")
         return cached
 
-    out = clock.sort(AVAILABILITY_TS)
-    for i, spec in enumerate(specs, start=1):
-        if log is not None:
-            log.op(
-                f"فرضية [{i}/{n_specs}] {spec.name} · h1={spec.h1_interval_ns} · "
-                f"sig={spec.signal_interval_ns}"
-            )
+    def _candidates(spec: FvgHypothesisSpec) -> pl.DataFrame:
+        nonlocal scan_hits, scan_misses
+        key = _fvg_scan_key(spec)
+        hit = scan_cache.get(key)
+        if hit is not None:
+            scan_hits += 1
+            return hit
+        scan_misses += 1
         raw = failed_fvg_from_bars(
             _bars(spec.h1_interval_ns),
             _bars(spec.signal_interval_ns),
@@ -213,6 +233,17 @@ def materialize_fvg_hypotheses(
             vol_volume_mult=spec.vol_volume_mult,
             progress=log,
         )
+        scan_cache[key] = raw
+        return raw
+
+    out = clock.sort(AVAILABILITY_TS)
+    for i, spec in enumerate(specs, start=1):
+        if log is not None:
+            log.op(
+                f"فرضية [{i}/{n_specs}] {spec.name} · h1={spec.h1_interval_ns} · "
+                f"sig={spec.signal_interval_ns}"
+            )
+        raw = _candidates(spec)
         col = spec.column()
         if raw.height == 0:
             out = out.with_columns(pl.lit(0.0).alias(col))
@@ -235,7 +266,11 @@ def materialize_fvg_hypotheses(
         if log is not None:
             log.heartbeat(i, n_specs, label="materialize_FVG", force=True)
     if log is not None:
-        log.op(f"انتهى تجسيد {n_specs} فرضية FVG")
+        log.op(
+            f"انتهى تجسيد {n_specs} فرضية FVG · "
+            f"مسح فريد={scan_misses} · إعادة استخدام={scan_hits} · "
+            f"OHLCV مخزّن={len(bars_cache)}"
+        )
     return out
 
 
@@ -616,9 +651,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
 
         if use_ssl_gate or use_depth_filter:
             log.step("إلحاق Volume Profile / Auction (asof) لسياق SSL")
-            features = _attach_auction_vp(
-                features, nq_frame, interval_ns=interval_ns, progress=log
-            )
+            features = _attach_auction_vp(features, nq_frame, interval_ns=interval_ns, progress=log)
 
         ssl_result: SSLPipelineResult | None = None
         candidate_list: list[str] = list(hyp_cols)
@@ -655,6 +688,8 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
                 log.note(f"تخطي SSL — إشارات أساس غير كافية (hits={base_hits} < {min_ssl_hits})")
             else:
                 log.note(f"إشارات أساس: hits={base_hits} ≥ {min_ssl_hits}")
+                log.op("بناء tick_stream مرة واحدة لمسار البحث (يُمرَّر لـ SSL)")
+                shared_tick = build_tick_stream(nq_frame, mnq_frame, progress=log)
                 ssl_result = run_ssl_tick_pipeline(
                     nq_frame,
                     mnq_frame,
@@ -664,6 +699,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
                     alpha=alpha,
                     rng=generator,
                     progress=log,
+                    tick_stream=shared_tick,
                 )
                 features, gated = apply_causal_ssl_gate(
                     features,
