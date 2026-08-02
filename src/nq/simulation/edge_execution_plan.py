@@ -285,6 +285,7 @@ def run_edge_plan(
     truth_cfg: MarketTruthConfig | None = None,
     exec_cfg: EdgeExecConfig | None = None,
     deceptive: DeceptiveLiquidityConfig | None = None,
+    score_mbo: pl.DataFrame | None = None,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """خط واحد: حقيقة السوق → خطة تنفيذ → محاكاة."""
@@ -293,6 +294,7 @@ def run_edge_plan(
         interval_ns=interval_ns,
         truth=truth_cfg,
         deceptive=deceptive,
+        score_mbo=score_mbo,
         progress=progress,
     )
     return simulate_edge_trades(truth, exec_cfg=exec_cfg)
@@ -305,30 +307,40 @@ def score_edge_spec_oos(
     interval_ns: int,
     train_frac: float = 0.6,
     deceptive: DeceptiveLiquidityConfig | None = None,
+    score_mbo: pl.DataFrame | None = None,
 ) -> dict[str, float | str]:
-    """تقييم فرضية على شريحة تدريب ثم اختبار (انقسام زمني بسيط سببي)."""
+    """تقييم فرضية بمحاكاة مستقلة على التدريب ثم الاختبار (بلا تسرّب عبر القطع)."""
     if not 0.1 < train_frac < 0.9:
         raise ValueError(f"train_frac must be in (0.1, 0.9), got {train_frac}")
-    full = run_edge_plan(
+    empty = {
+        "name": spec.name,
+        "train_expectancy": 0.0,
+        "oos_expectancy": 0.0,
+        "oos_win_rate": 0.0,
+        "oos_n": 0.0,
+        "oos_avg_rr": 0.0,
+        "oos_profit_factor": 0.0,
+    }
+    truth = build_market_truth_frame(
         mbo,
         interval_ns=interval_ns,
-        truth_cfg=spec.truth_config(),
-        exec_cfg=spec.exec_config(),
+        truth=spec.truth_config(),
         deceptive=deceptive,
+        score_mbo=score_mbo,
     )
-    if full.height < 20:
-        return {
-            "name": spec.name,
-            "train_expectancy": 0.0,
-            "oos_expectancy": 0.0,
-            "oos_win_rate": 0.0,
-            "oos_n": 0.0,
-            "oos_avg_rr": 0.0,
-            "oos_profit_factor": 0.0,
-        }
-    cut = int(full.height * train_frac)
-    train = summarize_edge_trades(full.head(cut))
-    test = summarize_edge_trades(full.slice(cut))
+    if truth.height < 20:
+        return empty
+    cut = int(truth.height * train_frac)
+    purge = int(spec.exec_config().max_hold_buckets)
+    train_truth = truth.head(cut)
+    test_start = min(truth.height, cut + purge)
+    test_truth = truth.slice(test_start)
+    train = summarize_edge_trades(
+        simulate_edge_trades(train_truth, exec_cfg=spec.exec_config())
+    )
+    test = summarize_edge_trades(
+        simulate_edge_trades(test_truth, exec_cfg=spec.exec_config())
+    )
     return {
         "name": spec.name,
         "train_expectancy": train["expectancy"],
@@ -347,11 +359,12 @@ def search_best_edge_spec(
     grid: tuple[EdgeSearchSpec, ...] | None = None,
     train_frac: float = 0.6,
     deceptive: DeceptiveLiquidityConfig | None = None,
+    score_mbo: pl.DataFrame | None = None,
     progress: ProgressLike | None = None,
     min_oos_trades: int = 3,
     min_oos_rr: float = 2.0,
 ) -> tuple[pl.DataFrame, EdgeSearchSpec | None, dict[str, float | str]]:
-    """يبحث عن أفضل دخول/خروج: ترتيب بـ OOS expectancy مع قيد R:R وعدد صفقات."""
+    """يبحث عن أفضل دخول/خروج؛ يعيد ``best=None`` إن لم تُحقَّق القيود."""
     specs = grid if grid is not None else default_edge_search_grid()
     rows: list[dict[str, float | str]] = []
     if progress is not None:
@@ -363,6 +376,7 @@ def search_best_edge_spec(
             interval_ns=interval_ns,
             train_frac=train_frac,
             deceptive=deceptive,
+            score_mbo=score_mbo,
         )
         rows.append(row)
     table = pl.DataFrame(rows) if rows else pl.DataFrame()
@@ -372,8 +386,9 @@ def search_best_edge_spec(
         (pl.col("oos_n") >= float(min_oos_trades))
         & (pl.col("oos_avg_rr") >= float(min_oos_rr))
     )
-    pool = eligible if eligible.height else table
-    best_row = pool.sort("oos_expectancy", descending=True).row(0, named=True)
+    if eligible.height == 0:
+        return table, None, {}
+    best_row = eligible.sort("oos_expectancy", descending=True).row(0, named=True)
     best_spec = next((s for s in specs if s.name == best_row["name"]), None)
     return table, best_spec, dict(best_row)
 

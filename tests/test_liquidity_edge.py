@@ -54,7 +54,7 @@ def test_score_marks_short_life_cancel_as_deceptive() -> None:
     assert float(cancel_row["flicker_flag"][0]) == 1.0
 
 
-def test_filter_keeps_trades_drops_high_score_cancel() -> None:
+def test_filter_keeps_trades_drops_full_spoof_lifecycle() -> None:
     frame = make_stream(
         [
             ("A", "B", _px(100.0), 10, 1),
@@ -79,9 +79,14 @@ def test_filter_keeps_trades_drops_high_score_cancel() -> None:
             w_storm=0.0,
         ),
     )
+    from nq.contracts.mbo import MBO_SCHEMA, validate_mbo_frame
+
+    validate_mbo_frame(cleaned)
+    assert set(cleaned.columns) == set(MBO_SCHEMA)
     actions = [str(a) for a in cleaned["action"].to_list()]
     assert "T" in actions
-    # إلغاء السبوف يُسقط عند درجة عالية
+    # دورة السبوف كاملة تُسقط (ADD+CANCEL) — بلا شبح
+    assert 2 not in [int(x) for x in cleaned["order_id"].to_list()]
     assert actions.count("C") == 0
 
 
@@ -205,6 +210,56 @@ def test_simulate_edge_trades_no_chase_every_bar() -> None:
     assert float(out["edge_rr"].drop_nans()[0]) >= 2.0 - 1e-9
 
 
+def test_search_rejects_ineligible_grid() -> None:
+    mbo = _session_with_imbalance(30)
+    grid = (
+        EdgeSearchSpec(
+            name="hold2_rr99",
+            hold_buckets=2,
+            min_rr=99.0,
+            stop_buffer_ticks=1.0,
+            target_mode="rr_multiple",
+            rr_multiple=99.0,
+        ),
+    )
+    table, best, row = search_best_edge_spec(
+        mbo,
+        interval_ns=1_000_000_000,
+        grid=grid,
+        train_frac=0.5,
+        deceptive=DeceptiveLiquidityConfig(storm_min_events=10_000),
+        min_oos_trades=1000,
+        min_oos_rr=50.0,
+    )
+    assert table.height == 1
+    assert best is None
+    assert row == {}
+
+
+def test_oos_simulations_are_independent() -> None:
+    """محاكاة التدريب لا تحجب صفقات الاختبار عبر القطع."""
+    from nq.simulation.edge_execution_plan import score_edge_spec_oos
+
+    mbo = _session_with_imbalance(60)
+    spec = EdgeSearchSpec(
+        name="hold2_rr2",
+        hold_buckets=2,
+        min_rr=2.0,
+        stop_buffer_ticks=1.0,
+        target_mode="rr_multiple",
+        rr_multiple=2.0,
+    )
+    row = score_edge_spec_oos(
+        mbo,
+        spec,
+        interval_ns=1_000_000_000,
+        train_frac=0.5,
+        deceptive=DeceptiveLiquidityConfig(storm_min_events=10_000),
+    )
+    assert "oos_n" in row
+    assert "train_expectancy" in row
+
+
 def test_search_and_strategy_smoke() -> None:
     mbo = _session_with_imbalance(50)
     grid = (
@@ -238,7 +293,6 @@ def test_search_and_strategy_smoke() -> None:
     assert best is not None
     assert "oos_expectancy" in row
 
-    # التوافق: liquidity_edge يفوّض لـ vp_auction المتصل
     result = run_liquidity_edge_research(
         mbo,
         train_frac=0.5,

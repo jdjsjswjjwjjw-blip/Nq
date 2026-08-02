@@ -77,8 +77,10 @@ def test_run_vp_auction_connected_execution_layer() -> None:
     assert result.with_execution is True
     assert result.raw_mbo_rows == mbo.height
     assert result.cleaned_mbo_rows <= result.raw_mbo_rows
-    # أعمدة التنفيذ مدمجة على نفس features
+    # أعمدة التنفيذ مدمجة وصفيًا — لكن اختيار الإشارة = vp_* فقط
     for col in ("entry_gate", "deceptive_score", "market_verdict", "vp_flip_gated"):
         assert col in result.features.columns, f"missing connected col {col}"
-    assert "entry_gate" in result.signal_columns
+    assert "edge_pnl" not in result.features.columns
+    assert "entry_gate" not in result.signal_columns
+    assert "vp_balance" in result.signal_columns
     assert result.edge_search_table.height >= 1

@@ -76,9 +76,15 @@ def build_market_truth_frame(  # noqa: PLR0915
     interval_ns: int,
     truth: MarketTruthConfig | None = None,
     deceptive: DeceptiveLiquidityConfig | None = None,
+    score_mbo: pl.DataFrame | None = None,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """يبني إطار حكم السوق + بوابة دخول (بدون ملاحقة كل أمر)."""
+    """يبني إطار حكم السوق + بوابة دخول (بدون ملاحقة كل أمر).
+
+    ``mbo``: مصدر حالات المزاد (عادة بعد تنظيف الدفتر).
+    ``score_mbo``: مصدر درجات التضليل للهولد — يجب أن يكون **الخام قبل الإسقاط**
+    وإلا تصبح بوابات السيولة الحقيقية بلا معنى بعد التنظيف.
+    """
     cfg = truth if truth is not None else MarketTruthConfig()
     if cfg.hold_buckets < 1:
         raise ValueError(f"hold_buckets must be >= 1, got {cfg.hold_buckets}")
@@ -86,8 +92,9 @@ def build_market_truth_frame(  # noqa: PLR0915
     if progress is not None:
         progress.op("market_truth: auction_states + deceptive buckets")
     states = auction_states(mbo, interval_ns=interval_ns, progress=progress)
+    score_src = score_mbo if score_mbo is not None else mbo
     deco = deceptive_features_by_bucket(
-        mbo, interval_ns=interval_ns, config=deceptive, progress=progress
+        score_src, interval_ns=interval_ns, config=deceptive, progress=progress
     )
     if states.height == 0:
         return pl.DataFrame(
@@ -175,8 +182,8 @@ def build_market_truth_frame(  # noqa: PLR0915
         else:
             verdict[end] = -1.0
             market_false[end] = 1.0
-        # بوابة دخول: هولد ناجح + سوق ليس كاذبًا لحظة القرار
-        if verdict[end] >= 0.0:
+        # بوابة دخول: هولد ناجح + سوق صادق (ليس محايدًا ولا كاذبًا)
+        if verdict[end] > 0.0:
             entry_gate[end] = 1.0
         # الإتاحة = نهاية برميل اكتمال الهولد
         avail[end] = int(bucket_end[end])
