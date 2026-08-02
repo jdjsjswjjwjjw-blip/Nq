@@ -482,7 +482,7 @@ def measure_lori(
     folds = _walk_forward_folds(times, n_splits=n_splits, embargo=embargo)
     results: list[MetricResult] = []
 
-    for fold in folds:
+    for fold_i, fold in enumerate(folds):
         train = raw[fold.train_idx]
         test = raw[fold.test_idx]
         if train.shape[0] < n_regimes * 2 or test.shape[0] < _MIN_REGIME_SAMPLES:
@@ -524,34 +524,43 @@ def measure_lori(
             if orphan:
                 results.append(
                     MetricResult(
-                        f"lori:regime_{int(regime)}",
+                        f"lori:regime_{int(regime)}:fold{fold_i}",
                         min_p,
                         min_p,
                         count,
                         (
-                            f"orphan regime {int(regime)}: no simulator block explains it "
-                            f"(min_p={min_p:.4g})"
+                            f"orphan regime {int(regime)} fold{fold_i}: no simulator block "
+                            f"explains it (min_p={min_p:.4g})"
                         ),
                         True,
                     )
                 )
 
+        # One Transition Surprise summary per fold (unique evidence id).
+        novel: list[tuple[int, int, float]] = []
         for i in range(test_labels.shape[0] - 1):
             src = int(test_labels[i])
             dst = int(test_labels[i + 1])
-            prob = trans_train[src, dst] if trans_train[src, dst] > 0 else 1e-9
-            surprise = -np.log(prob)
+            prob = float(trans_train[src, dst]) if trans_train[src, dst] > 0 else 1e-9
+            surprise = float(-np.log(prob))
             if surprise > _TRANSITION_SURPRISE_THRESHOLD:
-                results.append(
-                    MetricResult(
-                        "lori:transition_surprise",
-                        surprise,
-                        0.01,
-                        1,
-                        f"novel transition {src}->{dst} (TS={surprise:.2f})",
-                        True,
-                    )
+                novel.append((src, dst, surprise))
+        if novel:
+            max_ts = max(s for _, _, s in novel)
+            top_src, top_dst, _ = max(novel, key=lambda item: item[2])
+            results.append(
+                MetricResult(
+                    f"lori:transition_surprise:fold{fold_i}",
+                    max_ts,
+                    0.01,
+                    len(novel),
+                    (
+                        f"{len(novel)} novel transitions fold{fold_i} "
+                        f"(max {top_src}->{top_dst} TS={max_ts:.2f})"
+                    ),
+                    True,
                 )
+            )
     return results
 
 
