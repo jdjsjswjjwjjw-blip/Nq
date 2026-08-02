@@ -126,7 +126,12 @@ def main() -> None:
         fail_fast=args.fail_fast,
     )
     print(manifest.to_markdown())
+    final = Path(args.output) / "FINAL_RESULT.md"
+    if final.exists():
+        print(final.read_text(encoding="utf-8"))
     print(f"outputs: {args.output.resolve()}/")
+    if final.exists():
+        print(f"FINAL: {final.resolve()}")
 
 
 if __name__ == "__main__":

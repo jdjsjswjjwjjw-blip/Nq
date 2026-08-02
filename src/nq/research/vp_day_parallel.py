@@ -39,6 +39,7 @@ class VpDayParallelManifest(DayParallelManifest):
         default_factory=lambda: (
             "Do not treat mode(best_signal) across days as a single OOS selector.",
             "Prefer batch VP path; use streaming only when tick SSL is required.",
+            "FINAL_RESULT.md pools per-day fills for a month-level descriptive verdict.",
         )
     )
 
@@ -195,6 +196,26 @@ def run_vp_auction_day_parallel(
         encoding="utf-8",
     )
     (root / "summary.md").write_text(manifest.to_markdown(), encoding="utf-8")
+    if n_ok > 0:
+        from nq.research.vp_month_aggregate import write_vp_month_aggregate  # noqa: PLC0415
+
+        final_path = write_vp_month_aggregate(root)
+        notes = list(manifest.notes) + (
+            f"FINAL_RESULT pooled descriptive verdict: `{final_path.name}`",
+            "Pooled expectancy uses concatenated per-day fills — not a cross-day re-fit.",
+        )
+        manifest = VpDayParallelManifest(
+            jobs=manifest.jobs,
+            mode=manifest.mode,
+            output_root=manifest.output_root,
+            n_days=manifest.n_days,
+            n_ok=manifest.n_ok,
+            n_failed=manifest.n_failed,
+            results=manifest.results,
+            principles=manifest.principles,
+            notes=tuple(notes),
+        )
+        (root / "summary.md").write_text(manifest.to_markdown(), encoding="utf-8")
     return manifest
 
 
