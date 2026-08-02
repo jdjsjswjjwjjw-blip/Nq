@@ -583,6 +583,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
             interval_ns=interval_ns,
             lead_lag_window=2,
             latency_ns=0,
+            progress=log,
         )
         log.step("تجسيد شبكة فرضيات FVG", f"candidates={len(grid)}")
         features = materialize_fvg_hypotheses(nq_frame, grid, clock=clock, progress=log)
@@ -640,6 +641,7 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
             features, depth_cols, depth_specs = generate_depth_entry_candidates(
                 features,
                 hyp_cols,
+                progress=log,
                 **depth_kwargs,  # type: ignore[arg-type]
             )
             candidate_list.extend(list(depth_cols))

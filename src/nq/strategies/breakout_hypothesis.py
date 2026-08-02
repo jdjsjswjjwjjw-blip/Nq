@@ -640,6 +640,7 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             interval_ns=interval_ns,
             lead_lag_window=2,
             latency_ns=0,
+            progress=log,
         )
         log.step("تجسيد فرضيات FB الفوليوم", f"specs={len(grid)}")
         features = materialize_breakout_hypotheses(nq_frame, grid, clock=clock, progress=log)
@@ -721,6 +722,7 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             features, depth_cols, depth_specs = generate_depth_entry_candidates(
                 features,
                 hyp_cols,
+                progress=log,
                 **depth_kwargs,  # type: ignore[arg-type]
             )
             depth_columns = depth_cols

@@ -148,7 +148,7 @@ def depth_event_series(
             log.heartbeat(done, n, label="depth_events", force=True, every=hb_every)
             next_hb = done + hb_every
     if log is not None:
-        log.op(f"depth_event_series انتهى: {len(rows):,} لقطة")
+        log.op(f"depth_event_series انتهى: {len(rows):,} لقطة — بناء DataFrame…")
     return pl.DataFrame(rows).sort(AVAILABILITY_TS)
 
 
@@ -240,7 +240,9 @@ def depth_at_bar_close_multi(  # noqa: PLR0912, PLR0915
     for interval_ns in intervals:
         rows = rows_by_iv[interval_ns]
         if log is not None:
-            log.op(f"depth_at_bar_close[{interval_ns}]: {len(rows):,} شمعة بعمق")
+            log.op(
+                f"depth_at_bar_close[{interval_ns}]: {len(rows):,} شمعة بعمق — بناء DataFrame…"
+            )
         out[interval_ns] = (
             pl.DataFrame(rows).sort(AVAILABILITY_TS) if rows else pl.DataFrame(schema=empty_schema)
         )
@@ -267,8 +269,7 @@ def depth_at_bar_close(
     )[interval_ns]
 
 
-def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915
-    frame: pl.DataFrame,
+def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915    frame: pl.DataFrame,
     *,
     interval_ns: int,
     n_levels: int = _DEFAULT_LEVELS,
@@ -411,7 +412,7 @@ def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915
         _emit(current_bucket)
 
     if log is not None:
-        log.op(f"depth_event_path انتهى: {len(rows):,} شمعة")
+        log.op(f"depth_event_path انتهى: {len(rows):,} شمعة — بناء DataFrame…")
     if not rows:
         return pl.DataFrame(schema=schema)
     return pl.DataFrame(rows).sort(AVAILABILITY_TS)

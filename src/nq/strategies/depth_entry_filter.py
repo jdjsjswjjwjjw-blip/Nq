@@ -94,6 +94,10 @@ def attach_depth_path_to_features(
         )
 
     path = depth_event_path_at_bar_close(cleaned, interval_ns=interval_ns, progress=progress)
+    if progress is not None:
+        progress.op(
+            f"asof مسار العمق → ميزات (path={path.height:,} · features={features.height:,})"
+        )
     out = attach_depth_asof(features, path, columns=DEPTH_PATH_COLUMNS, fill_missing=False)
 
     if include_bottom_book:
@@ -117,6 +121,7 @@ def generate_depth_entry_candidates(  # noqa: PLR0912, PLR0915
     include_sign_agree: bool = True,
     include_imbalance_delta: bool = True,
     include_bottom_edge: bool = True,
+    progress: ProgressLike | None = None,
 ) -> tuple[pl.DataFrame, tuple[str, ...], tuple[DepthEntrySpec, ...]]:
     """يولّد مرشّحي دخول عمق فوق ``base_columns`` (إشارة × بوابة ماضية).
 
@@ -129,13 +134,18 @@ def generate_depth_entry_candidates(  # noqa: PLR0912, PLR0915
     if not bases or _PRESSURE_COL not in features.columns:
         return features, tuple(), tuple()
 
+    if progress is not None:
+        progress.op(
+            f"توليد مرشّحي عمق: bases={len(bases)} · q={list(quantiles)} · rows={features.height:,}"
+        )
+
     work = features.sort(AVAILABILITY_TS)
     specs: list[DepthEntrySpec] = []
     new_cols: list[str] = []
     exprs: list[pl.Expr] = []
 
     abs_pressure = pl.col(_PRESSURE_COL).abs().fill_null(0.0)
-    for q in quantiles:
+    for q_i, q in enumerate(quantiles, start=1):
         past_q = abs_pressure.shift(1).rolling_quantile(
             float(q), window_size=_GATE_WINDOW, min_samples=_GATE_MIN_SAMPLES
         )
@@ -151,8 +161,12 @@ def generate_depth_entry_candidates(  # noqa: PLR0912, PLR0915
             specs.append(spec)
             new_cols.append(col)
             exprs.append((pl.col(base).fill_null(0.0) * gate).alias(col))
+        if progress is not None:
+            progress.heartbeat(q_i, len(quantiles), label="depth_q_pressure", force=True)
 
     if include_sign_agree:
+        if progress is not None:
+            progress.op("عمق: بوابة اتفاق الإشارة مع pressure")
         sign_p = pl.col(_PRESSURE_COL).fill_null(0.0).sign()
         for base in bases:
             spec = DepthEntrySpec(
@@ -167,8 +181,10 @@ def generate_depth_entry_candidates(  # noqa: PLR0912, PLR0915
             exprs.append((pl.col(base).fill_null(0.0) * agree).alias(col))
 
     if include_imbalance_delta and _IMB_DELTA_COL in work.columns:
+        if progress is not None:
+            progress.op("عمق: بوابات |imbalance_delta|")
         abs_d = pl.col(_IMB_DELTA_COL).abs().fill_null(0.0)
-        for q in quantiles:
+        for q_i, q in enumerate(quantiles, start=1):
             past_q = abs_d.shift(1).rolling_quantile(
                 float(q), window_size=_GATE_WINDOW, min_samples=_GATE_MIN_SAMPLES
             )
@@ -184,6 +200,8 @@ def generate_depth_entry_candidates(  # noqa: PLR0912, PLR0915
                 specs.append(spec)
                 new_cols.append(col)
                 exprs.append((pl.col(base).fill_null(0.0) * gate).alias(col))
+            if progress is not None:
+                progress.heartbeat(q_i, len(quantiles), label="depth_q_imb", force=True)
 
     if include_bottom_edge and _QUEUE_COL in work.columns:
         abs_q = pl.col(_QUEUE_COL).abs().fill_null(0.0)
@@ -229,7 +247,11 @@ def generate_depth_entry_candidates(  # noqa: PLR0912, PLR0915
 
     if not exprs:
         return work, tuple(), tuple()
+    if progress is not None:
+        progress.op(f"تطبيق {len(exprs)} تعبير عمق على الإطار…")
     out = work.with_columns(exprs)
+    if progress is not None:
+        progress.op(f"مرشّحو عمق جاهزون: {len(new_cols)}")
     return out, tuple(new_cols), tuple(specs)
 
 
