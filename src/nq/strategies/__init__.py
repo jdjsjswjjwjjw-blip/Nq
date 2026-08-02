@@ -23,6 +23,7 @@ from nq.strategies.fvg_hypothesis import (
     FvgHypothesisSpec,
     search_fail_fvg_hypotheses,
 )
+from nq.strategies.liquidity_edge import LiquidityEdgeResult, run_liquidity_edge_research
 from nq.strategies.ssl_enhancements import EnhancementSpec, generate_ssl_enhancement_candidates
 from nq.strategies.vp_auction import VpAuctionResearchResult, run_vp_auction_research
 
@@ -35,11 +36,13 @@ __all__ = [
     "FailFvgResearchResult",
     "FvgHypothesisSearchResult",
     "FvgHypothesisSpec",
+    "LiquidityEdgeResult",
     "VpAuctionResearchResult",
     "generate_depth_entry_candidates",
     "generate_ssl_enhancement_candidates",
     "run_fail_breakout_research",
     "run_fail_fvg_research",
+    "run_liquidity_edge_research",
     "run_vp_auction_research",
     "search_fail_breakout_hypotheses",
     "search_fail_fvg_hypotheses",

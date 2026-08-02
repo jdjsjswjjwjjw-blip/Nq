@@ -26,10 +26,30 @@ from nq.simulation.bottom_book import (
 from nq.simulation.breakout import failed_breakout_features, failed_breakout_from_bars
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 from nq.simulation.cross_market import cross_market_features
+from nq.simulation.deceptive_liquidity import (
+    DECEPTIVE_FEATURE_COLUMNS,
+    DeceptiveLiquidityConfig,
+    deceptive_features_by_bucket,
+    filter_deceptive_liquidity,
+    score_deceptive_events,
+)
 from nq.simulation.depth_noise import DepthNoiseConfig, filter_depth_noise
+from nq.simulation.edge_execution_plan import (
+    EDGE_TRADE_COLUMNS,
+    EdgeExecConfig,
+    EdgeSearchSpec,
+    default_edge_search_grid,
+    run_edge_plan,
+    search_best_edge_spec,
+)
 from nq.simulation.execution import (
     directional_execution_returns,
     execution_forward_returns,
+)
+from nq.simulation.market_truth import (
+    MARKET_TRUTH_COLUMNS,
+    MarketTruthConfig,
+    build_market_truth_frame,
 )
 from nq.simulation.footprint import footprint_cells, footprint_summary
 from nq.simulation.fvg import (
@@ -54,18 +74,28 @@ __all__ = [
     "BOTTOM_BOOK_COLUMNS",
     "BUCKET_END",
     "BUCKET_START",
+    "DECEPTIVE_FEATURE_COLUMNS",
+    "EDGE_TRADE_COLUMNS",
+    "MARKET_TRUTH_COLUMNS",
+    "DeceptiveLiquidityConfig",
     "DepthNoiseConfig",
     "DevelopingVolumeProfile",
+    "EdgeExecConfig",
+    "EdgeSearchSpec",
+    "MarketTruthConfig",
     "ValueArea",
     "add_time_bucket",
     "attach_bottom_book_asof",
     "auction_signal_frame",
     "auction_states",
     "bottom_book_features_at_bar_close",
+    "build_market_truth_frame",
     "build_ohlcv_bars",
     "build_volume_profile",
     "classify_nodes",
     "cross_market_features",
+    "deceptive_features_by_bucket",
+    "default_edge_search_grid",
     "detect_h1_fvgs",
     "detect_icebergs",
     "developing_value_area",
@@ -76,6 +106,7 @@ __all__ = [
     "failed_breakout_from_bars",
     "failed_fvg_features",
     "failed_fvg_from_bars",
+    "filter_deceptive_liquidity",
     "filter_depth_noise",
     "footprint_cells",
     "footprint_summary",
@@ -83,6 +114,9 @@ __all__ = [
     "ofi_by_bucket",
     "order_flow_imbalance",
     "order_flow_summary",
+    "run_edge_plan",
+    "score_deceptive_events",
+    "search_best_edge_spec",
     "value_area",
     "value_area_from_levels",
 ]
