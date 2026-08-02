@@ -105,6 +105,7 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 | `run_fail_breakout_days` | نفس FB على شرائح يومية متوازية | نعم — كل يوم كون سببي مغلق؛ لا اختيار عبر الأيام | `manifest.json` + مجلد/يوم |
 | `run_symbolic_search` | DEAP + gplearn (معادلات بلا `if`) | نعم — WF فوق ميزات الخط · يحتاج `nq[gp]` | programs.json + folds + signals |
 | `run_vp_auction` + `configs/vp_auction.toml` | VP + توازن/اختلال | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
+| `run_liquidity_edge` | فلتر تضليل + حكم سوق + دخول/خروج R:R | نعم — هولد بلا ملاحقة كل أمر؛ مستويات VAL/VAH | تقرير + شبكة + صفقات |
 
 > لو عايز الكل شغّال → `run_week`.  
 > لو عايز فرضية واحدة للفرز → الأمر المنفصل المناسب (نفس المعالجة والمخرجات).  
@@ -112,7 +113,8 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 > لو عايز Failed Breakout (فوليوم + عمق) → `run_fail_breakout` أو `--search`.  
 > لو عايز يولّف استراتيجيات volume-first + hold داخل الكسر → `--search --compose-hold`.  
 > لو عايز **تفسير كمي بعد الاختيار** (لماذا فازت الإشارة؟) → أضف `--understand` مع `--search`.  
-> لو عايز **معادلات رمزية بلا if** → `pip install 'nq[gp]'` ثم `run_symbolic_search`.
+> لو عايز **معادلات رمزية بلا if** → `pip install 'nq[gp]'` ثم `run_symbolic_search`.  
+> لو عايز **إدج تنفيذي** (تضليل + صدق السوق + R:R قوي) → `run_liquidity_edge`.
 
 ---
 
@@ -444,6 +446,29 @@ python scripts/run_week.py \
 
 ---
 
+### 4b) إدج السيولة التنفيذي (`run_liquidity_edge`)
+
+طبقة علمية فوق MBO تهدف لما طلبته صراحة:
+
+| طبقة | ماذا تفعل |
+|------|-----------|
+| فلتر التضليل | درجة + إسقاط لأوامر وهمية (وميض / سبوف / طعم modify / عدم مشاركة / عاصفة) — سببي؛ TRADE لا تُمس |
+| حكم السوق | بعد **هولد** سيولة حقيقية: `market_true` / `market_false` + `delta_instant` / `delta_cum` |
+| دخول/خروج | وقف/هدف هيكلي من VAL/VAH أو مضاعف R؛ شبكة بحث بحد أدنى R:R قوي (مش نقطة/نقطتين) |
+| لا ملاحقة | صفقة واحدة لكل نافذة؛ دخول فقط عند `entry_gate` بعد الهولد |
+
+```bash
+python scripts/run_liquidity_edge.py \
+  --nq /path/to/nq.parquet \
+  --max-rows 500000 \
+  --min-oos-rr 2.5 \
+  --output data/runs/liquidity_edge
+```
+
+مخرجات: `liquidity_edge_report.md` · `edge_search_grid.parquet` · `edge_trades.parquet` · `edge_oos_summary.parquet`.
+
+---
+
 ### 4) من بايثون (API)
 
 ```python
@@ -606,6 +631,7 @@ Nq/
 │   ├── run_fail_breakout_days.py  # FB يوم-بيوم متوازٍ (ProcessPool · عزل سببي)
 │   ├── run_symbolic_search.py # DEAP + gplearn (معادلات بلا if · nq[gp])
 │   └── run_vp_auction.py      # أمر منفصل VP / توازن·اختلال (داخل المنظومة)
+│   └── run_liquidity_edge.py  # تضليل + حكم سوق + دخول/خروج R:R
 ├── docs/
 │   ├── architecture.md
 │   └── data_contracts.md
