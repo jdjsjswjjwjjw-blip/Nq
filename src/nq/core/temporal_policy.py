@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -97,4 +98,38 @@ class TemporalPolicy:
         return max(self.embargo_ns, minimum)
 
 
-__all__ = ["TemporalPolicy"]
+def resolve_grid_context_interval(
+    signal_intervals: Sequence[int],
+    *,
+    default_ns: int,
+) -> tuple[int, bool]:
+    """أطول إطار إشارة في الشبكة + هل الشبكة مختلطة TF.
+
+    عند الاختلاط يُستخدم ``max`` لسياق العمق/الفوليوم/محاذاة الأفق — مرشّحات
+    TF أقصر تُقيَّم تحت أفق أطول (توثيق صريح، ليس خطأ صامت).
+    """
+    vals = [int(x) for x in signal_intervals if int(x) > 0]
+    if not vals:
+        return int(default_ns), False
+    ctx = max(vals)
+    return ctx, min(vals) != ctx
+
+
+def align_horizon_to_context(
+    horizon: int,
+    *,
+    research_interval_ns: int,
+    context_interval_ns: int,
+) -> int:
+    """إن ``horizon<=1`` حوّله لعدد فواصل البحث داخل شمعة السياق."""
+    h = max(1, int(horizon))
+    if h > 1 or int(research_interval_ns) < 1:
+        return h
+    return max(1, int(context_interval_ns) // int(research_interval_ns))
+
+
+__all__ = [
+    "TemporalPolicy",
+    "align_horizon_to_context",
+    "resolve_grid_context_interval",
+]

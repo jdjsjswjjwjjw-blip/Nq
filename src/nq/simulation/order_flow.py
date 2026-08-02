@@ -30,7 +30,7 @@ from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extr
 def order_flow_summary(frame: pl.DataFrame, *, interval_ns: int) -> pl.DataFrame:
     """يلخّص تدفّق الأوامر العدواني لكل نافذة زمنية (متاح عند ``bucket_end``)."""
     trades = extract_trades(add_time_bucket(frame, interval_ns=interval_ns))
-    buckets = trades.group_by(BUCKET_START).agg(
+    buckets = trades.sort(EVENT_TS).group_by(BUCKET_START, maintain_order=True).agg(
         pl.col("buy_volume").sum(),
         pl.col("sell_volume").sum(),
         (pl.col("buy_volume") > 0).sum().alias("buy_trades"),
@@ -79,7 +79,8 @@ def ofi_by_bucket(top_of_book: pl.DataFrame, *, interval_ns: int) -> pl.DataFram
     per_event = order_flow_imbalance(top_of_book)
     bucketed = add_time_bucket(per_event, interval_ns=interval_ns)
     return (
-        bucketed.group_by(BUCKET_START)
+        bucketed.sort(EVENT_TS)
+        .group_by(BUCKET_START, maintain_order=True)
         .agg(
             pl.col("ofi").sum().alias("ofi"),
             pl.col(BUCKET_END).first(),

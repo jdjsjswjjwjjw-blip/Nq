@@ -22,7 +22,7 @@ from __future__ import annotations
 import polars as pl
 
 from nq.contracts.mbo import MboAction
-from nq.contracts.temporal import AVAILABILITY_TS
+from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.time import assert_sorted_causal
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket
 
@@ -43,7 +43,8 @@ def liquidity_summary(frame: pl.DataFrame, *, interval_ns: int) -> pl.DataFrame:
     pulled = pl.when(pl.col("action") == _CANCEL).then(size).otherwise(0)
     return (
         ev.with_columns(added.alias("_added"), pulled.alias("_pulled"))
-        .group_by(BUCKET_START)
+        .sort(EVENT_TS)
+        .group_by(BUCKET_START, maintain_order=True)
         .agg(
             pl.col("_added").sum().alias("added_volume"),
             pl.col("_pulled").sum().alias("pulled_volume"),

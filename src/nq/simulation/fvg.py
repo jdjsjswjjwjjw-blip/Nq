@@ -18,7 +18,7 @@ from typing import Final
 import polars as pl
 
 from nq.contracts.mbo import PRICE_SCALE
-from nq.contracts.temporal import AVAILABILITY_TS
+from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 
@@ -74,7 +74,8 @@ def build_ohlcv_bars(frame: pl.DataFrame, *, interval_ns: int) -> pl.DataFrame:
         (pl.col("price").cast(pl.Float64) * PRICE_SCALE).alias("px")
     )
     return (
-        priced.group_by(BUCKET_START)
+        priced.sort(EVENT_TS)
+        .group_by(BUCKET_START, maintain_order=True)
         .agg(
             pl.col("px").first().alias("o"),
             pl.col("px").max().alias("h"),

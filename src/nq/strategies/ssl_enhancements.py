@@ -25,18 +25,27 @@ _SSL_WINDOW = 50
 _SSL_MIN_SAMPLES = 10
 _DEFAULT_QUANTILES = (0.6, 0.7, 0.8)
 _DEFAULT_Z_COLS = ("z0", "z1")
+# فلاتر سياق: vp_* (أنطولوجيا المزاد) أولوية؛ streaming VA إن وُجدت في الإطار.
+# المرشّح يُتخطّى تلقائيًا إن غاب العمود (لا no-op صامت في التوثيق).
 _CONTEXT_FILTERS = (
     ("phase_balance", 0.5),
     ("phase_expansion", 0.5),
     ("trap_setup", 0.0),  # |trap| > 0
+    # Volume Profile / Auction (الأنطولوجيا المفضّلة مع symbolic)
+    ("vp_balance", 0.5),
+    ("vp_imbalance", 0.5),
+    ("vp_expansion", 0.5),
+    ("vp_close_in_value", 0.5),
+    ("vp_flip_to_imbalance", 0.5),
+    # streaming VA — فقط إن بُنيت ساعة streaming (الخط الموحّد)
     ("in_value_area", 0.5),
     ("near_vah", 0.5),
     ("near_val", 0.5),
-    # فوليوم سببي (من Failed Breakout) — عتبات نسبية مقابل 0 أو متوسط ضعيف
+    # فوليوم سببي (من Failed Breakout)
     ("fb_effort_volume_ratio", 1.2),
     ("fb_effort_result_ratio", 1.2),
-    ("fb_absorption", 0.0),  # |absorption| > 0 عند التفعيل لاحقًا عبر >= بعد abs
-    ("fb_vol_imbalance", 0.0),  # |imbalance| > 0
+    ("fb_absorption", 0.0),
+    ("fb_vol_imbalance", 0.0),
 )
 
 

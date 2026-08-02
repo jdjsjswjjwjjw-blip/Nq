@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from nq.contracts.temporal import AVAILABILITY_TS
+from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.time import sort_causal
 from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_START, add_time_bucket, extract_trades
@@ -57,7 +57,7 @@ def auction_states(
 
     trades = extract_trades(add_time_bucket(sort_causal(frame), interval_ns=interval_ns))
 
-    stats = trades.group_by(BUCKET_START).agg(
+    stats = trades.sort(EVENT_TS).group_by(BUCKET_START, maintain_order=True).agg(
         pl.col("price").max().alias("high"),
         pl.col("price").min().alias("low"),
         pl.col("price").last().alias("close"),

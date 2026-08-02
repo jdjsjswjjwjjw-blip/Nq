@@ -26,6 +26,7 @@ if sys.version_info < _MIN_PYTHON:
     )
 
 from nq.research.capacity import RECOMMENDED_MAX_ROWS, SEARCH_N_PERMUTATIONS  # noqa: E402
+from nq.research.orchestrator import PipelineConfig  # noqa: E402
 from nq.strategies.fail_fvg import run_fail_fvg_research  # noqa: E402
 from nq.strategies.fvg_hypothesis import search_fail_fvg_hypotheses  # noqa: E402
 
@@ -48,6 +49,12 @@ def main() -> None:  # noqa: PLR0915
     )
     parser.add_argument("--nq", type=Path, required=True, help="مسار NQ MBO")
     parser.add_argument("--mnq", type=Path, default=None, help="مسار MNQ اختياري (dual)")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/default.toml"),
+        help="TOML للـ interval/depth/streaming (افتراضي configs/default.toml)",
+    )
     parser.add_argument("--output", type=Path, default=Path("data/runs/fail_fvg"))
     parser.add_argument(
         "--max-rows",
@@ -117,9 +124,15 @@ def main() -> None:  # noqa: PLR0915
             print(_EXPLORATORY_BANNER, file=sys.stderr, flush=True)
 
     if args.search:
+        cfg = (
+            PipelineConfig.from_toml(args.config)
+            if args.config.is_file()
+            else PipelineConfig()
+        )
         result = search_fail_fvg_hypotheses(
             args.nq,
             args.mnq,
+            interval_ns=cfg.interval_ns,
             horizon=args.horizon,
             use_ssl_gate=not args.no_ssl_gate,
             use_depth_filter=not args.no_depth_filter,
@@ -151,6 +164,7 @@ def main() -> None:  # noqa: PLR0915
     result = run_fail_fvg_research(
         args.nq,
         args.mnq,
+        config_path=args.config,
         horizon=args.horizon,
         max_rows=args.max_rows,
         output_dir=args.output,

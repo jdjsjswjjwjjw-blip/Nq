@@ -1,4 +1,5 @@
-# إعدادات الخط الموحّد — من MBO إلى التقرير (يرث من default.toml)
+# إعدادات الخط الموحّد — من MBO إلى التقرير
+# يُحمَّل مباشرة عبر PipelineConfig.from_toml (أقسام [streaming]/[depth] مضمّنة هنا).
 # Unified research pipeline: load → features → SSL‖M9 → alpha → report
 
 [determinism]
@@ -40,9 +41,6 @@ columns = [
   "trap_setup",
   "phase_balance",
   "phase_expansion",
-  "in_value_area",
-  "near_vah",
-  "poc_dist_norm",
   "session_phase",
   "fail_fvg",
   "fail_breakout",
@@ -52,6 +50,17 @@ columns = [
   "vp_close_in_value",
   "vp_flip_to_imbalance",
 ]
+
+[streaming]
+# يُقرأ فعليًا عبر PipelineConfig.from_toml (لا يعتمد على «وراثة» ضمنية)
+research_interval_ns = 1_000_000_000
+micro_interval_ns = 100_000_000
+use_micro_interval = false
+sample_mode = "last_state"
+
+[depth]
+filter_noise = true
+include_bottom_book = true
 
 [statistics]
 alpha = 0.05

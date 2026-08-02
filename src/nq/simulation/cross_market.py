@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from nq.contracts.temporal import AVAILABILITY_TS
+from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.session import SESSION_DATE, add_session_columns, session_date_from_ns
 from nq.orderbook import reconstruct
 from nq.research.progress import ProgressLike
@@ -56,7 +56,8 @@ def _market_windows(
     )
     close = (
         tob.filter(pl.col("mid").is_not_null())
-        .group_by(BUCKET_START)
+        .sort(EVENT_TS)
+        .group_by(BUCKET_START, maintain_order=True)
         .agg(
             pl.col("mid").last().alias("close"),
             pl.col("best_bid").last().alias("bid"),

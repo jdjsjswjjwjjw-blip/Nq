@@ -26,9 +26,16 @@ batch_events = 5_000_000         # حجم الدفعة عند المعالجة �
 [streaming]
 # عيّنة البحث من آلة الحالة اللحظية: آخر حالة داخل كل فاصل.
 # تحذير: interval_ns=1s يطمس دقة الميكرو-هيكل؛ للبحوث الدقيقة استخدم
-# فاصل أصغر (مثلاً 100ms) أو ابقَ على مسار الأحداث قبل العيّنة.
-# القيمة الافتراضية للبحث تُقرأ من PipelineConfig.interval_ns.
+# فاصل أصغر (مثلاً 100ms) عبر use_micro_interval=true أو research_interval_ns.
+# ترتيب أولوية ساعة البحث في PipelineConfig.from_toml:
+#   use_micro_interval → research_interval_ns → [temporal].interval_ns
 research_interval_ns = 1_000_000_000   # 1s — خشن نسبيًا
 micro_interval_ns = 100_000_000        # 100ms — دقة أدق للمسار الميكروي
+use_micro_interval = false             # true → interval_ns = micro_interval_ns
 # sample_mode=last_state يثبّت availability_ts=bucket_end (موثّق؛ ليس متوسطًا)
 sample_mode = "last_state"
+
+[depth]
+# فلتر ضوضاء + أسفل الدفتر على الخط الموحّد (L1–L5 + bb_*)
+filter_noise = true
+include_bottom_book = true
