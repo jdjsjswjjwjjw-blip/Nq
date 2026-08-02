@@ -24,7 +24,7 @@ from typing import Final
 
 import polars as pl
 
-from nq.contracts.mbo import PRICE_SCALE, MboAction
+from nq.contracts.mbo import PRICE_SCALE, MBO_SCHEMA, MboAction
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.time import sort_causal
 from nq.research.progress import ProgressLike
@@ -287,15 +287,46 @@ def filter_deceptive_liquidity(
     *,
     config: DeceptiveLiquidityConfig | None = None,
 ) -> pl.DataFrame:
-    """يُسقط أحداث ADD/CANCEL/MODIFY ذات درجة تضليل ≥ العتبة؛ يُبقي الصفقات."""
+    """يُسقط دورة الأمر المضلل كاملة (ADD+MODIFY+CANCEL) ويعيد MBO نظيف العقد.
+
+    قاعدة علمية: إسقاط CANCEL وحدها يترك ADD شبحًا في إعادة بناء الدفتر.
+    لذلك عند درجة ≥ ``drop_score`` على إلغاء/إضافة مضللة نُسقط كل أحداث
+    ``order_id`` غير المنفَّذة. TRADE/FILL تُبقى دائمًا.
+    """
     scored = score_deceptive_events(frame, config=config)
     if scored.height == 0:
-        return scored.drop([c for c in scored.columns if c.startswith("_deceptive")], strict=False)
-    actions = scored["action"].cast(pl.Utf8)
-    keep = (~scored["_deceptive_drop"]) | actions.is_in([_TRADE, _FILL])
-    out = scored.filter(keep)
-    drop_cols = [c for c in out.columns if c.startswith("_deceptive")]
-    return out.drop(drop_cols) if drop_cols else out
+        cols = [c for c in MBO_SCHEMA if c in frame.columns]
+        return frame.select(cols) if cols else frame
+
+    drop_event = scored["_deceptive_drop"].to_list()
+    actions = scored["action"].cast(pl.Utf8).to_list()
+    order_ids = scored["order_id"].to_list()
+    n = len(drop_event)
+
+    # order_ids التي حُكم عليها مضللة (غير صفقات)
+    bad_oids: set[int] = set()
+    for i in range(n):
+        if not drop_event[i]:
+            continue
+        if str(actions[i]) in (_TRADE, _FILL):
+            continue
+        bad_oids.add(int(order_ids[i]))
+
+    keep = [True] * n
+    for i in range(n):
+        act = str(actions[i])
+        if act in (_TRADE, _FILL):
+            keep[i] = True
+            continue
+        if int(order_ids[i]) in bad_oids:
+            keep[i] = False
+            continue
+        keep[i] = not bool(drop_event[i])
+
+    out = scored.filter(pl.Series("_keep", keep, dtype=pl.Boolean))
+    # عقد MBO فقط — بلا أعمدة درجة
+    mbo_cols = [c for c in MBO_SCHEMA if c in out.columns]
+    return out.select(mbo_cols)
 
 
 def deceptive_features_by_bucket(

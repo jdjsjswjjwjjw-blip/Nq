@@ -34,7 +34,7 @@ class LiquidityEdgeResult:
 def run_liquidity_edge_research(
     nq: pl.DataFrame | str | Path,
     *,
-    interval_ns: int = 1_000_000_000,  # noqa: ARG001 — محفوظ للتوافق؛ VP يستخدم PipelineConfig
+    interval_ns: int = 1_000_000_000,
     max_rows: int | None = None,
     train_frac: float = 0.6,
     min_oos_trades: int = 3,
@@ -46,7 +46,6 @@ def run_liquidity_edge_research(
     quiet: bool = False,
 ) -> LiquidityEdgeResult:
     """يفوّض بالكامل لاستراتيجية Volume Profile المتصلة."""
-    del interval_ns  # VP يأخذ interval من PipelineConfig.interval_ns
     vp = run_vp_auction_research(
         nq,
         max_rows=max_rows,
@@ -59,6 +58,7 @@ def run_liquidity_edge_research(
         edge_train_frac=train_frac,
         min_oos_trades=min_oos_trades,
         min_oos_rr=min_oos_rr,
+        interval_ns=interval_ns,
         n_permutations=100,
         n_splits=2,
     )
