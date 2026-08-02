@@ -33,13 +33,23 @@ def test_heuristic_market_phase_balance() -> None:
 
 
 def test_causal_regime_tracker_is_causal() -> None:
-    tracker = CausalRegimeTracker(min_samples=4, refit_interval=4, seed=0)
+    tracker = CausalRegimeTracker(min_samples=4, refit_interval=4, seed=0, fit_window=16)
     phases: list[int] = []
     for i in range(20):
         near_vah = 1.0 if i % 5 == 0 else 0.0
         phases.append(tracker.update([near_vah, 0.0, near_vah, 0.0, 0.0, 0.0, 0.1, 0.1]))
     assert len(phases) == 20
     assert all(p in {0, 1, 2} for p in phases)
+
+
+def test_causal_regime_tracker_fit_window_bounds_history() -> None:
+    tracker = CausalRegimeTracker(
+        min_samples=4, refit_interval=5, seed=0, fit_window=10
+    )
+    for i in range(50):
+        tracker.update([float(i % 3), 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.1])
+    assert len(tracker._history) <= 10
+    assert tracker._n_seen == 50
 
 
 def test_infer_market_phase_map() -> None:

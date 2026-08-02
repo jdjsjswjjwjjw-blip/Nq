@@ -281,20 +281,41 @@ def heuristic_market_phase(features: Sequence[float]) -> int:
 
 @dataclass
 class CausalRegimeTracker:
-    """تتبّع سببي لحالات السوق عبر KMeansRegimes على الماضي فقط."""
+    """تتبّع سببي لحالات السوق عبر KMeansRegimes على الماضي فقط.
+
+    ``fit_window`` يحدّ تكلفة إعادة التدريب إلى آخر W عيّنة (سببي: ماضٍ فقط)
+    حتى لا يصبح المسار O(n²) على أيام طويلة.
+    """
 
     n_regimes: int = 3
     seed: int = 0
     refit_interval: int = 50
     min_samples: int = 12
+    fit_window: int = 2048
     _history: list[FloatArray] = field(default_factory=list, repr=False)
     _model: KMeansRegimes | None = field(default=None, repr=False)
     _phase_map: dict[int, int] = field(default_factory=dict, repr=False)
+    _n_seen: int = field(default=0, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.fit_window < self.min_samples:
+            raise ValueError(
+                f"fit_window ({self.fit_window}) must be >= min_samples ({self.min_samples})"
+            )
+        if self.refit_interval < 1:
+            raise ValueError(f"refit_interval must be >= 1, got {self.refit_interval}")
 
     def update(self, features: Sequence[float]) -> int:
         vec = np.asarray(features, dtype=np.float64)
         self._history.append(vec)
-        if len(self._history) >= self.min_samples and len(self._history) % self.refit_interval == 0:
+        self._n_seen += 1
+        # احتفظ بنافذة ماضية فقط — يكفي للـ fit السببي ويحدّ الذاكرة/الزمن
+        if len(self._history) > self.fit_window:
+            del self._history[: len(self._history) - self.fit_window]
+        if (
+            self._n_seen >= self.min_samples
+            and self._n_seen % self.refit_interval == 0
+        ):
             mat = np.stack(self._history)
             self._model = KMeansRegimes(self.n_regimes, seed=self.seed).fit(mat)
             if self._model.centroids_ is not None:

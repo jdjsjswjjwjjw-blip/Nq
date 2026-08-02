@@ -73,6 +73,8 @@ def test_run_vp_auction_connected_execution_layer() -> None:
         edge_train_frac=0.5,
         min_oos_trades=0,
         min_oos_rr=0.0,
+        # عيّنة اصطناعية صغيرة؛ batch على هذا المصنع قد يُفرّغ البراميل
+        streaming_features=True,
     )
     assert result.with_execution is True
     assert result.raw_mbo_rows == mbo.height

@@ -213,11 +213,13 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     min_oos_trades: int = 3,
     min_oos_rr: float = 2.0,
     interval_ns: int | None = None,
+    streaming_features: bool = False,
 ) -> VpAuctionResearchResult:
     """مسار VP المتصل بترتيب علمي آمن.
 
     1. تنظيف دفتر مضلل (بلا أشباح).
-    2. خط موحّد → ``vp_*``.
+    2. خط موحّد → ``vp_*`` (افتراضي: ``batch`` + SSL bucket — سريع).
+       ``streaming_features=True`` يفعّل tick_stream الكامل عند الحاجة.
     3. Walk-forward على ``vp_*`` فقط (قبل أي أعمدة تنفيذ).
     4. ثم هولد/R:R؛ درجات التضليل من الخام؛ إلحاق التنفيذ للتقرير فقط.
     """
@@ -257,6 +259,11 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         signal_columns=_VP_AUCTION_FOCUS,
         quiet=quiet,
         interval_ns=int(interval_ns) if interval_ns is not None else 1_000_000_000,
+        # افتراضي سريع: VP من شريط الصفقات لا يحتاج tick_stream حدث-بحدث
+        feature_mode="batch" if not streaming_features else "streaming",
+        ssl_mode="bucket" if not streaming_features else "tick",
+        filter_depth_noise=streaming_features,
+        include_bottom_book=streaming_features,
     )
     result = run_research_pipeline(
         cleaned,
