@@ -51,6 +51,11 @@ def main() -> None:
     parser.add_argument("--min-oos-rr", type=float, default=2.0)
     parser.add_argument("--min-oos-trades", type=int, default=3)
     parser.add_argument(
+        "--streaming",
+        action="store_true",
+        help="تفعيل tick_stream حدث-بحدث (أبطأ كثيرًا؛ الافتراضي batch سريع لـ VP)",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="تعطيل طباعة تقدّم الخطوات على stderr",
@@ -79,6 +84,7 @@ def main() -> None:
         drop_deceptive=not args.keep_deceptive,
         min_oos_rr=args.min_oos_rr,
         min_oos_trades=args.min_oos_trades,
+        streaming_features=args.streaming,
     )
     print(result.report.to_markdown())
     print(

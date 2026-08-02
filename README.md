@@ -428,7 +428,7 @@ python scripts/run_fail_breakout_days.py \
 | `edge_*` | وقف/هدف هيكلي VAL/VAH أو مضاعف R (بحث OOS) |
 
 ```bash
-# المسار الكامل المتصل (افتراضي)
+# المسار الكامل المتصل (افتراضي سريع: batch — بدون tick_stream الثقيل)
 python scripts/run_vp_auction.py \
   --nq /path/to/nq.parquet \
   --max-rows 500000 \
@@ -437,6 +437,9 @@ python scripts/run_vp_auction.py \
 
 # IC/WF فقط بدون طبقة التنفيذ
 python scripts/run_vp_auction.py --nq ... --no-execution
+
+# مسار streaming كامل (أبطأ — tick_stream حدث-بحدث)
+python scripts/run_vp_auction.py --nq ... --streaming
 
 # أو عبر run_week + إعداد مركّز
 python scripts/run_week.py \

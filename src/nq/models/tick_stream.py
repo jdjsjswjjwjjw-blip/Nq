@@ -144,10 +144,12 @@ def _book_row(
     *,
     ref_price: float,
 ) -> tuple[float, float, float, float, float, float]:
-    bb = max(book.bids) if book.bids else None
-    ba = min(book.asks) if book.asks else None
-    bb_sz = book.bids.get(bb, 0) if bb is not None else None
-    ba_sz = book.asks.get(ba, 0) if ba is not None else None
+    bb_t = book.best_bid()
+    ba_t = book.best_ask()
+    bb = bb_t[0] if bb_t is not None else None
+    ba = ba_t[0] if ba_t is not None else None
+    bb_sz = bb_t[1] if bb_t is not None else None
+    ba_sz = ba_t[1] if ba_t is not None else None
     spread = float(ba - bb) if bb is not None and ba is not None else 0.0
     mid = (bb + ba) / 2.0 if bb is not None and ba is not None else (bb or ba or 0)
     return (
@@ -375,7 +377,13 @@ def build_tick_stream(  # noqa: PLR0912, PLR0915
     nq_book = OrderBook()
     mnq_book = OrderBook()
     nq_profile = DevelopingVolumeProfile()
-    regime_tracker = CausalRegimeTracker(min_samples=8, refit_interval=16)
+    # refit_interval كان 16 على كل التاريخ → O(n²) وانهيار السرعة بعد عشرات الآلاف
+    regime_tracker = CausalRegimeTracker(
+        min_samples=32,
+        refit_interval=2500,
+        fit_window=2048,
+        seed=0,
+    )
     nq_signed = 0
     mnq_signed = 0
     nq_high = 0.0

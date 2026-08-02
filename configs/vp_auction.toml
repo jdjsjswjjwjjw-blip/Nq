@@ -1,5 +1,6 @@
 # فرضيات Volume Profile + التوازن/الاختلال — NQ فقط
 # Volume Profile / Auction balance–imbalance hypotheses (NQ-only)
+# افتراضي سريع: batch features + bucket SSL (إشارات vp_* من شريط الصفقات)
 
 [determinism]
 global_seed = 20260719
@@ -20,10 +21,13 @@ tick_size = 0.25
 commission_bps = 0.0
 
 [ssl]
-mode = "tick"
+mode = "bucket"
 window = 5
 n_components = 4
 n_splits = 3
+
+[features]
+mode = "batch"
 
 # فرز مركّز على VP / المزاد (متوازن · مختلّ · تمدّد · انقلاب)
 [signals]

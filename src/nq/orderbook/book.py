@@ -31,9 +31,19 @@ class OrderBook:
     * ``bids`` / ``asks``: ``dict[price -> aggregated_size]`` لكل جانب.
     * ``orders``: ``dict[order_id -> (is_bid, price, size)]`` لتتبّع الأوامر.
     * ``_bid_vol`` / ``_ask_vol``: مجموع الحجم لكل جانب (للـ trail بنفس الأرقام).
+    * ``_best_bid`` / ``_best_ask``: كاش O(1) لأفضل سعر (يُعاد مسحه عند الحاجة).
     """
 
-    __slots__ = ("_ask_vol", "_bid_vol", "asks", "bids", "orders", "unknown_order_refs")
+    __slots__ = (
+        "_ask_vol",
+        "_best_ask",
+        "_best_bid",
+        "_bid_vol",
+        "asks",
+        "bids",
+        "orders",
+        "unknown_order_refs",
+    )
 
     def __init__(self) -> None:
         self.bids: dict[int, int] = {}
@@ -42,6 +52,8 @@ class OrderBook:
         self.unknown_order_refs: int = 0
         self._bid_vol: int = 0
         self._ask_vol: int = 0
+        self._best_bid: int | None = None
+        self._best_ask: int | None = None
 
     def clear(self) -> None:
         """يمسح الدفتر بالكامل (book reset)."""
@@ -50,13 +62,19 @@ class OrderBook:
         self.orders.clear()
         self._bid_vol = 0
         self._ask_vol = 0
+        self._best_bid = None
+        self._best_ask = None
 
     def _add_level(self, level: dict[int, int], price: int, size: int, *, is_bid: bool) -> None:
         level[price] = level.get(price, 0) + size
         if is_bid:
             self._bid_vol += size
+            if self._best_bid is None or price > self._best_bid:
+                self._best_bid = price
         else:
             self._ask_vol += size
+            if self._best_ask is None or price < self._best_ask:
+                self._best_ask = price
 
     def _reduce(self, level: dict[int, int], price: int, size: int, *, is_bid: bool) -> None:
         old = level.get(price, 0)
@@ -67,10 +85,25 @@ class OrderBook:
         else:
             level.pop(price, None)
             removed = old
+            # زال المستوى — إن كان الأفضل نُعيد الحساب عند الطلب التالي
+            if is_bid and self._best_bid == price:
+                self._best_bid = None
+            if not is_bid and self._best_ask == price:
+                self._best_ask = None
         if is_bid:
             self._bid_vol -= removed
         else:
             self._ask_vol -= removed
+
+    def _ensure_best_bid(self) -> int | None:
+        if self._best_bid is None and self.bids:
+            self._best_bid = max(self.bids)
+        return self._best_bid
+
+    def _ensure_best_ask(self) -> int | None:
+        if self._best_ask is None and self.asks:
+            self._best_ask = min(self.asks)
+        return self._best_ask
 
     def apply(  # noqa: PLR0911 -- dispatch على نوع الحدث؛ العودة المبكرة أوضح
         self, action: str, side: str, price: int, size: int, order_id: int
@@ -130,16 +163,16 @@ class OrderBook:
 
     def best_bid(self) -> tuple[int, int] | None:
         """أفضل طلب ``(price, size)`` أو ``None`` إن كان الجانب فارغًا."""
-        if not self.bids:
+        price = self._ensure_best_bid()
+        if price is None:
             return None
-        price = max(self.bids)
         return price, self.bids[price]
 
     def best_ask(self) -> tuple[int, int] | None:
         """أفضل عرض ``(price, size)`` أو ``None`` إن كان الجانب فارغًا."""
-        if not self.asks:
+        price = self._ensure_best_ask()
+        if price is None:
             return None
-        price = min(self.asks)
         return price, self.asks[price]
 
     def spread(self) -> int | None:
