@@ -21,6 +21,7 @@ from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import NS_30M, build_ohlcv_bars
 from nq.strategies.breakout_hypothesis import (
     BreakoutHypothesisSpec,
+    _attach_volume_context,
     core_volume_hold_grid,
     default_breakout_grid,
     materialize_breakout_hypotheses,
@@ -376,3 +377,47 @@ def test_ohlcv_bars_include_flow_columns() -> None:
     bars = build_ohlcv_bars(nq, interval_ns=NS_30M)
     for col in ("buy_volume", "sell_volume", "delta", "volume"):
         assert col in bars.columns
+
+
+def test_volume_context_reuses_materialize_bars_cache() -> None:
+    """سياق الفوليوم يعيد استخدام OHLCV من كاش التجسيد — بلا مسار احتياطي."""
+    nq, mnq = _paired_streams(2500, seed=55)
+    clock = cross_market_features(nq, mnq, interval_ns=10_000, lead_lag_window=2)
+    specs = (
+        BreakoutHypothesisSpec(
+            name="v1",
+            signal_interval_ns=10_000 * 50,
+            trend_interval_ns=10_000 * 100,
+            lookback=3,
+            require_sma_filter=False,
+            range_mult=1.05,
+            vol_mult=1.05,
+            priority="volume_first",
+            hold_mode="none",
+            vol_mode="bar",
+        ),
+    )
+    bars_cache: dict[int, object] = {}
+    features = materialize_breakout_hypotheses(
+        nq,
+        specs,
+        clock=clock,
+        attach_volume_context=False,
+        bars_cache=bars_cache,  # type: ignore[arg-type]
+    )
+    assert specs[0].signal_interval_ns in bars_cache
+    buf = io.StringIO()
+    progress = PipelineProgress(enabled=True, stream=buf)
+
+    out = _attach_volume_context(
+        features,
+        nq,
+        signal_interval_ns=specs[0].signal_interval_ns,
+        vol_mode="bar",
+        progress=progress,
+        bars_cache=bars_cache,  # type: ignore[arg-type]
+    )
+    text = buf.getvalue()
+    assert "إعادة استخدام OHLCV" in text
+    assert "مسار احتياطي failed_breakout_features" not in text
+    assert out.height == features.height

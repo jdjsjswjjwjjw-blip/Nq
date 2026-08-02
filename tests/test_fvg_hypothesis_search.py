@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import io
+
 import numpy as np
 import polars as pl
 
 from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.determinism import make_generator
+from nq.research.progress import PipelineProgress
+from nq.simulation.cross_market import cross_market_features
 from nq.simulation.fvg import NS_30M, NS_PER_MIN, build_ohlcv_bars, failed_fvg_features
 from nq.strategies.fvg_hypothesis import (
     FvgHypothesisSpec,
@@ -122,3 +126,28 @@ def test_failed_fvg_baseline_still_works() -> None:
     frame = _trades_at_prices(prices, step_ns=NS_30M // 2)
     a = failed_fvg_features(frame)
     assert "fail_fvg" in a.columns
+
+
+def test_materialize_fvg_reuses_scan_for_identical_keys() -> None:
+    """فرضيتان بنفس مفتاح المسح → مسح فريد واحد + إعادة استخدام."""
+    nq, mnq = _paired_streams(2500, seed=61)
+    clock = cross_market_features(nq, mnq, interval_ns=10_000, lead_lag_window=2)
+    base_kwargs = dict(
+        h1_interval_ns=10_000 * 200,
+        signal_interval_ns=10_000 * 100,
+        fvg_window_ns=10_000 * 50,
+        vol_price_mult=1.2,
+        vol_volume_mult=1.3,
+    )
+    specs = (
+        FvgHypothesisSpec(name="a", **base_kwargs),
+        FvgHypothesisSpec(name="b", **base_kwargs),
+    )
+    buf = io.StringIO()
+    progress = PipelineProgress(enabled=True, stream=buf)
+    hyp = materialize_fvg_hypotheses(nq, specs, clock=clock, progress=progress)
+    text = buf.getvalue()
+    assert "مسح فريد=1" in text
+    assert "إعادة استخدام=1" in text
+    assert specs[0].column() in hyp.columns
+    assert specs[1].column() in hyp.columns

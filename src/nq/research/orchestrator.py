@@ -601,35 +601,31 @@ def _build_research_features(
         log.op(f"depth_noise: {nq.height:,} → {cleaned_nq.height:,}")
 
     depth_by_iv: dict[int, pl.DataFrame] = {}
-    if cfg.include_failed_breakout and cfg.interval_ns != interval_30m:
-        log.step("إلحاق عمق الدفتر السببي (مسح موحّد: ساعة البحث + 30m)")
-        depth_by_iv = depth_at_bar_close_multi(
-            cleaned_nq,
-            interval_ns_list=(cfg.interval_ns, interval_30m),
-            n_levels=5,
-            progress=log,
-        )
-        features = _attach_causal_depth(
-            features,
-            nq,
-            interval_ns=cfg.interval_ns,
-            depth=depth_by_iv[cfg.interval_ns],
-            cleaned_mbo=cleaned_nq,
-            filter_noise=False,
-            include_bottom_book=cfg.include_bottom_book,
-            progress=log,
-        )
-    else:
-        log.step("إلحاق عمق الدفتر السببي (دخول/مراقبة/تنفيذ/خروج)")
-        features = _attach_causal_depth(
-            features,
-            nq,
-            interval_ns=cfg.interval_ns,
-            cleaned_mbo=cleaned_nq,
-            filter_noise=False,
-            include_bottom_book=cfg.include_bottom_book,
-            progress=log,
-        )
+    # مسح موحّد لكل الفواصل المطلوبة (ساعة البحث ± 30m لـ FB) — بلا مرور ثانٍ
+    depth_intervals: list[int] = [cfg.interval_ns]
+    if cfg.include_failed_breakout:
+        depth_intervals.append(interval_30m)
+    depth_intervals = list(dict.fromkeys(int(x) for x in depth_intervals))
+    log.step(
+        "إلحاق عمق الدفتر السببي (مسح موحّد)",
+        f"intervals={depth_intervals} · bottom_book={cfg.include_bottom_book}",
+    )
+    depth_by_iv = depth_at_bar_close_multi(
+        cleaned_nq,
+        interval_ns_list=tuple(depth_intervals),
+        n_levels=5,
+        progress=log,
+    )
+    features = _attach_causal_depth(
+        features,
+        nq,
+        interval_ns=cfg.interval_ns,
+        depth=depth_by_iv[cfg.interval_ns],
+        cleaned_mbo=cleaned_nq,
+        filter_noise=False,
+        include_bottom_book=cfg.include_bottom_book,
+        progress=log,
+    )
 
     if cfg.include_failed_fvg:
         log.step("إلحاق Failed FVG (نبضة تطابقية)")
