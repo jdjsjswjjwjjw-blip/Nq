@@ -231,7 +231,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     raw_n = raw.height
     if drop_deceptive:
         log.step("VP: فلتر التضليل العلمي", "إسقاط دورة الأمر الكاملة")
-        cleaned = filter_deceptive_liquidity(raw, config=deco_cfg)
+        cleaned = filter_deceptive_liquidity(raw, config=deco_cfg, progress=log)
     else:
         cleaned = raw
     cleaned_n = cleaned.height

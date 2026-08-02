@@ -111,6 +111,10 @@ def main() -> None:
         f"mode={'streaming-snapshots' if args.streaming else 'batch'}",
         flush=True,
     )
+    print(
+        f"[nq] live progress per day → {args.output}/<YYYY-MM-DD>/progress.log",
+        flush=True,
+    )
     manifest = run_vp_auction_day_parallel(
         days,
         output_root=args.output,
@@ -123,6 +127,7 @@ def main() -> None:
         with_execution=not args.no_execution,
         streaming_features=args.streaming,
         min_oos_rr=args.min_oos_rr,
+        quiet_workers=False,
         fail_fast=args.fail_fast,
     )
     print(manifest.to_markdown())

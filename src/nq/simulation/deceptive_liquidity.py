@@ -95,6 +95,7 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
     frame: pl.DataFrame,
     *,
     config: DeceptiveLiquidityConfig | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يُلحق بكل حدث MBO درجة تضليل سببية ومكوّناتها.
 
@@ -150,6 +151,8 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
         best_ask = min(asks) if asks else None
 
     for i in range(n):
+        if progress is not None and (i == 0 or (i + 1) % 500_000 == 0 or i + 1 == n):
+            progress.heartbeat(i + 1, n, label="deceptive-score", force=True)
         action = str(actions[i])
         side = str(sides[i])
         price = int(prices[i])
@@ -287,6 +290,7 @@ def filter_deceptive_liquidity(
     frame: pl.DataFrame,
     *,
     config: DeceptiveLiquidityConfig | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يُسقط دورة الأمر المضلل كاملة (ADD+MODIFY+CANCEL) ويعيد MBO نظيف العقد.
 
@@ -294,7 +298,9 @@ def filter_deceptive_liquidity(
     لذلك عند درجة ≥ ``drop_score`` على إلغاء/إضافة مضللة نُسقط كل أحداث
     ``order_id`` غير المنفَّذة. TRADE/FILL تُبقى دائمًا.
     """
-    scored = score_deceptive_events(frame, config=config)
+    if progress is not None:
+        progress.op(f"filter_deceptive_liquidity: events={frame.height:,}")
+    scored = score_deceptive_events(frame, config=config, progress=progress)
     if scored.height == 0:
         cols = [c for c in MBO_SCHEMA if c in frame.columns]
         return frame.select(cols) if cols else frame

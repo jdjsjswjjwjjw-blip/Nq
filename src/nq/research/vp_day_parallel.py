@@ -60,29 +60,49 @@ def _run_one_vp_day(payload: dict[str, Any]) -> DayJobResult:
     mnq_path = Path(mnq_raw) if mnq_raw else None
     out = Path(payload["output_dir"])
     seed = int(payload["seed"])
-    quiet = bool(payload.get("quiet", True))
+    # Always emit live progress into per-day progress.log (parent console stays clean).
+    quiet = False
 
     try:
-        out.mkdir(parents=True, exist_ok=True)
-        from nq.core.determinism import make_generator  # noqa: PLC0415
-        from nq.strategies.vp_auction import run_vp_auction_research  # noqa: PLC0415
+        import sys  # noqa: PLC0415
 
-        result = run_vp_auction_research(
-            nq_path,
-            mnq_path,
-            horizon=int(payload.get("horizon", 1)),
-            n_permutations=int(payload.get("n_permutations", 200)),
-            n_splits=int(payload.get("n_splits", 3)),
-            max_rows=payload.get("max_rows"),
-            output_dir=out,
-            quiet=quiet,
-            rng=make_generator(seed),
-            with_execution=bool(payload.get("with_execution", True)),
-            drop_deceptive=bool(payload.get("drop_deceptive", True)),
-            streaming_features=bool(payload.get("streaming_features", False)),
-            min_oos_rr=float(payload.get("min_oos_rr", 2.0)),
-            min_oos_trades=int(payload.get("min_oos_trades", 3)),
-        )
+        out.mkdir(parents=True, exist_ok=True)
+        log_path = out / "progress.log"
+        log_f = log_path.open("w", encoding="utf-8", buffering=1)
+        old_out, old_err = sys.stdout, sys.stderr
+        sys.stdout = log_f
+        sys.stderr = log_f
+        try:
+            from nq.core.determinism import make_generator  # noqa: PLC0415
+            from nq.strategies.vp_auction import run_vp_auction_research  # noqa: PLC0415
+
+            print(f"[nq] day={day_id} START nq={nq_path}", flush=True)
+            result = run_vp_auction_research(
+                nq_path,
+                mnq_path,
+                horizon=int(payload.get("horizon", 1)),
+                n_permutations=int(payload.get("n_permutations", 200)),
+                n_splits=int(payload.get("n_splits", 3)),
+                max_rows=payload.get("max_rows"),
+                output_dir=out,
+                quiet=quiet,
+                rng=make_generator(seed),
+                with_execution=bool(payload.get("with_execution", True)),
+                drop_deceptive=bool(payload.get("drop_deceptive", True)),
+                streaming_features=bool(payload.get("streaming_features", False)),
+                min_oos_rr=float(payload.get("min_oos_rr", 2.0)),
+                min_oos_trades=int(payload.get("min_oos_trades", 3)),
+            )
+            print(
+                f"[nq] day={day_id} DONE features={result.features.height} "
+                f"best={result.best_signal!r} oos_ic={result.oos_ic:.4g}",
+                flush=True,
+            )
+        finally:
+            sys.stdout = old_out
+            sys.stderr = old_err
+            log_f.close()
+
         return DayJobResult(
             day_id=day_id,
             ok=True,
@@ -97,6 +117,13 @@ def _run_one_vp_day(payload: dict[str, Any]) -> DayJobResult:
             seed=seed,
         )
     except Exception as exc:
+        try:
+            err_path = out / "progress.log"
+            with err_path.open("a", encoding="utf-8") as ef:
+                ef.write(f"\n[nq] day={day_id} FAILED: {type(exc).__name__}: {exc}\n")
+                ef.write(traceback.format_exc(limit=12))
+        except OSError:
+            pass
         return DayJobResult(
             day_id=day_id,
             ok=False,
@@ -164,10 +191,20 @@ def run_vp_auction_day_parallel(
 
     workers = min(jobs, len(payloads))
     results: list[DayJobResult] = []
+    print(
+        f"[nq] VP day-parallel: writing live logs to {root}/<day_id>/progress.log",
+        flush=True,
+    )
     if workers == 1:
         for payload in payloads:
             results.append(_run_one_vp_day(payload))
-            if fail_fast and not results[-1].ok:
+            r = results[-1]
+            print(
+                f"[nq] day {r.day_id}: {'OK' if r.ok else 'FAIL'} "
+                f"({len(results)}/{len(payloads)})",
+                flush=True,
+            )
+            if fail_fast and not r.ok:
                 break
     else:
         with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -175,6 +212,30 @@ def run_vp_auction_day_parallel(
             for fut in as_completed(futures):
                 res = fut.result()
                 results.append(res)
+                print(
+                    f"[nq] day {res.day_id}: {'OK' if res.ok else 'FAIL'} "
+                    f"({sum(1 for x in results if x.ok)} ok / "
+                    f"{len(results)} done / {len(payloads)} total) "
+                    f"log={root / res.day_id / 'progress.log'}",
+                    flush=True,
+                )
+                status = root / "STATUS.txt"
+                status.write_text(
+                    "\n".join(
+                        [
+                            f"done={len(results)}/{len(payloads)}",
+                            f"ok={sum(1 for x in results if x.ok)}",
+                            f"failed={sum(1 for x in results if not x.ok)}",
+                            "",
+                            *[
+                                f"{'OK' if r.ok else 'FAIL'} {r.day_id}"
+                                for r in sorted(results, key=lambda x: x.day_id)
+                            ],
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
                 if fail_fast and not res.ok:
                     for other in futures:
                         other.cancel()
