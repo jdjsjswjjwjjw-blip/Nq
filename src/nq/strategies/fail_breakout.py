@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -40,6 +40,18 @@ _FAIL_BREAKOUT_FOCUS = (
     "mnq_delta",
     "lead_lag",
 )
+
+_DEFAULT_CONFIG = Path("configs/default.toml")
+
+
+def _base_pipeline_config(config_path: Path | str | None) -> PipelineConfig:
+    """يرث [streaming]/[depth]/temporal من TOML عند التوفر."""
+    path = Path(config_path) if config_path is not None else _DEFAULT_CONFIG
+    if path.is_file():
+        return PipelineConfig.from_toml(path)
+    if _DEFAULT_CONFIG.is_file():
+        return PipelineConfig.from_toml(_DEFAULT_CONFIG)
+    return PipelineConfig()
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,28 +86,34 @@ def run_fail_breakout_research(
     nq: pl.DataFrame | str | Path,
     mnq: pl.DataFrame | str | Path | None = None,
     *,
-    ssl_window: int = 5,
-    ssl_components: int = 4,
-    horizon: int = 1,
-    alpha: float = 0.05,
-    n_permutations: int = 2000,
+    config_path: Path | str | None = None,
+    ssl_window: int | None = None,
+    ssl_components: int | None = None,
+    horizon: int | None = None,
+    alpha: float | None = None,
+    n_permutations: int | None = None,
     max_rows: int | None = None,
     rng: np.random.Generator | None = None,
     output_dir: Path | str | None = None,
     quiet: bool = False,
 ) -> FailBreakoutResearchResult:
-    """يشغّل Failed Breakout عبر الخط الموحّد (أمر تشغيل منفصل)."""
-    cfg = PipelineConfig(
+    """يشغّل Failed Breakout عبر الخط الموحّد (أمر تشغيل منفصل).
+
+    يرث ``interval_ns`` / فلتر العمق / bottom_book من ``config_path`` (أو default.toml).
+    """
+    base = _base_pipeline_config(config_path)
+    cfg = replace(
+        base,
         include_failed_breakout=True,
         include_failed_fvg=False,
         include_auction_vp=False,
         cross_market_mode="nq_only" if mnq is None else "dual",
-        max_rows=max_rows,
-        horizon=horizon,
-        alpha=alpha,
-        n_permutations=n_permutations,
-        ssl_window=ssl_window,
-        ssl_components=ssl_components,
+        max_rows=max_rows if max_rows is not None else base.max_rows,
+        horizon=int(horizon) if horizon is not None else base.horizon,
+        alpha=float(alpha) if alpha is not None else base.alpha,
+        n_permutations=int(n_permutations) if n_permutations is not None else base.n_permutations,
+        ssl_window=int(ssl_window) if ssl_window is not None else base.ssl_window,
+        ssl_components=int(ssl_components) if ssl_components is not None else base.ssl_components,
         signal_columns=_FAIL_BREAKOUT_FOCUS,
         quiet=quiet,
     )

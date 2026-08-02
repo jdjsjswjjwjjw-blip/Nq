@@ -37,6 +37,7 @@ from nq.research.capacity import (
     UNDERSTAND_N_PERMUTATIONS,
 )
 from nq.research.evidence import Evidence
+from nq.research.orchestrator import _attach_auction_vp
 from nq.research.progress import PipelineProgress, ProgressLike, resolve_progress
 from nq.research.understanding import (
     UnderstandingReport,
@@ -687,6 +688,13 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
                 f"(سياق {ctx_interval}ns / ساعة {interval_ns}ns)"
             )
         horizon = eval_horizon
+
+        # vp_* على ساعة البحث حتى تعمل فلاتر SSL السياق (أنطولوجيا المزاد)
+        if enhance_with_ssl or use_ssl_gate:
+            log.step("إلحاق Volume Profile / Auction (asof) لسياق SSL")
+            features = _attach_auction_vp(
+                features, nq_frame, interval_ns=interval_ns, progress=log
+            )
 
         ssl_result: SSLPipelineResult | None = None
         enhancement_columns: tuple[str, ...] = ()

@@ -8,12 +8,15 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import polars as pl
+import pytest
 
+import nq.research.orchestrator as orch
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.session import SESSION_DATE
 from nq.features.streaming import _bucket_signed_deltas, streaming_event_features
 from nq.models.tick_stream import build_tick_stream
 from nq.research.orchestrator import _attach_failed_breakout, _attach_failed_fvg
+from nq.simulation.common import BUCKET_END
 from tests.mbo_factory import Event, make_stream
 from tests.test_coverage import _paired_streams
 
@@ -26,35 +29,57 @@ def _ns_et(year: int, month: int, day: int, hour: int, minute: int = 0) -> int:
     return int(local.timestamp() * 1e9)
 
 
-def test_attach_failed_fvg_is_pulse_not_sticky() -> None:
-    """إشارة 30m لا تلتصق على صفوف 1s اللاحقة عبر asof."""
-    clock = pl.DataFrame({AVAILABILITY_TS: [10, 20, 30, 40]})
-    # محاكاة إطار FVG كثيف: نبضة عند 20 فقط
-    fvg_right = pl.DataFrame(
+def test_attach_failed_fvg_is_pulse_not_sticky(monkeypatch: pytest.MonkeyPatch) -> None:
+    """المساعد الحقيقي: إشارة عند T فقط — لا sticky asof على الصفوف اللاحقة."""
+    signal_ts = 20
+    fvg = pl.DataFrame(
         {
-            AVAILABILITY_TS: [10, 20, 30],
+            AVAILABILITY_TS: [10, signal_ts, 30],
             "fail_fvg": [0.0, 1.0, 0.0],
             "effort_range_ratio": [0.0, 1.5, 0.0],
             "effort_volume_ratio": [0.0, 2.0, 0.0],
         }
     )
-    # حقن عبر monkeypatch بسيط للمسار: نختبر منطق join مباشرة
-    left = clock.sort(AVAILABILITY_TS)
-    right = fvg_right.sort(AVAILABILITY_TS)
-    joined = left.join(right, on=AVAILABILITY_TS, how="left").with_columns(
-        pl.col("fail_fvg").fill_null(0.0)
+    monkeypatch.setattr(orch, "failed_fvg_features", lambda *a, **k: fvg)
+    clock = pl.DataFrame({AVAILABILITY_TS: [10, 20, 30, 40]})
+    out = _attach_failed_fvg(clock, pl.DataFrame())
+    assert out["fail_fvg"].to_list() == [0.0, 1.0, 0.0, 0.0]
+    # الجهد null خارج النبضة (وليس صفرًا كاذبًا)
+    assert out["effort_volume_ratio"].to_list()[1] == pytest.approx(2.0)
+    assert out["effort_volume_ratio"].to_list()[3] is None
+
+
+def test_attach_failed_breakout_sparse_pulse_does_not_stick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """المساعد الحقيقي: إطار FB متفرق — لا حمل حتى الإشارة التالية."""
+    signal_ts = 200
+    fb = pl.DataFrame(
+        {
+            AVAILABILITY_TS: [signal_ts],
+            "fail_breakout": [1.0],
+            "fb_break_level": [100.0],
+            "fb_entry_ref": [99.0],
+            "fb_effort_range_ratio": [1.0],
+            "fb_effort_volume_ratio": [1.1],
+            "fb_effort_result_ratio": [0.9],
+            "fb_bar_volume": [1000.0],
+            "fb_cum_volume": [1000.0],
+            "fb_delta": [10.0],
+            "fb_cum_delta": [10.0],
+            "fb_vol_imbalance": [0.2],
+            "fb_absorption": [0.1],
+            "fb_risk_pts": [1.0],
+        }
     )
-    assert joined["fail_fvg"].to_list() == [0.0, 1.0, 0.0, 0.0]
-
-
-def test_attach_failed_breakout_sparse_pulse_does_not_stick() -> None:
-    """إطار FB متفرق: الإشارة عند T فقط — لا حمل حتى الإشارة التالية."""
+    monkeypatch.setattr(orch, "failed_breakout_features", lambda *a, **k: fb)
     clock = pl.DataFrame({AVAILABILITY_TS: [100, 200, 300, 400]})
-    sparse = pl.DataFrame({AVAILABILITY_TS: [200], "fail_breakout": [1.0]})
-    joined = clock.join(sparse, on=AVAILABILITY_TS, how="left").with_columns(
-        pl.col("fail_breakout").fill_null(0.0)
-    )
-    assert joined["fail_breakout"].to_list() == [0.0, 1.0, 0.0, 0.0]
+    empty_depth = pl.DataFrame({BUCKET_END: pl.Series([], dtype=pl.Int64)})
+    out = _attach_failed_breakout(clock, pl.DataFrame(), depth_30m=empty_depth)
+    assert out["fail_breakout"].to_list() == [0.0, 1.0, 0.0, 0.0]
+    assert out["fb_depth_at_break"].to_list() == [None, None, None, None]
+    assert out["fb_effort_volume_ratio"].to_list()[1] == pytest.approx(1.1)
+    assert out["fb_effort_volume_ratio"].to_list()[0] is None
 
 
 def test_fail_cli_help_mentions_exploratory_default() -> None:
@@ -64,6 +89,7 @@ def test_fail_cli_help_mentions_exploratory_default() -> None:
     assert "exploratory full-sample" in fvg
     assert "exploratory full-sample" in fb
     assert "--search" in fvg and "--search" in fb
+    assert "--config" in fvg and "--config" in fb
 
 
 def test_streaming_deltas_are_signed_volume_not_return_sign() -> None:

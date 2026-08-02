@@ -59,15 +59,15 @@ SslMode = Literal["bucket", "tick"]
 CrossMarketMode = Literal["dual", "nq_only"]
 FeatureMode = Literal["streaming", "batch"]
 
+# أنطولوجيا ألفا افتراضية موحّدة مع symbolic: deltas/trap/fail + vp_* فقط.
+# أعمدة streaming VA (in_value_area/near_vah/poc_dist_norm) تبقى في الإطار
+# للمراقبة/M9 لكنها ليست مرشّحات ألفا افتراضية (تجنّب خلط الأنطولوجيتين).
 _DEFAULT_SIGNAL_COLUMNS = (
     "nq_delta",
     "mnq_delta",
     "trap_setup",
     "phase_balance",
     "phase_expansion",
-    "in_value_area",
-    "near_vah",
-    "poc_dist_norm",
     "session_phase",
     "fail_fvg",
     "fail_breakout",
@@ -278,10 +278,12 @@ def _resolve_signal_columns(
         return [c for c in signal_columns if c in features.columns]
     if config_columns is not None:
         return [c for c in config_columns if c in features.columns]
+    # افتراضي: لا تخلط streaming VA مع vp_* في شاشة الألفا
+    streaming_va = frozenset({"in_value_area", "near_vah", "near_val", "poc_dist_norm"})
     ordered = list(
         dict.fromkeys([*_DEFAULT_SIGNAL_COLUMNS, *_BATCH_SIGNAL_COLUMNS, *STREAMING_SIGNAL_COLUMNS])
     )
-    return [c for c in ordered if c in features.columns]
+    return [c for c in ordered if c in features.columns and c not in streaming_va]
 
 
 def _attach_failed_fvg(
@@ -290,14 +292,18 @@ def _attach_failed_fvg(
     *,
     progress: PipelineProgress | None = None,
 ) -> pl.DataFrame:
-    """يلحق إشارة Failed FVG بإطار البحث الموحّد (نبضة تطابقية — بلا sticky)."""
+    """يلحق إشارة Failed FVG بإطار البحث الموحّد (نبضة تطابقية — بلا sticky).
+
+    ``fail_fvg`` يُصفَّر عند غياب التطابق؛ نسب الجهد تبقى null (لا تطابق ≠ صفر)
+    بنفس سياسة FB للجهد/العمق.
+    """
     log = progress if progress is not None else PipelineProgress(enabled=False)
     fvg = failed_fvg_features(nq, progress=log)
     if fvg.height == 0 or features.height == 0:
         return features.with_columns(
             pl.lit(0.0).alias("fail_fvg"),
-            pl.lit(0.0).alias("effort_range_ratio"),
-            pl.lit(0.0).alias("effort_volume_ratio"),
+            pl.lit(None).cast(pl.Float64).alias("effort_range_ratio"),
+            pl.lit(None).cast(pl.Float64).alias("effort_volume_ratio"),
         )
     keep = [
         c
@@ -315,11 +321,8 @@ def _attach_failed_fvg(
     if drop_existing:
         left = left.drop(drop_existing)
     joined = left.join(right, on=AVAILABILITY_TS, how="left")
-    return joined.with_columns(
-        pl.col("fail_fvg").fill_null(0.0),
-        pl.col("effort_range_ratio").fill_null(0.0),
-        pl.col("effort_volume_ratio").fill_null(0.0),
-    )
+    # نبضة فقط؛ الجهد يبقى null خارج أوقات الإشارة
+    return joined.with_columns(pl.col("fail_fvg").fill_null(0.0))
 
 
 def _attach_auction_vp(

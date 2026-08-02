@@ -13,9 +13,11 @@ from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core import align_horizon_to_context, resolve_grid_context_interval
 from nq.core.determinism import make_generator
 from nq.research.orchestrator import (
+    _DEFAULT_SIGNAL_COLUMNS,
     PipelineConfig,
     _attach_failed_breakout,
     _build_research_features,
+    _resolve_signal_columns,
     run_research_pipeline,
 )
 from nq.simulation.bottom_book import BOTTOM_BOOK_COLUMNS
@@ -250,3 +252,36 @@ def test_align_horizon_to_context_scales_when_horizon_one() -> None:
     kept = align_horizon_to_context(5, research_interval_ns=research, context_interval_ns=ctx)
     assert scaled == 1800
     assert kept == 5
+
+
+# ─── بقايا الطبقات: أنطولوجيا vp_* + TOML research ─────────────────────────
+
+
+def test_default_alpha_signals_prefer_vp_ontology_not_streaming_va() -> None:
+    assert "vp_balance" in _DEFAULT_SIGNAL_COLUMNS
+    assert "in_value_area" not in _DEFAULT_SIGNAL_COLUMNS
+    assert "near_vah" not in _DEFAULT_SIGNAL_COLUMNS
+    frame = pl.DataFrame(
+        {
+            "nq_delta": [1.0],
+            "vp_balance": [1.0],
+            "in_value_area": [1.0],
+            "near_vah": [1.0],
+            "fail_fvg": [0.0],
+        }
+    )
+    resolved = _resolve_signal_columns(frame, None)
+    assert "vp_balance" in resolved
+    assert "in_value_area" not in resolved
+    assert "near_vah" not in resolved
+
+
+def test_research_toml_wires_streaming_depth_and_vp_ontology() -> None:
+    cfg = PipelineConfig.from_toml(Path("configs/research.toml"))
+    assert cfg.research_interval_ns == 1_000_000_000
+    assert cfg.micro_interval_ns == 100_000_000
+    assert cfg.filter_depth_noise is True
+    assert cfg.include_bottom_book is True
+    assert cfg.signal_columns is not None
+    assert "vp_balance" in cfg.signal_columns
+    assert "in_value_area" not in cfg.signal_columns
