@@ -78,24 +78,35 @@ def build_market_truth_frame(  # noqa: PLR0912, PLR0915
     deceptive: DeceptiveLiquidityConfig | None = None,
     score_mbo: pl.DataFrame | None = None,
     progress: ProgressLike | None = None,
+    auction: pl.DataFrame | None = None,
+    deceptive_frame: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """يبني إطار حكم السوق + بوابة دخول (بدون ملاحقة كل أمر).
 
     ``mbo``: مصدر حالات المزاد (عادة بعد تنظيف الدفتر).
     ``score_mbo``: مصدر درجات التضليل للهولد — يجب أن يكون **الخام قبل الإسقاط**
     وإلا تصبح بوابات السيولة الحقيقية بلا معنى بعد التنظيف.
+    ``auction`` / ``deceptive_frame``: اختياري لإعادة الاستخدام عبر شبكة بحث الإدج
+    (تجنّب إعادة بناء المزاد/التضليل لكل مواصفة).
     """
     cfg = truth if truth is not None else MarketTruthConfig()
     if cfg.hold_buckets < 1:
         raise ValueError(f"hold_buckets must be >= 1, got {cfg.hold_buckets}")
 
-    if progress is not None:
+    if progress is not None and (auction is None or deceptive_frame is None):
         progress.op("market_truth: auction_states + deceptive buckets")
-    states = auction_states(mbo, interval_ns=interval_ns, progress=progress)
-    score_src = score_mbo if score_mbo is not None else mbo
-    deco = deceptive_features_by_bucket(
-        score_src, interval_ns=interval_ns, config=deceptive, progress=progress
+    states = (
+        auction
+        if auction is not None
+        else auction_states(mbo, interval_ns=interval_ns, progress=progress)
     )
+    if deceptive_frame is not None:
+        deco = deceptive_frame
+    else:
+        score_src = score_mbo if score_mbo is not None else mbo
+        deco = deceptive_features_by_bucket(
+            score_src, interval_ns=interval_ns, config=deceptive, progress=progress
+        )
     if states.height == 0:
         return pl.DataFrame(
             schema={
