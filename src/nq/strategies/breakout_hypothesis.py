@@ -29,6 +29,7 @@ from nq.core.temporal_policy import (
 )
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_tick_pipeline
+from nq.models.tick_stream import build_tick_stream
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.capacity import (
     LEAN_GATE_QUANTILES,
@@ -49,11 +50,12 @@ from nq.simulation.breakout import (
     HoldMode,
     SignalPriority,
     VolMode,
+    apply_hold_mode_filter,
+    failed_breakout_candidates_from_bars,
     failed_breakout_features,
-    failed_breakout_from_bars,
 )
 from nq.simulation.cross_market import cross_market_features
-from nq.simulation.fvg import NS_PER_MIN, build_ohlcv_bars
+from nq.simulation.fvg import NS_30M, NS_PER_MIN, build_ohlcv_bars
 from nq.strategies.depth_entry_filter import (
     DepthEntrySpec,
     attach_depth_path_to_features,
@@ -404,14 +406,40 @@ def core_volume_hold_grid() -> tuple[BreakoutHypothesisSpec, ...]:
     return tuple(specs)
 
 
-def materialize_breakout_hypotheses(
+def _spec_scan_key(spec: BreakoutHypothesisSpec) -> tuple[object, ...]:
+    """مفتاح كاش المسح — بلا hold_mode (الفلتر رخيص بعده)."""
+    return (
+        spec.signal_interval_ns,
+        spec.trend_interval_ns if spec.require_sma_filter else 0,
+        spec.lookback,
+        spec.range_mult,
+        spec.vol_mult,
+        spec.result_mult,
+        spec.vol_window,
+        spec.cum_window,
+        spec.vol_mode,
+        spec.priority,
+        spec.sma_period,
+        spec.require_sma_filter,
+    )
+
+
+def materialize_breakout_hypotheses(  # noqa: PLR0912, PLR0915
     nq: pl.DataFrame,
     specs: Sequence[BreakoutHypothesisSpec],
     *,
     clock: pl.DataFrame,
     progress: ProgressLike | None = None,
+    attach_volume_context: bool = True,
 ) -> pl.DataFrame:
-    """يبني أعمدة فرضيات على ساعة مشتركة (نبضة تطابقية عند bucket_end)."""
+    """يبني أعمدة فرضيات على ساعة مشتركة (نبضة تطابقية عند bucket_end).
+
+    أداء (مبدأ 3) بلا تسريب (مبدأ 1):
+    * كاش OHLCV لكل ``interval_ns`` داخل هذا الاستدعاء فقط.
+    * كاش مسح المرشّحين لكل مفتاح بنية/فوليوم؛ ``hold_mode`` = فلتر رخيص.
+    * سياق الفوليوم اختياري من كاش الشموع — بلا ``failed_breakout_features`` ثانٍ.
+    لا كاش عبر الأيام / عبر استدعاءات — مناسب لـ day-parallel المعزول.
+    """
     if AVAILABILITY_TS not in clock.columns:
         raise ValueError(f"clock requires {AVAILABILITY_TS}")
     if clock.height == 0 or not specs:
@@ -420,9 +448,12 @@ def materialize_breakout_hypotheses(
     log = progress
     n_specs = len(specs)
     if log is not None:
-        log.op(f"تجسيد {n_specs} فرضية FB (كل فرضية تُطبع)")
+        log.op(f"تجسيد {n_specs} فرضية FB (كاش مسح مشترك · hold رخيص)")
 
     bars_cache: dict[int, pl.DataFrame] = {}
+    scan_cache: dict[tuple[object, ...], pl.DataFrame] = {}
+    scan_hits = 0
+    scan_misses = 0
 
     def _bars(interval_ns: int) -> pl.DataFrame:
         cached = bars_cache.get(interval_ns)
@@ -435,15 +466,15 @@ def materialize_breakout_hypotheses(
                 log.op(f"OHLCV جاهز: {cached.height:,} شمعة")
         return cached
 
-    out = clock.sort(AVAILABILITY_TS)
-    for i, spec in enumerate(specs, start=1):
-        if log is not None:
-            log.op(
-                f"فرضية [{i}/{n_specs}] {spec.name} · mode={spec.vol_mode} · "
-                f"priority={spec.priority} · hold={spec.hold_mode} · "
-                f"lb={spec.lookback} · v={spec.vol_mult}"
-            )
-        raw = failed_breakout_from_bars(
+    def _candidates(spec: BreakoutHypothesisSpec) -> pl.DataFrame:
+        nonlocal scan_hits, scan_misses
+        key = _spec_scan_key(spec)
+        hit = scan_cache.get(key)
+        if hit is not None:
+            scan_hits += 1
+            return hit
+        scan_misses += 1
+        raw = failed_breakout_candidates_from_bars(
             _bars(spec.signal_interval_ns),
             trend_bars=_bars(spec.trend_interval_ns) if spec.require_sma_filter else None,
             lookback=spec.lookback,
@@ -454,10 +485,27 @@ def materialize_breakout_hypotheses(
             cum_window=spec.cum_window,
             vol_mode=spec.vol_mode,
             priority=spec.priority,
-            hold_mode=spec.hold_mode,
             sma_period=spec.sma_period,
             require_sma_filter=spec.require_sma_filter,
             progress=log,
+        )
+        scan_cache[key] = raw
+        return raw
+
+    out = clock.sort(AVAILABILITY_TS)
+    for i, spec in enumerate(specs, start=1):
+        if log is not None:
+            log.op(
+                f"فرضية [{i}/{n_specs}] {spec.name} · mode={spec.vol_mode} · "
+                f"priority={spec.priority} · hold={spec.hold_mode} · "
+                f"lb={spec.lookback} · v={spec.vol_mult}"
+            )
+        cand = _candidates(spec)
+        raw = apply_hold_mode_filter(
+            cand,
+            hold_mode=spec.hold_mode,
+            vol_mult=spec.vol_mult,
+            result_mult=spec.result_mult,
         )
         col = spec.column()
         if raw.height == 0:
@@ -481,9 +529,81 @@ def materialize_breakout_hypotheses(
                 log.op(f"  → {col}: {n_sig:,} إشارة / {raw.height:,} صف (pulse join)")
         if log is not None:
             log.heartbeat(i, n_specs, label="materialize_FB", force=True)
+
+    if attach_volume_context:
+        out = _attach_volume_context_from_bars(
+            out,
+            bars_cache=bars_cache,
+            nq=nq,
+            progress=log,
+        )
+
     if log is not None:
-        log.op(f"انتهى تجسيد {n_specs} فرضية")
+        log.op(
+            f"انتهى تجسيد {n_specs} فرضية · "
+            f"مسح فريد={scan_misses} · إعادة استخدام={scan_hits} · "
+            f"OHLCV مخزّن={len(bars_cache)}"
+        )
     return out
+
+
+def _attach_volume_context_from_bars(
+    features: pl.DataFrame,
+    *,
+    bars_cache: dict[int, pl.DataFrame],
+    nq: pl.DataFrame,
+    progress: ProgressLike | None = None,
+    signal_interval_ns: int = NS_30M,
+    vol_mode: VolMode = "bar",
+) -> pl.DataFrame:
+    """يلحق أعمدة فوليوم من كاش OHLCV (أو بناء مرة واحدة) — نبضة تطابقية."""
+    if features.height == 0:
+        return features
+    already = [c for c in _VOLUME_FEATURE_COLUMNS if c in features.columns]
+    if len(already) >= _MIN_VOLUME_KEEP:
+        if progress is not None:
+            progress.op("سياق فوليوم: موجود مسبقًا — تخطّي إعادة البناء")
+        return features
+
+    bars = bars_cache.get(signal_interval_ns)
+    if bars is None:
+        if progress is not None:
+            progress.op(f"سياق فوليوم: بناء OHLCV interval_ns={signal_interval_ns}")
+        bars = build_ohlcv_bars(nq, interval_ns=signal_interval_ns)
+        bars_cache[signal_interval_ns] = bars
+    elif progress is not None:
+        progress.op(f"سياق فوليوم: إعادة استخدام OHLCV {signal_interval_ns}ns من كاش التجسيد")
+
+    fb = failed_breakout_candidates_from_bars(
+        bars,
+        require_sma_filter=False,
+        rth_only=False,
+        vol_mode=vol_mode,
+        progress=progress,
+    )
+    keep = [c for c in (AVAILABILITY_TS, *_VOLUME_FEATURE_COLUMNS) if c in fb.columns]
+    if len(keep) < _MIN_VOLUME_KEEP:
+        missing: list[pl.Expr] = []
+        for c in _VOLUME_FEATURE_COLUMNS:
+            if c in features.columns:
+                continue
+            if c in _VOLUME_PULSE_ZERO_FILL:
+                missing.append(pl.lit(0.0).alias(c))
+            else:
+                missing.append(pl.lit(None).cast(pl.Float64).alias(c))
+        return features.with_columns(missing) if missing else features
+    right = fb.select(keep).sort(AVAILABILITY_TS)
+    left = features.sort(AVAILABILITY_TS)
+    drop = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
+    if drop:
+        left = left.drop(drop)
+    joined = left.join(right, on=AVAILABILITY_TS, how="left")
+    fills = [
+        pl.col(c).fill_null(0.0)
+        for c in _VOLUME_FEATURE_COLUMNS
+        if c in joined.columns and c in _VOLUME_PULSE_ZERO_FILL
+    ]
+    return joined.with_columns(fills) if fills else joined
 
 
 def _attach_volume_context(
@@ -494,12 +614,29 @@ def _attach_volume_context(
     vol_mode: VolMode = "bar",
     rth_only: bool = False,
     progress: ProgressLike | None = None,
+    bars_cache: dict[int, pl.DataFrame] | None = None,
 ) -> pl.DataFrame:
     """يلحق أعمدة فوليوم سببية للتعزيز/السياق (نبضة تطابقية على إطار الإشارة).
 
     يستخدم نفس ``signal_interval_ns`` / ``vol_mode`` للنواة قيد البحث حتى لا
-    يُعزَّز مرشّح 15m بسياق 30m افتراضي مختلف.
+    يُعزَّز مرشّح 15m بسياق 30m افتراضي مختلف. يفضّل كاش الشموع إن وُجد.
     """
+    if bars_cache is not None:
+        return _attach_volume_context_from_bars(
+            features,
+            bars_cache=bars_cache,
+            nq=nq,
+            progress=progress,
+            signal_interval_ns=signal_interval_ns,
+            vol_mode=vol_mode,
+        )
+    already = [c for c in _VOLUME_FEATURE_COLUMNS if c in features.columns]
+    if len(already) >= _MIN_VOLUME_KEEP:
+        if progress is not None:
+            progress.op("سياق فوليوم: موجود مسبقًا — تخطّي")
+        return features
+    if progress is not None:
+        progress.op("سياق فوليوم: مسار احتياطي failed_breakout_features")
     fb = failed_breakout_features(
         nq,
         signal_interval_ns=signal_interval_ns,
@@ -643,7 +780,14 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             progress=log,
         )
         log.step("تجسيد فرضيات FB الفوليوم", f"specs={len(grid)}")
-        features = materialize_breakout_hypotheses(nq_frame, grid, clock=clock, progress=log)
+        # بلا سياق هنا — يُلحق بعد تحديد max(TF) صراحةً
+        features = materialize_breakout_hypotheses(
+            nq_frame,
+            grid,
+            clock=clock,
+            progress=log,
+            attach_volume_context=False,
+        )
         hyp_cols = [s.column() for s in grid]
         for col in hyp_cols:
             if col in features.columns:
@@ -693,9 +837,7 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         # vp_* على ساعة البحث حتى تعمل فلاتر SSL السياق (أنطولوجيا المزاد)
         if enhance_with_ssl or use_ssl_gate:
             log.step("إلحاق Volume Profile / Auction (asof) لسياق SSL")
-            features = _attach_auction_vp(
-                features, nq_frame, interval_ns=interval_ns, progress=log
-            )
+            features = _attach_auction_vp(features, nq_frame, interval_ns=interval_ns, progress=log)
 
         ssl_result: SSLPipelineResult | None = None
         enhancement_columns: tuple[str, ...] = ()
@@ -703,6 +845,10 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         depth_columns: tuple[str, ...] = ()
         depth_specs: tuple[DepthEntrySpec, ...] = ()
         candidates: list[str] = list(hyp_cols)
+
+        # إشارات الأساس معروفة قبل العمق/SSL — نقرّر التخطي مبكرًا (مبدأ 3)
+        min_ssl_hits = max(3, int(n_splits))
+        base_hits = count_signal_hits(features, hyp_cols)
 
         if use_depth_filter:
             log.step(
@@ -729,15 +875,15 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
             candidates.extend(list(depth_cols))
             log.note(f"مرشّحو عمق: {len(depth_cols)} · lean={lean_filters}")
 
-        # SSL يحتاج إشارات أساس كافية لـ WF؛ بدونها التكلفة كارثية بلا قيمة اختيار.
-        min_ssl_hits = max(3, int(n_splits))
-        base_hits = count_signal_hits(features, hyp_cols)
+        # SSL: بناء tick_stream مرة واحدة وإعادة استخدامه (مثل الخط الموحّد) — بلا بناء ثانٍ
         if need_ssl:
             log.step("تشغيل SSL tick (تمثيلات للتعزيز/البوابة)", f"window={ssl_window}")
             if base_hits < min_ssl_hits:
                 log.note(f"تخطي SSL — إشارات أساس غير كافية (hits={base_hits} < {min_ssl_hits})")
             else:
                 log.note(f"إشارات أساس: hits={base_hits} ≥ {min_ssl_hits}")
+                log.op("بناء tick_stream مرة واحدة لمسار البحث (يُمرَّر لـ SSL)")
+                shared_tick = build_tick_stream(nq_frame, mnq_frame, progress=log)
                 ssl_result = run_ssl_tick_pipeline(
                     nq_frame,
                     mnq_frame,
@@ -747,6 +893,7 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
                     alpha=alpha,
                     rng=generator,
                     progress=log,
+                    tick_stream=shared_tick,
                 )
 
         if enhance_with_ssl:

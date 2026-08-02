@@ -240,9 +240,7 @@ def depth_at_bar_close_multi(  # noqa: PLR0912, PLR0915
     for interval_ns in intervals:
         rows = rows_by_iv[interval_ns]
         if log is not None:
-            log.op(
-                f"depth_at_bar_close[{interval_ns}]: {len(rows):,} شمعة بعمق — بناء DataFrame…"
-            )
+            log.op(f"depth_at_bar_close[{interval_ns}]: {len(rows):,} شمعة بعمق — بناء DataFrame…")
         out[interval_ns] = (
             pl.DataFrame(rows).sort(AVAILABILITY_TS) if rows else pl.DataFrame(schema=empty_schema)
         )
@@ -269,7 +267,8 @@ def depth_at_bar_close(
     )[interval_ns]
 
 
-def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915    frame: pl.DataFrame,
+def depth_event_path_at_bar_close(  # noqa: PLR0912, PLR0915
+    frame: pl.DataFrame,
     *,
     interval_ns: int,
     n_levels: int = _DEFAULT_LEVELS,

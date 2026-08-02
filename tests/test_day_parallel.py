@@ -107,6 +107,8 @@ def test_day_parallel_search_isolates_days(tmp_path: Path) -> None:
     assert f1.height > 0 and f2.height > 0
     assert "zero_temporal_leakage" in " ".join(manifest.principles)
     assert any("no_cross_day_selection" in p for p in manifest.principles)
+    assert any("no_cross_day_cache" in p for p in manifest.principles)
+    assert any("within_day_dedupe" in p for p in manifest.principles)
 
 
 def test_day_parallel_payload_builds_unique_seeds() -> None:

@@ -385,9 +385,9 @@ python scripts/run_fail_breakout_days.py \
 
 > **Day-parallel والمبادئ الأربعة:** التوازي على **مستوى الملف اليومي** فقط
 > (`ProcessPool`). داخل كل يوم يبقى نفس المحرّك السببي (نبضة fail_* + asof للحالة
-> المستمرة + purged WF). `manifest.json` / `summary.md` وصفيان — **لا** يختاران
-> فرضية موحّدة عبر الشهر.
-
+> المستمرة + purged WF). كاش OHLCV/مسح/tick_stream = **داخل اليوم فقط** — ممنوع
+> مشاركة عبر الأيام. `manifest.json` / `summary.md` وصفيان — **لا** يختاران فرضية
+> موحّدة عبر الشهر.
 مع `--search` (افتراضي): SSL يولّد **مرشّحي تعزيز** (`ssl_abs_q*`, `ssl_sign_*`, `ctx_*` بما فيها فلاتر فوليوم)
 فوق نواة Failed Breakout، ثم walk-forward يختار الأفضل خارج العينة.
 

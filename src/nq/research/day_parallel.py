@@ -12,6 +12,11 @@
 
 التجميع عبر الأيام = **وصف إحصائي فقط** (تكرار best_oos، متوسط IC يومي).
 ليس اختيارًا موحّدًا خارج العيّنة عبر الشهر.
+
+أداء داخل اليوم (مبدأ 3) دون كسر مبدأ 1:
+* كاش OHLCV + مسح مرشّحي FB مشترك داخل استدعاء البحث لليوم فقط.
+* ``tick_stream`` يُبنى مرة ويُمرَّر لـ SSL — بلا كاش عبر الأيام (كل عملية = يوم).
+* مسار العمق منفصل دلاليًا (مقاييس path) ويُتخطّى عند صفر إشارات.
 """
 
 from __future__ import annotations
@@ -75,8 +80,11 @@ class DayParallelManifest:
     principles: tuple[str, ...] = (
         "zero_temporal_leakage: each day is an isolated causal universe",
         "no_cross_day_selection: summary is descriptive only",
+        "no_cross_day_cache: OHLCV/scan/tick dedupe is within-day only; never share across days",
+        "within_day_dedupe: shared bars/scan/tick_stream inside one day search only",
         "same_engine: search_fail_breakout_hypotheses / run_fail_breakout_research",
         "mbo_only: daily parquet/arrow MBO shards",
+        "performance: ProcessPool over days; causal book walks stay per-day",
     )
     notes: tuple[str, ...] = field(
         default_factory=lambda: (

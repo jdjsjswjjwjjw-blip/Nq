@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import io
+
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.determinism import make_generator
+from nq.research.progress import PipelineProgress
 from nq.simulation.breakout import (
+    HoldMode,
+    apply_hold_mode_filter,
+    failed_breakout_candidates_from_bars,
     failed_breakout_features,
     failed_breakout_from_bars,
 )
@@ -278,6 +284,76 @@ def test_hold_persist_is_stricter_than_none() -> None:
         vol_mode="bar",
     ).height
     assert persist_hits <= none_hits
+
+
+def test_hold_filter_matches_from_bars() -> None:
+    """مسح مرشّحين + فلتر hold ≡ failed_breakout_from_bars (نفس الأرقام)."""
+    bars = _synthetic_signal_bars(100)
+    holds: tuple[HoldMode, ...] = ("none", "persist", "absorption", "imbalance")
+    for mode in holds:
+        direct = failed_breakout_from_bars(
+            bars,
+            lookback=5,
+            require_sma_filter=False,
+            rth_only=False,
+            range_mult=1.05,
+            vol_mult=1.05,
+            result_mult=1.05,
+            priority="volume_first",
+            hold_mode=mode,
+            vol_mode="bar",
+        )
+        cands = failed_breakout_candidates_from_bars(
+            bars,
+            lookback=5,
+            require_sma_filter=False,
+            rth_only=False,
+            range_mult=1.05,
+            vol_mult=1.05,
+            result_mult=1.05,
+            priority="volume_first",
+            vol_mode="bar",
+        )
+        filtered = apply_hold_mode_filter(
+            cands,
+            hold_mode=mode,
+            vol_mult=1.05,
+            result_mult=1.05,
+        )
+        assert direct.select(sorted(direct.columns)).equals(
+            filtered.select(sorted(filtered.columns))
+        )
+
+
+def test_materialize_reuses_scan_across_hold_modes() -> None:
+    """تركيب hold: مسح فريد واحد لكل بنية — ليس مسحًا لكل hold."""
+    nq, mnq = _paired_streams(3000, seed=42)
+    clock = cross_market_features(nq, mnq, interval_ns=10_000, lead_lag_window=2)
+    holds: tuple[HoldMode, ...] = ("none", "persist", "absorption", "imbalance")
+    specs = tuple(
+        BreakoutHypothesisSpec(
+            name=f"t_{h}",
+            signal_interval_ns=10_000 * 100,
+            trend_interval_ns=10_000 * 200,
+            lookback=3,
+            require_sma_filter=False,
+            range_mult=1.05,
+            vol_mult=1.05,
+            priority="volume_first",
+            hold_mode=h,
+            vol_mode="bar",
+        )
+        for h in holds
+    )
+    buf = io.StringIO()
+    progress = PipelineProgress(enabled=True, stream=buf)
+    hyp = materialize_breakout_hypotheses(nq, specs, clock=clock, progress=progress)
+    text = buf.getvalue()
+    assert "مسح فريد=1" in text
+    assert "إعادة استخدام=3" in text
+    for s in specs:
+        assert s.column() in hyp.columns
+    assert "سياق فوليوم" in text
 
 
 def test_volume_hold_compose_grid_all_volume_first() -> None:
