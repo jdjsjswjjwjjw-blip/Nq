@@ -105,6 +105,7 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 | `run_fail_breakout_days` | نفس FB على شرائح يومية متوازية | نعم — كل يوم كون سببي مغلق؛ لا اختيار عبر الأيام | `manifest.json` + مجلد/يوم |
 | `run_symbolic_search` | DEAP + gplearn (معادلات بلا `if`) | نعم — WF فوق ميزات الخط · يحتاج `nq[gp]` | programs.json + folds + signals |
 | `run_vp_auction` + `configs/vp_auction.toml` | VP + توازن/اختلال + تضليل + هولد + R:R | نعم — مسار واحد متصل داخل الاستراتيجية | كاملة + edge_* |
+| `run_vp_auction_days` | نفس VP على أيام متوازية (شهر) | نعم — كل يوم كون مغلق؛ stream=snapshots | `manifest.json` + مجلد/يوم |
 | `run_liquidity_edge` | غلاف توافق → نفس `run_vp_auction` | نعم — ليس تشعّبًا منفصلًا | نفس مخرجات VP |
 
 > لو عايز الكل شغّال → `run_week`.  
@@ -438,8 +439,15 @@ python scripts/run_vp_auction.py \
 # IC/WF فقط بدون طبقة التنفيذ
 python scripts/run_vp_auction.py --nq ... --no-execution
 
-# مسار streaming كامل (أبطأ — tick_stream حدث-بحدث)
+# مسار streaming كامل (snapshots كل interval — ليس صفًا لكل حدث)
 python scripts/run_vp_auction.py --nq ... --streaming
+
+# شهر: يوم-بيوم متوازٍ (20 يوم × 4 خيوط ≈ يستغل ~80 كور)
+python scripts/run_vp_auction_days.py \
+  --nq-dir /data/mnq_days \
+  --jobs 20 \
+  --threads-per-worker 4 \
+  --output data/runs/vp_month
 
 # أو عبر run_week + إعداد مركّز
 python scripts/run_week.py \
@@ -615,6 +623,7 @@ Nq/
 │   ├── run_fail_breakout_days.py  # FB يوم-بيوم متوازٍ (ProcessPool · عزل سببي)
 │   ├── run_symbolic_search.py # DEAP + gplearn (معادلات بلا if · nq[gp])
 │   └── run_vp_auction.py      # VP متصل: إشارة + تضليل + هولد + R:R
+│   └── run_vp_auction_days.py # VP يوم-بيوم متوازٍ (شهر)
 │   └── run_liquidity_edge.py  # غلاف توافق → نفس vp_auction
 ├── docs/
 │   ├── architecture.md

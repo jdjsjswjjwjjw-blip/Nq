@@ -142,7 +142,7 @@ def test_tick_stream_session_resets_signed_vol() -> None:
         seq.extend([i * 3 + 1, i * 3 + 2, i * 3 + 3])
     nq = make_stream(events, instrument_id=1, symbol="NQ", event_ts=ts, sequence=seq)
     mnq = make_stream(events, instrument_id=2, symbol="MNQ", event_ts=ts, sequence=seq)
-    stream = build_tick_stream(nq, mnq)
+    stream = build_tick_stream(nq, mnq, emit_interval_ns=None)
     frame = stream.frame.sort(AVAILABILITY_TS)
     # صفقات MNQ ترفع mnq_signed_vol؛ بعد عبور اليوم يجب أن ينخفض / يُعاد من الصفر
     mnq_trades = frame.filter(pl.col("instrument_id") == 2)
