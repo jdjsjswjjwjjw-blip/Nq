@@ -161,15 +161,14 @@ def _max_dep_cached(cache: _AxisDcorCache, target_sub: FloatArray) -> float:
         inv = 1.0 / float(cache.n * cache.n)
         dcov2 = np.einsum("cij,ij->c", cache.stacked, centered_b, dtype=np.float64) * inv
         dvar_b = float((centered_b * centered_b).sum() * inv)
-        if dvar_b <= 0:
-            return 0.0
-        denom = np.sqrt(cache.dvar_a * dvar_b)
-        valid = denom > 0
-        if not bool(np.any(valid)):
-            return 0.0
-        scores = np.zeros_like(dcov2)
-        scores[valid] = np.sqrt(np.maximum(dcov2[valid], 0.0) / denom[valid])
-        return float(np.max(scores))
+        if dvar_b > 0:
+            denom = np.sqrt(cache.dvar_a * dvar_b)
+            valid = denom > 0
+            if bool(np.any(valid)):
+                scores = np.zeros_like(dcov2)
+                scores[valid] = np.sqrt(np.maximum(dcov2[valid], 0.0) / denom[valid])
+                return float(np.max(scores))
+        return 0.0
     if not cache.raw_columns:
         return 0.0
     centered_b = _centered_abs_distance(y)

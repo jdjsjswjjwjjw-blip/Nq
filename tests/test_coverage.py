@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import polars as pl
 
@@ -14,6 +16,8 @@ from nq.coverage import (
     run_coverage_pipeline,
 )
 from nq.coverage.blocks import resolve_block_columns
+from nq.coverage.distance import fold_information_gap_perm_null
+from nq.coverage.monitor import run_coverage_on_features
 from nq.simulation.cross_market import cross_market_features
 from tests.mbo_factory import Event, make_stream, random_add_cancel_stream
 
@@ -76,10 +80,6 @@ def test_run_coverage_pipeline_smoke() -> None:
 
 def test_fold_mfig_perm_null_fast_and_finite() -> None:
     """2000 تبديل على ~5k صف يجب أن تنتهي في ثوانٍ لا ساعات."""
-    import time
-
-    from nq.coverage.distance import fold_information_gap_perm_null
-
     rng = make_generator(0)
     n, p_desc, p_feat = 4941, 9, 40
     desc = rng.normal(size=(n, p_desc))
@@ -107,8 +107,6 @@ def test_fold_mfig_perm_null_fast_and_finite() -> None:
 
 
 def test_coverage_nq_only_reuses_descriptors() -> None:
-    from nq.coverage.monitor import run_coverage_on_features
-
     nq = random_add_cancel_stream(800, seed=7)
     features = cross_market_features(nq, nq, interval_ns=10_000, lead_lag_window=2)
     report = run_coverage_on_features(

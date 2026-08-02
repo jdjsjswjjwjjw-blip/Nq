@@ -19,15 +19,14 @@ import numpy as np
 import polars as pl
 
 from nq.alpha.discovery import AlphaDiscovery
-from nq.core.temporal_policy import TemporalPolicy
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.core.temporal_policy import TemporalPolicy
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
 from nq.research.orchestrator import (
     PipelineConfig,
-    UnifiedResearchResult,
     run_research_pipeline,
 )
 from nq.research.progress import ProgressLike, resolve_progress

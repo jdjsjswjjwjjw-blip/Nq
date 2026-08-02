@@ -24,7 +24,7 @@ from typing import Final
 
 import polars as pl
 
-from nq.contracts.mbo import PRICE_SCALE, MBO_SCHEMA, MboAction
+from nq.contracts.mbo import MBO_SCHEMA, PRICE_SCALE, MboAction
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.time import sort_causal
 from nq.research.progress import ProgressLike
@@ -38,6 +38,7 @@ _MODIFY = MboAction.MODIFY.value
 
 _DEFAULT_TICK: Final = 0.25
 _TICK_FIXED: Final = round(_DEFAULT_TICK / PRICE_SCALE)
+_HIGH_DECEPTIVE_SCORE: Final = 0.5
 
 DECEPTIVE_FEATURE_COLUMNS: Final[tuple[str, ...]] = (
     "deceptive_score",
@@ -225,7 +226,7 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
             nonpart = 0.0
             storm = 1.0 if in_storm else 0.0
             if meta is not None:
-                add_ts, add_px, add_side, add_sz, mods, touched = meta
+                add_ts, add_px, _, add_sz, mods, touched = meta
                 dt = ts - add_ts
                 if dt <= cfg.short_life_ns and oid not in executed_oids:
                     short_life = 1.0
@@ -357,7 +358,7 @@ def deceptive_features_by_bucket(
 
     bucketed = add_time_bucket(scored, interval_ns=interval_ns)
     # حجم «مضلل» ≈ size عند أحداث بدرجة عالية (CANCEL/ADD المسقطة منطقيًا)
-    high = pl.col("deceptive_score") >= 0.5
+    high = pl.col("deceptive_score") >= _HIGH_DECEPTIVE_SCORE
     agg = (
         bucketed.group_by(BUCKET_START, maintain_order=True)
         .agg(
@@ -377,7 +378,7 @@ def deceptive_features_by_bucket(
             pl.col("size").cast(pl.Float64).sum().alias("_all_sz"),
             (
                 (pl.col("action").cast(pl.Utf8) == _CANCEL)
-                & (pl.col("deceptive_score") >= 0.5)
+                & (pl.col("deceptive_score") >= _HIGH_DECEPTIVE_SCORE)
             )
             .mean()
             .alias("deceptive_cancel_rate"),

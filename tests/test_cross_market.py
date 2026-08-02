@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import polars as pl
 
 from nq.core.session import SESSION_DATE
@@ -76,8 +78,6 @@ def test_session_partitioned_new_high_math() -> None:
 
 def test_nq_only_builds_windows_once() -> None:
     """nq is mnq → إعادة بناء دفتر واحدة فقط (لا مسار MNQ وهمي)."""
-    from unittest.mock import patch
-
     nq = _market([100_000_000, 101_000_000, 102_000_000], symbol="NQ", instrument_id=1)
     calls: list[str] = []
 
