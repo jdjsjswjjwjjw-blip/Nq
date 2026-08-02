@@ -565,10 +565,15 @@ def _build_research_features(
         )
     elif cfg.research_interval_ns is not None:
         log.note(f"ساعة البحث من [streaming].research_interval_ns={cfg.research_interval_ns}")
+    market_pair = (
+        f"NQ={nq.height:,} (nq_only)"
+        if nq is mnq
+        else f"NQ={nq.height:,} · MNQ={mnq.height:,}"
+    )
     if cfg.feature_mode == "streaming":
         log.step(
             "بناء الميزات (streaming state-machine)",
-            f"NQ={nq.height:,} · MNQ={mnq.height:,} · interval_ns={cfg.interval_ns}",
+            f"{market_pair} · interval_ns={cfg.interval_ns}",
         )
         features, tick_stream = build_streaming_research_features(
             nq,
@@ -580,7 +585,7 @@ def _build_research_features(
     else:
         log.step(
             "بناء الميزات (batch cross-market)",
-            f"NQ={nq.height:,} · MNQ={mnq.height:,} · interval_ns={cfg.interval_ns}",
+            f"{market_pair} · interval_ns={cfg.interval_ns}",
         )
         log.op("حساب cross_market_features (batch)")
         features = cross_market_features(
@@ -899,7 +904,7 @@ def _load_pipeline_frames(
         log.op(f"قص NQ DataFrame إلى max_rows={cfg.max_rows:,}")
         nq_frame = nq_frame.head(cfg.max_rows)
     if cfg.cross_market_mode == "nq_only":
-        log.op("وضع nq_only — بدون سوق ثانٍ (tick_stream أحادي عند nq is mnq)")
+        log.op("وضع nq_only — سوق NQ فقط (بدون تحميل/إعادة بناء MNQ)")
         return nq_frame, nq_frame
     log.op("تحميل MNQ")
     mnq_frame = (
@@ -987,8 +992,12 @@ def run_research_pipeline(
         generator = rng if rng is not None else np.random.default_rng(cfg.global_seed)
         nq_frame, mnq_frame = _load_pipeline_frames(nq, mnq, cfg, progress=log)
         log.note(
-            f"NQ={nq_frame.height:,} صف · MNQ={mnq_frame.height:,} صف"
-            + (" (nq_only)" if cfg.cross_market_mode == "nq_only" else "")
+            f"NQ={nq_frame.height:,} صف"
+            + (
+                " (nq_only — بدون MNQ)"
+                if cfg.cross_market_mode == "nq_only"
+                else f" · MNQ={mnq_frame.height:,} صف"
+            )
         )
 
         features, tick_stream = _build_research_features(nq_frame, mnq_frame, cfg, progress=log)
