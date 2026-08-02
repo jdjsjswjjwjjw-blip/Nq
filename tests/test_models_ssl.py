@@ -63,6 +63,18 @@ def test_next_state_predictor_learns_linear_map() -> None:
     assert r2_score(y[200:], pred, baseline_mean=train_mean) > 0.99
 
 
+def test_next_state_predictor_handles_singular_features() -> None:
+    """أعمدة ثابتة/مكررة لا توقف الخط (QDUF على VP lean)."""
+    x = np.zeros((80, 3), dtype=np.float64)
+    x[:, 0] = 1.0
+    x[:, 1] = 1.0  # عمود مكرر
+    y = np.linspace(-1.0, 1.0, 80).reshape(-1, 1)
+    model = NextStatePredictor(alpha=1.0).fit(x, y)
+    pred = model.predict(x[:10])
+    assert pred.shape == (10, 1)
+    assert np.isfinite(pred).all()
+
+
 def test_oos_r2_uses_train_baseline_not_test_mean() -> None:
     """Campbell OOS R²: ss_tot مقابل متوسط التدريب؛ متوسط الاختبار يحرّف المقياس."""
     rng = make_generator(11)
