@@ -15,7 +15,7 @@ import numpy.typing as npt
 import polars as pl
 
 from nq.coverage.blocks import resolve_block_columns
-from nq.coverage.distance import max_axis_dependence
+from nq.coverage.distance import fold_information_gap_perm_null, max_axis_dependence
 from nq.coverage.mbo_descriptors import descriptor_matrix
 from nq.models.encoder import PCAEncoder
 from nq.models.masking import MaskedMatrix, mask_matrix, masked_reconstruction_error
@@ -143,7 +143,11 @@ def measure_mfig(
     rng: np.random.Generator | None = None,
     progress: ProgressLike | None = None,
 ) -> MetricResult:
-    """MFIG — فجوة المعلومات الشرطية (MBO vs Features → Price)."""
+    """MFIG — فجوة المعلومات الشرطية (MBO vs Features → Price).
+
+    الملاحَظ = متوسط فجوات طيّات الاختبار. العدم يبدّل العوائد داخل كل طيّة
+    بنفس المُقدِّر (dCor مخفّف حتميًا + تخزين مسبق).
+    """
     generator = rng if rng is not None else np.random.default_rng(0)
     feat_mat, desc_mat, returns, _price, times = _align_frames(
         features, descriptors, price_col=price_col
@@ -152,27 +156,27 @@ def measure_mfig(
     if not folds:
         return MetricResult("mfig", 0.0, 1.0, 0, "insufficient data for walk-forward", False)
 
-    gaps: list[float] = []
-    for fold in folds:
-        test_idx = fold.test_idx
-        if test_idx.shape[0] < _MIN_FOLD_SAMPLES:
-            continue
-        gaps.append(
-            _information_gap_stat(desc_mat[test_idx], feat_mat[test_idx], returns[test_idx])
-        )
-
-    if not gaps:
+    test_indices = [
+        fold.test_idx for fold in folds if fold.test_idx.shape[0] >= _MIN_FOLD_SAMPLES
+    ]
+    if not test_indices:
         return MetricResult("mfig", 0.0, 1.0, 0, "no valid folds", False)
 
-    observed = float(np.mean(gaps))
+    observed, null = fold_information_gap_perm_null(
+        desc_mat,
+        feat_mat,
+        returns,
+        test_indices,
+        n_permutations=n_permutations,
+        rng=generator,
+        progress=progress,
+        progress_label="mfig-perm",
+    )
+    if null.shape[0] == 0:
+        return MetricResult("mfig", 0.0, 1.0, 0, "no valid folds", False)
+
     feat_dep = max_axis_dependence(feat_mat, returns)
     mbo_dep = max_axis_dependence(desc_mat, returns)
-    null = np.empty(n_permutations, dtype=np.float64)
-    for i in range(n_permutations):
-        perm = generator.permutation(returns)
-        null[i] = _information_gap_stat(desc_mat, feat_mat, perm)
-        if progress is not None:
-            progress.heartbeat(i + 1, n_permutations, label="mfig-perm")
     pvalue = (int(np.sum(null >= observed)) + 1) / (n_permutations + 1)
     triggered = pvalue <= alpha and observed > 0
     detail = (
@@ -185,7 +189,7 @@ def measure_mfig(
         "mfig",
         observed,
         pvalue,
-        int(sum(f.shape[0] for f in [fold.test_idx for fold in folds])),
+        int(sum(idx.shape[0] for idx in test_indices)),
         detail,
         triggered,
     )

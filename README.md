@@ -436,6 +436,14 @@ python scripts/run_vp_auction.py \
   --min-oos-rr 2.5 \
   --output data/runs/vp_auction
 
+# دخان يوم واحد: قلّل تبديلات M9/ألفا (2000 الافتراضي ثقيل على mfig)
+python scripts/run_vp_auction.py \
+  --nq /path/to/one_day.parquet \
+  --max-rows 500000 \
+  --n-permutations 200 \
+  --min-oos-rr 2.5 \
+  --output data/runs/vp_one_day_smoke
+
 # IC/WF فقط بدون طبقة التنفيذ
 python scripts/run_vp_auction.py --nq ... --no-execution
 
