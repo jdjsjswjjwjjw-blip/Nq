@@ -117,6 +117,7 @@ def streaming_event_features(
         nq_instrument_id=nq_instrument_id,
         mnq_instrument_id=mnq_instrument_id,
         progress=progress,
+        emit_interval_ns=None,
     )
     return _events_from_tick(tick, progress=progress)
 
@@ -262,13 +263,16 @@ def build_streaming_research_features(
     ``return_tick=True`` يعيد ``TickStream`` لإعادة استخدامه في SSL-tick.
     """
     if progress is not None:
-        progress.op("streaming: استدعاء build_tick_stream")
+        progress.op(
+            f"streaming: استدعاء build_tick_stream (snapshots كل {interval_ns:,}ns)"
+        )
     tick = build_tick_stream(
         nq,
         mnq,
         nq_instrument_id=nq_instrument_id,
         mnq_instrument_id=mnq_instrument_id,
         progress=progress,
+        emit_interval_ns=interval_ns,
     )
     events = _events_from_tick(tick, progress=progress)
     frame = _assemble_streaming_frame(events, interval_ns=interval_ns, progress=progress)

@@ -410,7 +410,7 @@ def run_ssl_tick_pipeline(  # noqa: PLR0912
     else:
         if log is not None:
             log.op("SSL-tick: بناء tick_stream للتمثيلات")
-        stream = build_tick_stream(nq, mnq, progress=progress)
+        stream = build_tick_stream(nq, mnq, progress=progress, emit_interval_ns=1_000_000_000)
     if stream.height < window:
         if log is not None:
             log.op(f"SSL-tick: أحداث غير كافية ({stream.height} < window={window})")

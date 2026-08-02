@@ -102,8 +102,8 @@ def test_tick_stream_reuse_identical_frame() -> None:
     seq = list(range(1, 6))
     nq = make_stream(events, instrument_id=1, symbol="NQ", event_ts=ts, sequence=seq)
     mnq = make_stream(events, instrument_id=2, symbol="MNQ", event_ts=ts, sequence=seq)
-    a = build_tick_stream(nq, mnq)
-    b = build_tick_stream(nq, mnq)
+    a = build_tick_stream(nq, mnq, emit_interval_ns=None)
+    b = build_tick_stream(nq, mnq, emit_interval_ns=None)
     assert a.frame.equals(b.frame)
 
 
