@@ -131,20 +131,34 @@ def cross_market_features(
     latency_ns: int = 0,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """يشتق ميزات عبر السوقين على شبكة زمنية موحّدة (متاحة عند ``bucket_end``)."""
+    """يشتق ميزات عبر السوقين على شبكة زمنية موحّدة (متاحة عند ``bucket_end``).
+
+    عند ``nq is mnq`` (وضع ``nq_only``) تُبنى نافذة واحدة فقط — بلا إعادة بناء دفتر
+    وهمية لـ «MNQ» بنفس أحداث NQ.
+    """
     if lead_lag_window < _MIN_LEAD_LAG_WINDOW:
         raise ValueError(f"lead_lag_window must be >= 2, got {lead_lag_window}")
     if latency_ns < 0:
         raise ValueError(f"latency_ns must be non-negative, got {latency_ns}")
 
+    nq_only = nq is mnq
     if progress is not None:
-        progress.op(f"cross_market: نوافذ NQ ثم MNQ · interval_ns={interval_ns}")
+        if nq_only:
+            progress.op(
+                f"cross_market: nq_only — نافذة NQ واحدة (بدون إعادة بناء MNQ) · "
+                f"interval_ns={interval_ns}"
+            )
+        else:
+            progress.op(f"cross_market: نوافذ NQ ثم MNQ · interval_ns={interval_ns}")
     nq_w = _market_windows(
         nq, interval_ns=interval_ns, progress=progress, progress_label="cross:NQ"
     )
-    mnq_w = _market_windows(
-        mnq, interval_ns=interval_ns, progress=progress, progress_label="cross:MNQ"
-    )
+    if nq_only:
+        mnq_w = nq_w
+    else:
+        mnq_w = _market_windows(
+            mnq, interval_ns=interval_ns, progress=progress, progress_label="cross:MNQ"
+        )
     aligned = _align_markets(nq_w, mnq_w, latency_ns=latency_ns)
     if aligned.height == 0:
         return aligned

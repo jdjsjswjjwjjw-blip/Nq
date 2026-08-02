@@ -51,6 +51,12 @@ def main() -> None:
     parser.add_argument("--min-oos-rr", type=float, default=2.0)
     parser.add_argument("--min-oos-trades", type=int, default=3)
     parser.add_argument(
+        "--n-permutations",
+        type=int,
+        default=2000,
+        help="تبديلات الألفا/M9 (للدخان: 100–200؛ للنشر: 2000)",
+    )
+    parser.add_argument(
         "--streaming",
         action="store_true",
         help="تفعيل tick_stream حدث-بحدث (أبطأ كثيرًا؛ الافتراضي batch سريع لـ VP)",
@@ -84,6 +90,7 @@ def main() -> None:
         drop_deceptive=not args.keep_deceptive,
         min_oos_rr=args.min_oos_rr,
         min_oos_trades=args.min_oos_trades,
+        n_permutations=args.n_permutations,
         streaming_features=args.streaming,
     )
     print(result.report.to_markdown())

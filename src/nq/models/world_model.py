@@ -51,13 +51,26 @@ class NextStatePredictor:
         self._fitted = False
 
     def fit(self, x: FloatArray, y: FloatArray) -> NextStatePredictor:
-        """يلائم على التدريب فقط: ``(XᵀX + αI)⁻¹ Xᵀy`` مع عمود تحيّز."""
+        """يلائم على التدريب فقط: ``(XᵀX + αI)⁻¹ Xᵀy`` مع عمود تحيّز.
+
+        عند مصفوفة شبه-مفردة (أعمدة ثابتة/مترابطة في تغطية lean) نستخدم
+        ``lstsq`` بدل ``solve`` حتى لا يوقف الخط الموحّد.
+        """
         xb = self._with_bias(np.asarray(x, dtype=np.float64))
         yb = np.asarray(y, dtype=np.float64)
+        if not np.isfinite(xb).all() or not np.isfinite(yb).all():
+            xb = np.nan_to_num(xb, nan=0.0, posinf=0.0, neginf=0.0)
+            yb = np.nan_to_num(yb, nan=0.0, posinf=0.0, neginf=0.0)
         d = xb.shape[1]
         reg = self.alpha * np.eye(d)
         reg[-1, -1] = 0.0  # لا نُعاقب التحيّز
-        self.coef_ = np.asarray(np.linalg.solve(xb.T @ xb + reg, xb.T @ yb), dtype=np.float64)
+        gram = xb.T @ xb + reg
+        rhs = xb.T @ yb
+        try:
+            coef = np.linalg.solve(gram, rhs)
+        except np.linalg.LinAlgError:
+            coef, *_ = np.linalg.lstsq(gram, rhs, rcond=None)
+        self.coef_ = np.asarray(coef, dtype=np.float64)
         self._fitted = True
         return self
 

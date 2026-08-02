@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import polars as pl
 
 from nq.core.session import SESSION_DATE
@@ -72,6 +74,30 @@ def test_session_partitioned_new_high_math() -> None:
     day1 = out.filter(pl.col(SESSION_DATE) == "2024-06-04")
     assert day1["session_high"].to_list() == [False, True, True]
     assert day1["global_high"].to_list() == [False, False, False]
+
+
+def test_nq_only_builds_windows_once() -> None:
+    """nq is mnq → إعادة بناء دفتر واحدة فقط (لا مسار MNQ وهمي)."""
+    nq = _market([100_000_000, 101_000_000, 102_000_000], symbol="NQ", instrument_id=1)
+    calls: list[str] = []
+
+    real_windows = __import__(
+        "nq.simulation.cross_market", fromlist=["_market_windows"]
+    )._market_windows
+
+    def _counting_windows(frame, *, interval_ns, progress=None, progress_label="market_windows"):
+        calls.append(progress_label)
+        return real_windows(
+            frame, interval_ns=interval_ns, progress=progress, progress_label=progress_label
+        )
+
+    with patch("nq.simulation.cross_market._market_windows", side_effect=_counting_windows):
+        feat = cross_market_features(nq, nq, interval_ns=100, lead_lag_window=2)
+    assert feat.height == 3
+    assert calls == ["cross:NQ"]
+    assert (feat["nq_close"] == feat["mnq_close"]).all()
+    assert (feat["trap_setup"] == 0).all()
+    assert (~feat["divergence"]).all()
 
 
 def test_cross_market_features_include_session_date() -> None:

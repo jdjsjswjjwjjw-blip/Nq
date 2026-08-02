@@ -21,7 +21,6 @@ import numpy.typing as npt
 import polars as pl
 
 from nq.contracts.mbo import PRICE_SCALE
-from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.progress import ProgressLike
 from nq.simulation.deceptive_liquidity import DeceptiveLiquidityConfig
 from nq.simulation.market_truth import MarketTruthConfig, build_market_truth_frame
@@ -40,6 +39,10 @@ EDGE_TRADE_COLUMNS: Final[tuple[str, ...]] = (
     "edge_pnl",
     "edge_hit",  # +1 target / -1 stop / 0 timeout
 )
+
+_TRAIN_FRAC_MIN: Final = 0.1
+_TRAIN_FRAC_MAX: Final = 0.9
+_MIN_TRUTH_ROWS_FOR_OOS: Final = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +139,7 @@ def _plan_levels(
     return stop, target, risk, reward
 
 
-def simulate_edge_trades(
+def simulate_edge_trades(  # noqa: PLR0915
     truth: pl.DataFrame,
     *,
     exec_cfg: EdgeExecConfig | None = None,
@@ -310,8 +313,10 @@ def score_edge_spec_oos(
     score_mbo: pl.DataFrame | None = None,
 ) -> dict[str, float | str]:
     """تقييم فرضية بمحاكاة مستقلة على التدريب ثم الاختبار (بلا تسرّب عبر القطع)."""
-    if not 0.1 < train_frac < 0.9:
-        raise ValueError(f"train_frac must be in (0.1, 0.9), got {train_frac}")
+    if not _TRAIN_FRAC_MIN < train_frac < _TRAIN_FRAC_MAX:
+        raise ValueError(
+            f"train_frac must be in ({_TRAIN_FRAC_MIN}, {_TRAIN_FRAC_MAX}), got {train_frac}"
+        )
     empty = {
         "name": spec.name,
         "train_expectancy": 0.0,
@@ -328,7 +333,7 @@ def score_edge_spec_oos(
         deceptive=deceptive,
         score_mbo=score_mbo,
     )
-    if truth.height < 20:
+    if truth.height < _MIN_TRUTH_ROWS_FOR_OOS:
         return empty
     cut = int(truth.height * train_frac)
     purge = int(spec.exec_config().max_hold_buckets)

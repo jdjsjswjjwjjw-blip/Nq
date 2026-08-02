@@ -37,6 +37,7 @@ _TRADE = MboAction.TRADE.value
 _BID = "B"
 _NEAR_TICKS = 2  # قرب VAH/VAL بعدد تيكات NQ (كل تيك = 0.25$)
 _REF_PRICE: Final = 20_000_000_000.0
+_HEARTBEAT_LARGE_EVENT_THRESHOLD: Final = 100_000
 
 
 class MarketPhase(IntEnum):
@@ -537,7 +538,7 @@ def build_tick_stream(  # noqa: PLR0912, PLR0915
     if log is not None:
         mode = "كل حدث" if emit_every else f"snapshot كل {emit_interval_ns:,}ns"
         log.op(f"بدء آلة الحالة حدث-بحدث: {total:,} حدث · إصدار={mode}")
-    hb_every = 50_000 if total > 100_000 else (500 if total else 1)
+    hb_every = 50_000 if total > _HEARTBEAT_LARGE_EVENT_THRESHOLD else (500 if total else 1)
     next_hb = hb_every
 
     current_bucket: int | None = None

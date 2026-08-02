@@ -5,7 +5,7 @@ from __future__ import annotations
 import polars as pl
 
 from nq.models.tick_stream import MarketPhase, MaskPath, build_tick_stream
-from tests.mbo_factory import Event, make_stream
+from tests.mbo_factory import Event, make_stream, random_add_cancel_stream
 
 
 def _paired_mbo(n: int) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -32,11 +32,6 @@ def _paired_mbo(n: int) -> tuple[pl.DataFrame, pl.DataFrame]:
 
 def test_tick_stream_snapshot_emit_scales() -> None:
     """على timestamps حقيقية: snapshots لكل ثانية << عدد الأحداث."""
-    import polars as pl
-
-    from nq.models.tick_stream import build_tick_stream
-    from tests.mbo_factory import random_add_cancel_stream
-
     n = 20_000
     nq = random_add_cancel_stream(n, seed=9)
     start = 1_700_000_000_000_000_000

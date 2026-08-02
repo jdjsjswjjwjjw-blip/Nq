@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
-from nq.contracts.mbo import PRICE_SCALE
+from nq.contracts.mbo import MBO_SCHEMA, PRICE_SCALE, validate_mbo_frame
 from nq.simulation.deceptive_liquidity import (
     DeceptiveLiquidityConfig,
     deceptive_features_by_bucket,
@@ -16,7 +16,7 @@ from nq.simulation.edge_execution_plan import (
     EdgeExecConfig,
     EdgeSearchSpec,
     _plan_levels,
-    run_edge_plan,
+    score_edge_spec_oos,
     search_best_edge_spec,
     simulate_edge_trades,
     summarize_edge_trades,
@@ -27,7 +27,7 @@ from tests.mbo_factory import make_stream
 
 
 def _px(dollars: float) -> int:
-    return int(round(dollars / PRICE_SCALE))
+    return round(dollars / PRICE_SCALE)
 
 
 def test_score_marks_short_life_cancel_as_deceptive() -> None:
@@ -79,8 +79,6 @@ def test_filter_keeps_trades_drops_full_spoof_lifecycle() -> None:
             w_storm=0.0,
         ),
     )
-    from nq.contracts.mbo import MBO_SCHEMA, validate_mbo_frame
-
     validate_mbo_frame(cleaned)
     assert set(cleaned.columns) == set(MBO_SCHEMA)
     actions = [str(a) for a in cleaned["action"].to_list()]
@@ -238,8 +236,6 @@ def test_search_rejects_ineligible_grid() -> None:
 
 def test_oos_simulations_are_independent() -> None:
     """محاكاة التدريب لا تحجب صفقات الاختبار عبر القطع."""
-    from nq.simulation.edge_execution_plan import score_edge_spec_oos
-
     mbo = _session_with_imbalance(60)
     spec = EdgeSearchSpec(
         name="hold2_rr2",

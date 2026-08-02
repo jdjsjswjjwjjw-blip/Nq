@@ -70,7 +70,7 @@ def _thesis_direction(states: pl.DataFrame) -> pl.Series:
     return states.select(dir_expr.alias("thesis_dir"))["thesis_dir"]
 
 
-def build_market_truth_frame(  # noqa: PLR0915
+def build_market_truth_frame(  # noqa: PLR0912, PLR0915
     mbo: pl.DataFrame,
     *,
     interval_ns: int,

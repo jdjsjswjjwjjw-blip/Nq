@@ -134,11 +134,20 @@ def run_coverage_on_features(
     nq_desc = mbo_window_descriptors(
         nq, interval_ns=interval_ns, progress=log, progress_label="M9-NQ-desc"
     )
-    mnq_desc = mbo_window_descriptors(
-        mnq, interval_ns=interval_ns, progress=log, progress_label="M9-MNQ-desc"
-    )
     _time_cols = {AVAILABILITY_TS, "bucket_start", "bucket_end"}
-    mnq_renamed = mnq_desc.rename({c: f"mnq_{c}" for c in mnq_desc.columns if c not in _time_cols})
+    if nq is mnq:
+        if log is not None:
+            log.op("M9: nq_only — إعادة استخدام واصفات NQ لـ MNQ (بدون إعادة بناء)")
+        mnq_renamed = nq_desc.rename(
+            {c: f"mnq_{c}" for c in nq_desc.columns if c not in _time_cols}
+        )
+    else:
+        mnq_desc = mbo_window_descriptors(
+            mnq, interval_ns=interval_ns, progress=log, progress_label="M9-MNQ-desc"
+        )
+        mnq_renamed = mnq_desc.rename(
+            {c: f"mnq_{c}" for c in mnq_desc.columns if c not in _time_cols}
+        )
     combined_desc = nq_desc.join(mnq_renamed, on=AVAILABILITY_TS, how="left")
 
     if log is not None:
