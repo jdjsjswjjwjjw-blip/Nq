@@ -238,9 +238,9 @@ def test_search_and_strategy_smoke() -> None:
     assert best is not None
     assert "oos_expectancy" in row
 
+    # التوافق: liquidity_edge يفوّض لـ vp_auction المتصل
     result = run_liquidity_edge_research(
         mbo,
-        interval_ns=1_000_000_000,
         train_frac=0.5,
         min_oos_trades=0,
         min_oos_rr=0.0,
@@ -249,8 +249,9 @@ def test_search_and_strategy_smoke() -> None:
         deceptive=DeceptiveLiquidityConfig(storm_min_events=10_000),
         quiet=True,
     )
+    assert result.vp.with_execution is True
     assert result.raw_mbo_rows == mbo.height
-    assert "Liquidity Edge" in result.report_md
+    assert "Volume Profile" in result.report_md or "vp" in result.report_md.lower()
     summary = summarize_edge_trades(result.trades)
     assert "expectancy" in summary
     assert np.isfinite(summary["expectancy"]) or summary["n_trades"] == 0.0

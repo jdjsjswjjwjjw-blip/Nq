@@ -1,8 +1,13 @@
-"""Volume Profile / Auction كطبقة بحث داخل الخط الموحّد.
+"""Volume Profile / Auction — مسار واحد متصل (إشارة → تضليل → هولد → تنفيذ R:R).
 
-المسار الأساسي يبني إشارات ``vp_*`` عبر ``run_research_pipeline``. هذا الملف
-يركّز الفرز على فرضيات الملف الحجمي **باختيار walk-forward purged** (وليس
-شاشة عيّنة كاملة وحدها) — نفس صرامة FB/FVG.
+ليست طبقة منفصلة عن المشروع: نفس الخط الموحّد ``run_research_pipeline`` ثم
+امتداد تنفيذي داخل نفس الاستراتيجية:
+
+1. تنظيف MBO بفلتر التضليل العلمي (سببي).
+2. بناء ``vp_*`` + SSL‖M9‖ألفا عبر الخط الموحّد.
+3. اختيار إشارة VP بـ walk-forward purged.
+4. حكم السوق بعد هولد + بحث دخول/خروج بـ R:R هيكلي (VAL/VAH).
+5. دمج أعمدة التنفيذ على نفس ``features`` (asof) — بلا تشعّب مسارات.
 """
 
 from __future__ import annotations
@@ -15,6 +20,8 @@ import polars as pl
 
 from nq.alpha.discovery import AlphaDiscovery
 from nq.core.temporal_policy import TemporalPolicy
+from nq.contracts.temporal import AVAILABILITY_TS
+from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
@@ -23,8 +30,23 @@ from nq.research.orchestrator import (
     UnifiedResearchResult,
     run_research_pipeline,
 )
-from nq.research.progress import resolve_progress
+from nq.research.progress import ProgressLike, resolve_progress
 from nq.research.unified import UnifiedResearchReport
+from nq.simulation.deceptive_liquidity import (
+    DECEPTIVE_FEATURE_COLUMNS,
+    DeceptiveLiquidityConfig,
+    deceptive_features_by_bucket,
+    filter_deceptive_liquidity,
+)
+from nq.simulation.edge_execution_plan import (
+    EDGE_TRADE_COLUMNS,
+    EdgeSearchSpec,
+    default_edge_search_grid,
+    run_edge_plan,
+    search_best_edge_spec,
+    summarize_edge_trades,
+)
+from nq.simulation.market_truth import MARKET_TRUTH_COLUMNS
 from nq.strategies.fvg_hypothesis import walk_forward_select_hypotheses
 
 _VP_AUCTION_FOCUS = (
@@ -37,10 +59,28 @@ _VP_AUCTION_FOCUS = (
     "nq_delta",
 )
 
+#: إشارات VP بعد بوابة الهولد/التضليل — جزء من نفس أنطولوجيا الفرز.
+_VP_GATED_FOCUS = (
+    "vp_flip_gated",
+    "vp_imbalance_gated",
+    "vp_expansion_gated",
+    "entry_gate",
+    "market_true",
+)
+
+_EXEC_JOIN_COLUMNS = (
+    *DECEPTIVE_FEATURE_COLUMNS,
+    *MARKET_TRUTH_COLUMNS,
+    *EDGE_TRADE_COLUMNS,
+    "vp_flip_gated",
+    "vp_imbalance_gated",
+    "vp_expansion_gated",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class VpAuctionResearchResult:
-    """غلاف مريح فوق ``UnifiedResearchResult`` لتركيز Volume Profile / Auction."""
+    """نتيجة VP المتصلة: بحث إشارة + طبقة تنفيذ R:R على نفس المخرجات."""
 
     features: pl.DataFrame
     alpha: AlphaDiscovery
@@ -54,38 +94,97 @@ class VpAuctionResearchResult:
     oos_n: int
     best_signal: str | None
     exploratory_only: bool
+    # طبقة التنفيذ (متصلة — ليست مسارًا بديلًا)
+    with_execution: bool
+    raw_mbo_rows: int
+    cleaned_mbo_rows: int
+    edge_search_table: pl.DataFrame
+    best_edge_spec: EdgeSearchSpec | None
+    best_edge_row: dict[str, float | str]
+    edge_trades: pl.DataFrame
+    edge_summary: dict[str, float]
 
-    @classmethod
-    def from_unified(
-        cls,
-        result: UnifiedResearchResult,
-        *,
-        signal_columns: tuple[str, ...],
-        fold_df: pl.DataFrame,
-        oos_ic: float,
-        oos_pvalue: float,
-        oos_n: int,
-        best_signal: str | None,
-        exploratory_only: bool,
-        report: ResearchReport,
-    ) -> VpAuctionResearchResult:
-        return cls(
-            features=result.features,
-            alpha=result.alpha,
-            ssl=result.ssl,
-            report=report,
-            unified=result.report,
-            signal_columns=signal_columns,
-            fold_df=fold_df,
-            oos_ic=oos_ic,
-            oos_pvalue=oos_pvalue,
-            oos_n=oos_n,
-            best_signal=best_signal,
-            exploratory_only=exploratory_only,
+
+def _load_nq(
+    nq: pl.DataFrame | str | Path,
+    *,
+    max_rows: int | None,
+    progress: ProgressLike | None,
+) -> pl.DataFrame:
+    return load_mbo_frame(nq, max_rows=max_rows, progress=progress)
+
+
+def _attach_execution_layer(
+    features: pl.DataFrame,
+    edge_frame: pl.DataFrame,
+) -> pl.DataFrame:
+    """يلحق أعمدة التضليل/الحكم/التنفيذ على إطار البحث asof خلفي."""
+    if features.height == 0:
+        return features
+    want = [c for c in _EXEC_JOIN_COLUMNS if c in edge_frame.columns]
+    if not want or AVAILABILITY_TS not in edge_frame.columns:
+        return features
+    right = edge_frame.select([AVAILABILITY_TS, *want]).sort(AVAILABILITY_TS)
+    left = features.sort(AVAILABILITY_TS)
+    drop_existing = [c for c in want if c in left.columns]
+    if drop_existing:
+        left = left.drop(drop_existing)
+    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
+    # بوابات صفر عند غياب الهولد
+    fill_zero = [
+        c
+        for c in (
+            "entry_gate",
+            "hold_ok",
+            "market_true",
+            "market_false",
+            "edge_signal",
+            "vp_flip_gated",
+            "vp_imbalance_gated",
+            "vp_expansion_gated",
         )
+        if c in joined.columns
+    ]
+    if fill_zero:
+        joined = joined.with_columns([pl.col(c).fill_null(0.0) for c in fill_zero])
+    return joined
 
 
-def run_vp_auction_research(
+def _with_gated_vp_columns(edge_frame: pl.DataFrame, features: pl.DataFrame) -> pl.DataFrame:
+    """يبني إشارات VP مبوّبة بالهولد على إطار التنفيذ قبل الدمج."""
+    # نحتاج vp_* من features asof على edge buckets
+    vp_cols = [
+        c
+        for c in ("vp_flip_to_imbalance", "vp_imbalance", "vp_expansion")
+        if c in features.columns
+    ]
+    work = edge_frame
+    if vp_cols and AVAILABILITY_TS in features.columns:
+        right = features.select([AVAILABILITY_TS, *vp_cols]).sort(AVAILABILITY_TS)
+        left = work.sort(AVAILABILITY_TS)
+        drop_existing = [c for c in vp_cols if c in left.columns]
+        if drop_existing:
+            left = left.drop(drop_existing)
+        work = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
+        work = work.with_columns([pl.col(c).fill_null(0.0) for c in vp_cols])
+    gate = pl.col("entry_gate") if "entry_gate" in work.columns else pl.lit(0.0)
+    exprs: list[pl.Expr] = []
+    if "vp_flip_to_imbalance" in work.columns:
+        exprs.append((pl.col("vp_flip_to_imbalance") * gate).alias("vp_flip_gated"))
+    else:
+        exprs.append(pl.lit(0.0).alias("vp_flip_gated"))
+    if "vp_imbalance" in work.columns:
+        exprs.append((pl.col("vp_imbalance") * gate).alias("vp_imbalance_gated"))
+    else:
+        exprs.append(pl.lit(0.0).alias("vp_imbalance_gated"))
+    if "vp_expansion" in work.columns:
+        exprs.append((pl.col("vp_expansion") * gate).alias("vp_expansion_gated"))
+    else:
+        exprs.append(pl.lit(0.0).alias("vp_expansion_gated"))
+    return work.with_columns(exprs)
+
+
+def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     nq: pl.DataFrame | str | Path,
     mnq: pl.DataFrame | str | Path | None = None,
     *,
@@ -100,21 +199,48 @@ def run_vp_auction_research(
     output_dir: Path | str | None = None,
     quiet: bool = False,
     exploratory_full_sample: bool = False,
+    # —— طبقة التنفيذ المتصلة (افتراضيًا مفعّلة — مسار واحد) ——
+    with_execution: bool = True,
+    drop_deceptive: bool = True,
+    deceptive: DeceptiveLiquidityConfig | None = None,
+    edge_grid: tuple[EdgeSearchSpec, ...] | None = None,
+    edge_train_frac: float = 0.6,
+    min_oos_trades: int = 3,
+    min_oos_rr: float = 2.0,
 ) -> VpAuctionResearchResult:
-    """يشغّل فرضيات VP عبر الخط الموحّد ثم يختار بـ walk-forward OOS.
+    """مسار VP المتصل: خط موحّد + تضليل + هولد + بحث R:R داخل نفس الاستراتيجية.
 
-    ``exploratory_full_sample=True`` يبقي شاشة العيّنة الكاملة للتقرير فقط؛
-    الحكم الإحصائي يبقى من مسار WF (ما لم تُفرَّغ المرشّحات).
+    ``with_execution=False`` يبقي السلوك البحثي القديم (IC فقط) للتوافق مع الاختبارات
+    الخفيفة؛ الافتراضي ``True`` لأن الاستراتيجية كاملة تشمل التنفيذ.
     """
     generator = rng if rng is not None else np.random.default_rng(0)
     log = resolve_progress(None, quiet=quiet)
+    deco_cfg = deceptive if deceptive is not None else DeceptiveLiquidityConfig()
+
+    log.step("VP: تحميل MBO")
+    raw = _load_nq(nq, max_rows=max_rows, progress=log)
+    raw_n = raw.height
+    if drop_deceptive:
+        log.step("VP: فلتر التضليل العلمي", "داخل استراتيجية الملف الحجمي")
+        cleaned = filter_deceptive_liquidity(raw, config=deco_cfg)
+    else:
+        cleaned = raw
+    cleaned_n = cleaned.height
+
+    partner: pl.DataFrame | str | Path
+    if mnq is None:
+        partner = cleaned
+    elif isinstance(mnq, (str, Path)):
+        partner = _load_nq(mnq, max_rows=max_rows, progress=log)
+    else:
+        partner = mnq.head(max_rows) if max_rows is not None else mnq
 
     cfg = PipelineConfig(
         include_auction_vp=True,
         include_failed_fvg=False,
         include_failed_breakout=False,
         cross_market_mode="nq_only" if mnq is None else "dual",
-        max_rows=max_rows,
+        max_rows=None,  # القص تم عند التحميل
         horizon=horizon,
         alpha=alpha,
         n_permutations=n_permutations,
@@ -123,9 +249,8 @@ def run_vp_auction_research(
         signal_columns=_VP_AUCTION_FOCUS,
         quiet=quiet,
     )
-    partner = mnq if mnq is not None else nq
     result = run_research_pipeline(
-        nq,
+        cleaned,
         partner,
         config=cfg,
         signal_columns=_VP_AUCTION_FOCUS,
@@ -134,12 +259,74 @@ def run_vp_auction_research(
     )
 
     interval_ns = int(cfg.interval_ns)
+    features = result.features
+
+    # —— طبقة التنفيذ المتصلة ——
+    edge_table = pl.DataFrame()
+    best_edge: EdgeSearchSpec | None = None
+    best_edge_row: dict[str, float | str] = {}
+    edge_trades = pl.DataFrame()
+    edge_summary: dict[str, float] = {
+        "n_trades": 0.0,
+        "win_rate": 0.0,
+        "avg_rr_planned": 0.0,
+        "expectancy": 0.0,
+        "avg_pnl": 0.0,
+        "profit_factor": 0.0,
+    }
+
+    if with_execution:
+        log.step("VP: حكم السوق + بحث R:R", "امتداد متصل لنفس الاستراتيجية")
+        specs = edge_grid if edge_grid is not None else default_edge_search_grid()
+        edge_table, best_edge, best_edge_row = search_best_edge_spec(
+            cleaned,
+            interval_ns=interval_ns,
+            grid=specs,
+            train_frac=edge_train_frac,
+            deceptive=deco_cfg,
+            progress=log,
+            min_oos_trades=min_oos_trades,
+            min_oos_rr=min_oos_rr,
+        )
+        if best_edge is not None:
+            edge_trades = run_edge_plan(
+                cleaned,
+                interval_ns=interval_ns,
+                truth_cfg=best_edge.truth_config(),
+                exec_cfg=best_edge.exec_config(),
+                deceptive=deco_cfg,
+                progress=log,
+            )
+        else:
+            # إطار حكم بدون صفقة — لدمج الأعمدة على الميزات
+            edge_trades = run_edge_plan(
+                cleaned,
+                interval_ns=interval_ns,
+                deceptive=deco_cfg,
+                progress=log,
+            )
+        edge_summary = summarize_edge_trades(edge_trades)
+        edge_trades = _with_gated_vp_columns(edge_trades, features)
+        # ألحق ميزات التضليل إن نقصت من خطة التنفيذ
+        if "deceptive_score" not in edge_trades.columns:
+            deco = deceptive_features_by_bucket(
+                cleaned, interval_ns=interval_ns, config=deco_cfg, progress=log
+            )
+            if deco.height and AVAILABILITY_TS in deco.columns:
+                edge_trades = edge_trades.join_asof(
+                    deco.sort(AVAILABILITY_TS),
+                    on=AVAILABILITY_TS,
+                    strategy="backward",
+                )
+        features = _attach_execution_layer(features, edge_trades)
+
+    focus = _VP_AUCTION_FOCUS + (_VP_GATED_FOCUS if with_execution else ())
     policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window, horizon=horizon)
     embargo = policy.embargo_time_units(interval_ns=interval_ns)
-    candidates = tuple(c for c in _VP_AUCTION_FOCUS if c in result.features.columns)
+    candidates = tuple(c for c in focus if c in features.columns)
     log.step("VP walk-forward selection", f"candidates={len(candidates)}")
     fold_df, oos_ic, oos_p, oos_n, best = walk_forward_select_hypotheses(
-        result.features,
+        features,
         candidates,
         price_col="nq_close",
         horizon=horizon,
@@ -153,32 +340,55 @@ def run_vp_auction_research(
     )
 
     assistant = ResearchAssistant(alpha=alpha)
-    detail = (
-        f"best_oos={best!r}; oos_ic={oos_ic:.4g}; oos_p={oos_p:.4g}; "
-        f"n={oos_n}; exploratory_full_sample={exploratory_full_sample}; "
-        f"horizon={horizon}; selection_aware_null=True"
-    )
-    evidence = Evidence(
-        id="vp_search:oos_ic",
-        source="vp_auction_walk_forward",
-        metric="IC",
-        value=oos_ic,
-        pvalue=oos_p,
-        sample_size=oos_n,
-        detail=detail,
-    )
-    claim = (
-        f"فرضية Volume Profile المختارة بـ walk-forward (best={best!r}) "
-        f"تحقق IC خارج العينة = {oos_ic:.4g} (p={oos_p:.4g})."
-    )
     findings = [
         assistant.generate_hypothesis(
-            claim,
-            evidence,
+            (
+                f"فرضية Volume Profile المختارة بـ walk-forward (best={best!r}) "
+                f"تحقق IC خارج العينة = {oos_ic:.4g} (p={oos_p:.4g})."
+            ),
+            Evidence(
+                id="vp_search:oos_ic",
+                source="vp_auction_walk_forward",
+                metric="IC",
+                value=oos_ic,
+                pvalue=oos_p,
+                sample_size=oos_n,
+                detail=(
+                    f"best_oos={best!r}; oos_ic={oos_ic:.4g}; oos_p={oos_p:.4g}; "
+                    f"n={oos_n}; with_execution={with_execution}; "
+                    f"mbo={raw_n}→{cleaned_n}; selection_aware_null=True"
+                ),
+            ),
             requires_significance=True,
             category="vp_auction_search",
         )
     ]
+    if with_execution:
+        oos_exp = float(best_edge_row.get("oos_expectancy", 0.0) or 0.0)
+        oos_rr = float(best_edge_row.get("oos_avg_rr", 0.0) or 0.0)
+        oos_edge_n = float(best_edge_row.get("oos_n", 0.0) or 0.0)
+        findings.append(
+            assistant.generate_hypothesis(
+                (
+                    f"خطة التنفيذ المتصلة ({best_edge.name if best_edge else 'none'}) "
+                    f"expectancy OOS={oos_exp:.4g} · R:R={oos_rr:.4g} · n={oos_edge_n:.0f}."
+                ),
+                Evidence(
+                    id="vp_search:edge_oos_expectancy",
+                    source="vp_auction_execution",
+                    metric="expectancy",
+                    value=oos_exp,
+                    sample_size=int(oos_edge_n),
+                    detail=(
+                        f"best_edge={best_edge.name if best_edge else None}; "
+                        f"avg_rr={oos_rr:.4g}; pf={best_edge_row.get('oos_profit_factor', 0)}; "
+                        f"min_oos_rr={min_oos_rr}"
+                    ),
+                ),
+                requires_significance=False,
+                category="vp_auction_execution",
+            )
+        )
     if exploratory_full_sample:
         findings.append(
             assistant.generate_hypothesis(
@@ -196,14 +406,32 @@ def run_vp_auction_research(
         )
     report = assistant.write_report(
         findings,
-        title="Volume Profile / Auction — Walk-Forward Selection",
+        title="Volume Profile / Auction — Signal + Execution (Connected)",
     )
+    if with_execution:
+        report_md = report.to_markdown() + "\n".join(
+            [
+                "",
+                "## طبقة التنفيذ المتصلة (ليست مسارًا منفصلًا)",
+                "- فلتر تضليل → نفس MBO الذي بنى `vp_*`.",
+                "- هولد سيولة حقيقية + `entry_gate` قبل أي صفقة.",
+                "- وقف/هدف هيكلي VAL/VAH أو مضاعف R (حد أدنى R:R قوي).",
+                f"- MBO raw→cleaned: `{raw_n}` → `{cleaned_n}`",
+                f"- edge n_trades: `{edge_summary['n_trades']:.0f}` · "
+                f"win_rate=`{edge_summary['win_rate']:.4g}` · "
+                f"avg_rr=`{edge_summary['avg_rr_planned']:.4g}` · "
+                f"expectancy=`{edge_summary['expectancy']:.4g}`",
+                "",
+            ]
+        )
+    else:
+        report_md = report.to_markdown()
 
     if output_dir is not None:
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         fold_df.write_parquet(out / "vp_fold_selections.parquet")
-        (out / "vp_walk_forward_report.md").write_text(report.to_markdown(), encoding="utf-8")
+        (out / "vp_walk_forward_report.md").write_text(report_md, encoding="utf-8")
         summary = pl.DataFrame(
             {
                 "best_signal": [best],
@@ -211,21 +439,46 @@ def run_vp_auction_research(
                 "oos_pvalue": [oos_p],
                 "oos_n": [oos_n],
                 "exploratory_full_sample": [exploratory_full_sample],
+                "with_execution": [with_execution],
+                "raw_mbo_rows": [raw_n],
+                "cleaned_mbo_rows": [cleaned_n],
+                "best_edge_spec": [best_edge.name if best_edge else None],
+                "edge_oos_expectancy": [float(best_edge_row.get("oos_expectancy", 0.0) or 0.0)],
+                "edge_oos_rr": [float(best_edge_row.get("oos_avg_rr", 0.0) or 0.0)],
+                "edge_n_trades": [edge_summary["n_trades"]],
             }
         )
         summary.write_parquet(out / "vp_oos_summary.parquet")
-        log.note(f"مخرجات WF محفوظة في {out.resolve()}")
+        # حدّث features.parquet إن كان الخط قد كتبه — أعد الحفظ بعد دمج التنفيذ
+        features.write_parquet(out / "features.parquet")
+        if with_execution and edge_table.height:
+            edge_table.write_parquet(out / "edge_search_grid.parquet")
+        if with_execution and edge_trades.height:
+            edge_trades.write_parquet(out / "edge_trades.parquet")
+        log.note(f"مخرجات VP المتصلة محفوظة في {out.resolve()}")
 
-    return VpAuctionResearchResult.from_unified(
-        result,
-        signal_columns=_VP_AUCTION_FOCUS,
+    # أعد بناء ResearchReport من النص الموسّع إن لزم — نحتفظ بالكائن مع findings
+    return VpAuctionResearchResult(
+        features=features,
+        alpha=result.alpha,
+        ssl=result.ssl,
+        report=report,
+        unified=result.report,
+        signal_columns=focus,
         fold_df=fold_df,
         oos_ic=oos_ic,
         oos_pvalue=oos_p,
         oos_n=oos_n,
         best_signal=best,
         exploratory_only=exploratory_full_sample,
-        report=report,
+        with_execution=with_execution,
+        raw_mbo_rows=raw_n,
+        cleaned_mbo_rows=cleaned_n,
+        edge_search_table=edge_table,
+        best_edge_spec=best_edge,
+        best_edge_row=best_edge_row,
+        edge_trades=edge_trades,
+        edge_summary=edge_summary,
     )
 
 

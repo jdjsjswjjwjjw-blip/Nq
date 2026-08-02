@@ -104,8 +104,8 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 | `run_fail_breakout --search --understand` | نفس البحث + طبقات فهم كمية (OOS) | نعم — تشخيص بعد الاختيار فقط | + `understanding/` |
 | `run_fail_breakout_days` | نفس FB على شرائح يومية متوازية | نعم — كل يوم كون سببي مغلق؛ لا اختيار عبر الأيام | `manifest.json` + مجلد/يوم |
 | `run_symbolic_search` | DEAP + gplearn (معادلات بلا `if`) | نعم — WF فوق ميزات الخط · يحتاج `nq[gp]` | programs.json + folds + signals |
-| `run_vp_auction` + `configs/vp_auction.toml` | VP + توازن/اختلال | نعم — أمر تشغيل منفصل فقط | كاملة (SSL‖M9‖ألفا) |
-| `run_liquidity_edge` | فلتر تضليل + حكم سوق + دخول/خروج R:R | نعم — هولد بلا ملاحقة كل أمر؛ مستويات VAL/VAH | تقرير + شبكة + صفقات |
+| `run_vp_auction` + `configs/vp_auction.toml` | VP + توازن/اختلال + تضليل + هولد + R:R | نعم — مسار واحد متصل داخل الاستراتيجية | كاملة + edge_* |
+| `run_liquidity_edge` | غلاف توافق → نفس `run_vp_auction` | نعم — ليس تشعّبًا منفصلًا | نفس مخرجات VP |
 
 > لو عايز الكل شغّال → `run_week`.  
 > لو عايز فرضية واحدة للفرز → الأمر المنفصل المناسب (نفس المعالجة والمخرجات).  
@@ -114,7 +114,7 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 > لو عايز يولّف استراتيجيات volume-first + hold داخل الكسر → `--search --compose-hold`.  
 > لو عايز **تفسير كمي بعد الاختيار** (لماذا فازت الإشارة؟) → أضف `--understand` مع `--search`.  
 > لو عايز **معادلات رمزية بلا if** → `pip install 'nq[gp]'` ثم `run_symbolic_search`.  
-> لو عايز **إدج تنفيذي** (تضليل + صدق السوق + R:R قوي) → `run_liquidity_edge`.
+> لو عايز **VP كامل متصل** (إشارة + تضليل + تنفيذ R:R) → `run_vp_auction` (الافتراضي).
 
 ---
 
@@ -414,25 +414,29 @@ python scripts/run_fail_breakout_days.py \
 
 ---
 
-### 4) أمر منفصل: Volume Profile + التوازن/الاختلال (`run_vp_auction`)
+### 4) Volume Profile المتصل (`run_vp_auction`)
 
-أمر تشغيل **منفصل** لفرضيات الملف الحجمي والسوق المتوازن/غير المتوازن (NQ فقط).  
-نفس المنطق: داخل المنظومة، معالجة كاملة، مخرجات كاملة — مع تضييق الفرز على إشارات VP.
+أمر تشغيل لفرضيات الملف الحجمي — **مسار واحد**: إشارة مزاد → فلتر تضليل → هولد → دخول/خروج R:R.  
+`run_liquidity_edge` غلاف توافق فقط (يفوّض لنفس الدالة).
 
-| إشارة | المعنى |
-|--------|--------|
-| `vp_balance` | `+1` متوازن / `−1` مختلّ |
-| `vp_imbalance` | `1` عند الاختلال |
-| `vp_expansion` | تمدّد المدى |
-| `vp_close_in_value` | إغلاق داخل [VAL, VAH] |
-| `vp_flip_to_imbalance` | انتقال توازن → اختلال |
+| طبقة | المعنى |
+|------|--------|
+| `vp_balance` / `vp_imbalance` / … | إشارات المزاد على VA التراكمي |
+| فلتر تضليل | إسقاط أوامر وهمية قبل بناء الميزات (TRADE لا تُمس) |
+| `entry_gate` / `market_true` | هولد سيولة حقيقية + حكم صدق السوق |
+| `vp_*_gated` | نفس إشارة VP × بوابة الهولد |
+| `edge_*` | وقف/هدف هيكلي VAL/VAH أو مضاعف R (بحث OOS) |
 
 ```bash
-# أمر منفصل — مخرجات كاملة في data/runs/vp_auction
+# المسار الكامل المتصل (افتراضي)
 python scripts/run_vp_auction.py \
   --nq /path/to/nq.parquet \
   --max-rows 500000 \
+  --min-oos-rr 2.5 \
   --output data/runs/vp_auction
+
+# IC/WF فقط بدون طبقة التنفيذ
+python scripts/run_vp_auction.py --nq ... --no-execution
 
 # أو عبر run_week + إعداد مركّز
 python scripts/run_week.py \
@@ -443,29 +447,6 @@ python scripts/run_week.py \
 ```
 
 > في الخط العام (`configs/research.toml`): `include_auction_vp = true` يُلحق إشارات VP **مع** باقي الإشارات، بدون استبدالها.
-
----
-
-### 4b) إدج السيولة التنفيذي (`run_liquidity_edge`)
-
-طبقة علمية فوق MBO تهدف لما طلبته صراحة:
-
-| طبقة | ماذا تفعل |
-|------|-----------|
-| فلتر التضليل | درجة + إسقاط لأوامر وهمية (وميض / سبوف / طعم modify / عدم مشاركة / عاصفة) — سببي؛ TRADE لا تُمس |
-| حكم السوق | بعد **هولد** سيولة حقيقية: `market_true` / `market_false` + `delta_instant` / `delta_cum` |
-| دخول/خروج | وقف/هدف هيكلي من VAL/VAH أو مضاعف R؛ شبكة بحث بحد أدنى R:R قوي (مش نقطة/نقطتين) |
-| لا ملاحقة | صفقة واحدة لكل نافذة؛ دخول فقط عند `entry_gate` بعد الهولد |
-
-```bash
-python scripts/run_liquidity_edge.py \
-  --nq /path/to/nq.parquet \
-  --max-rows 500000 \
-  --min-oos-rr 2.5 \
-  --output data/runs/liquidity_edge
-```
-
-مخرجات: `liquidity_edge_report.md` · `edge_search_grid.parquet` · `edge_trades.parquet` · `edge_oos_summary.parquet`.
 
 ---
 
@@ -630,8 +611,8 @@ Nq/
 │   ├── run_fail_breakout.py   # FB منفصل (+ --search فوليوم/SSL / --understand)
 │   ├── run_fail_breakout_days.py  # FB يوم-بيوم متوازٍ (ProcessPool · عزل سببي)
 │   ├── run_symbolic_search.py # DEAP + gplearn (معادلات بلا if · nq[gp])
-│   └── run_vp_auction.py      # أمر منفصل VP / توازن·اختلال (داخل المنظومة)
-│   └── run_liquidity_edge.py  # تضليل + حكم سوق + دخول/خروج R:R
+│   └── run_vp_auction.py      # VP متصل: إشارة + تضليل + هولد + R:R
+│   └── run_liquidity_edge.py  # غلاف توافق → نفس vp_auction
 ├── docs/
 │   ├── architecture.md
 │   └── data_contracts.md
