@@ -24,7 +24,6 @@ from nq.contracts.mbo import PRICE_SCALE
 from nq.research.progress import ProgressLike
 from nq.simulation.auction import (
     VP_PROFILE_INTERVAL_NS,
-    VP_SIGNAL_INTERVAL_NS,
     auction_action_states,
 )
 from nq.simulation.deceptive_liquidity import (
@@ -380,7 +379,7 @@ def score_edge_spec_oos(
     }
 
 
-def search_best_edge_spec(
+def search_best_edge_spec(  # noqa: PLR0912
     mbo: pl.DataFrame,
     *,
     interval_ns: int,

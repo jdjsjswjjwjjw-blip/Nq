@@ -36,7 +36,7 @@ from nq.models.tick_stream import TickStream
 from nq.research.assistant import LanguageModel, ResearchAssistant
 from nq.research.progress import PipelineProgress, resolve_progress
 from nq.research.unified import UnifiedResearchReport, build_unified_report
-from nq.simulation.auction import auction_signal_frame, VP_PROFILE_INTERVAL_NS
+from nq.simulation.auction import VP_PROFILE_INTERVAL_NS, auction_signal_frame
 from nq.simulation.bottom_book import (
     BOTTOM_BOOK_COLUMNS,
     attach_bottom_book_asof,
@@ -255,7 +255,10 @@ class PipelineConfig:
             filter_depth_noise=bool(raw.get("depth", {}).get("filter_noise", True)),
             include_bottom_book=bool(raw.get("depth", {}).get("include_bottom_book", True)),
             profile_interval_ns=int(
-                temporal.get("profile_interval_ns", signals.get("profile_interval_ns", VP_PROFILE_INTERVAL_NS))
+                temporal.get(
+                    "profile_interval_ns",
+                    signals.get("profile_interval_ns", VP_PROFILE_INTERVAL_NS),
+                )
             ),
         )
 

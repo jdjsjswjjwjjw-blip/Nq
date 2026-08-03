@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import polars as pl
 
@@ -24,7 +26,7 @@ from nq.simulation.edge_execution_plan import (
 )
 from nq.simulation.market_truth import MarketTruthConfig, build_market_truth_frame
 from nq.strategies.liquidity_edge import run_liquidity_edge_research
-from tests.mbo_factory import make_stream
+from tests.mbo_factory import make_stream, random_add_cancel_stream
 
 
 def _px(dollars: float) -> int:
@@ -150,10 +152,6 @@ def test_scored_frame_reused_for_filter_and_bucket_features(monkeypatch) -> None
 
 def test_score_deceptive_fast_path_handles_dense_book() -> None:
     """مسار BBO التزايدي لا ينهار على دفتر كثيف (سابقًا O(live) كل حدث)."""
-    import time
-
-    from tests.mbo_factory import random_add_cancel_stream
-
     frame = random_add_cancel_stream(20_000, seed=42)
     # أضف صفقات حتى لا يبقى المسار ADD/CANCEL فقط
     t0 = time.perf_counter()

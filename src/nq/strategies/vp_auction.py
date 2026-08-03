@@ -244,7 +244,11 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     log = resolve_progress(None, quiet=quiet)
     deco_cfg = deceptive if deceptive is not None else DeceptiveLiquidityConfig()
     sig_iv = int(interval_ns) if interval_ns is not None else VP_SIGNAL_INTERVAL_NS
-    prof_iv = int(profile_interval_ns) if profile_interval_ns is not None else VP_PROFILE_INTERVAL_NS
+    prof_iv = (
+        int(profile_interval_ns)
+        if profile_interval_ns is not None
+        else VP_PROFILE_INTERVAL_NS
+    )
 
     log.step("VP: تحميل MBO")
     raw = _load_nq(nq, max_rows=max_rows, progress=log)
@@ -395,13 +399,17 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
             )
         edge_summary = summarize_edge_trades(edge_trades)
         edge_trades = _with_gated_vp_columns(edge_trades, features)
-        if "deceptive_score" not in edge_trades.columns and deco_by_bucket is not None:
-            if deco_by_bucket.height and AVAILABILITY_TS in deco_by_bucket.columns:
-                edge_trades = edge_trades.join_asof(
-                    deco_by_bucket.sort(AVAILABILITY_TS),
-                    on=AVAILABILITY_TS,
-                    strategy="backward",
-                )
+        if (
+            "deceptive_score" not in edge_trades.columns
+            and deco_by_bucket is not None
+            and deco_by_bucket.height
+            and AVAILABILITY_TS in deco_by_bucket.columns
+        ):
+            edge_trades = edge_trades.join_asof(
+                deco_by_bucket.sort(AVAILABILITY_TS),
+                on=AVAILABILITY_TS,
+                strategy="backward",
+            )
         features = _attach_execution_layer(features, edge_trades)
 
     assistant = ResearchAssistant(alpha=alpha)

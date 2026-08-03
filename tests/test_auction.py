@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
 from nq.contracts.temporal import AVAILABILITY_TS
-from nq.simulation.auction import auction_fsm_columns, auction_signal_frame, auction_states
+from nq.simulation.auction import (
+    auction_action_states,
+    auction_fsm_columns,
+    auction_signal_frame,
+    auction_states,
+)
 from tests.mbo_factory import make_stream
 
 
@@ -137,7 +143,6 @@ def test_auction_action_states_joins_profile_onto_signal() -> None:
     events = [("T", "B", 100 + (i % 3), 2, 0) for i in range(40)]
     ts = list(range(0, 4000, 100))
     frame = make_stream(events, event_ts=ts, sequence=list(range(1, 41)))
-    from nq.simulation.auction import auction_action_states
 
     action = auction_action_states(
         frame,
@@ -202,7 +207,20 @@ def test_auction_fsm_setup_completes_balance_break_retest_expand() -> None:
             "vah": [101.0] * n,
             "poc": [100.0] * n,
             "val": [99.0] * n,
-            "bucket_volume": [10.0, 10.0, 10.0, 40.0, 12.0, 11.0, 10.0, 10.0, 20.0, 22.0, 25.0, 30.0],
+            "bucket_volume": [
+                10.0,
+                10.0,
+                10.0,
+                40.0,
+                12.0,
+                11.0,
+                10.0,
+                10.0,
+                20.0,
+                22.0,
+                25.0,
+                30.0,
+            ],
             "is_expansion": [
                 False,
                 False,
@@ -274,9 +292,6 @@ def test_auction_signal_frame_empty() -> None:
 
 
 def test_auction_signal_frame_rejects_profile_shorter_than_signal() -> None:
-    import pytest
-    from nq.simulation.auction import auction_action_states
-
     with pytest.raises(ValueError, match="profile_interval_ns"):
         auction_action_states(
             make_stream([("T", "B", 100, 1, 0)]),

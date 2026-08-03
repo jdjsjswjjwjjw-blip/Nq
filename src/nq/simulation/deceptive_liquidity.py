@@ -352,7 +352,9 @@ def filter_deceptive_liquidity(
     if progress is not None:
         progress.op(f"filter_deceptive_liquidity: events={frame.height:,}")
     scored_frame = (
-        scored if scored is not None else score_deceptive_events(frame, config=config, progress=progress)
+        scored
+        if scored is not None
+        else score_deceptive_events(frame, config=config, progress=progress)
     )
     if scored_frame.height == 0:
         cols = [c for c in MBO_SCHEMA if c in frame.columns]

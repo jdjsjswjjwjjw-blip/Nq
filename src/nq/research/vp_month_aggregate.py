@@ -19,7 +19,7 @@ import polars as pl
 from nq.simulation.edge_execution_plan import summarize_edge_trades
 
 
-def write_vp_month_aggregate(output_root: Path | str) -> Path:
+def write_vp_month_aggregate(output_root: Path | str) -> Path:  # noqa: PLR0912, PLR0915
     """يبني حكمًا نهائيًا وصفيًا من مجمل أيام ``output_root``."""
     root = Path(output_root)
     day_dirs = sorted(
@@ -53,8 +53,8 @@ def write_vp_month_aggregate(output_root: Path | str) -> Path:
                 "edge_n_trades": n_trades,
                 "raw_mbo_rows": int(summary.get("raw_mbo_rows") or 0),
                 "cleaned_mbo_rows": int(summary.get("cleaned_mbo_rows") or 0),
-                "signal_significant": bool(oos_p <= 0.05),
-                "edge_positive": bool(edge_exp > 0.0 and n_trades >= 3),
+                "signal_significant": bool(oos_p <= 0.05),  # noqa: PLR2004
+                "edge_positive": bool(edge_exp > 0.0 and n_trades >= 3),  # noqa: PLR2004
             }
         )
         if edge_path.exists():
@@ -101,7 +101,7 @@ def write_vp_month_aggregate(output_root: Path | str) -> Path:
     pooled_exp = float(pooled_summary["expectancy"])
     pooled_wr = float(pooled_summary["win_rate"])
     pooled_rr = float(pooled_summary["avg_rr_planned"])
-    has_edge = pooled_n >= 30 and pooled_exp > 0.0 and pooled_rr >= 2.0
+    has_edge = pooled_n >= 30 and pooled_exp > 0.0 and pooled_rr >= 2.0  # noqa: PLR2004
     verdict = (
         "EDGE_FOUND_POOLED"
         if has_edge

@@ -310,8 +310,14 @@ def auction_action_states(
         pl.lit(1.0),
     )
     touch = float(bound_touch_frac)
-    near_lower = (pl.col("low").cast(pl.Float64) - pl.col("val").cast(pl.Float64)).abs() <= touch * va_w
-    near_upper = (pl.col("high").cast(pl.Float64) - pl.col("vah").cast(pl.Float64)).abs() <= touch * va_w
+    near_lower = (
+        (pl.col("low").cast(pl.Float64) - pl.col("val").cast(pl.Float64)).abs()
+        <= touch * va_w
+    )
+    near_upper = (
+        (pl.col("high").cast(pl.Float64) - pl.col("vah").cast(pl.Float64)).abs()
+        <= touch * va_w
+    )
     # امتصاص شرائي عند VAL: بيع عدواني كثيف بلا كسر الإغلاق تحت القيمة.
     absorb_buy = near_lower & (pl.col("sell_volume") > pl.col("buy_volume")) & closed_in_value
     # امتصاص بيعي عند VAH: شراء عدواني كثيف بلا إغلاق فوق القيمة.
@@ -364,7 +370,7 @@ def auction_action_states(
     )
 
 
-def auction_fsm_columns(
+def auction_fsm_columns(  # noqa: PLR0912, PLR0915
     states: pl.DataFrame,
     *,
     retest_window: int = _DEFAULT_RETEST_WINDOW,
@@ -467,21 +473,23 @@ def auction_fsm_columns(
                 accel[i] = pending_dir
                 saw_accel = True
 
-        if age >= 1 and saw_accel and not saw_retest:
-            if near_mid and (bool(pullback[i]) or bool(in_value[i]) or absorb[i] != 0.0):
-                retest[i] = pending_dir
-                saw_retest = True
+        if (
+            age >= 1
+            and saw_accel
+            and not saw_retest
+            and near_mid
+            and (bool(pullback[i]) or bool(in_value[i]) or absorb[i] != 0.0)
+        ):
+            retest[i] = pending_dir
+            saw_retest = True
 
         if saw_retest and (bool(expansion[i]) or age >= 1):
-            delta_ok = (pending_dir > 0 and delta[i] >= 0) or (pending_dir < 0 and delta[i] <= 0)
-            if pending_dir > 0 and close[i] >= vah[i] and delta_ok:
-                expand[i] = pending_dir
-                setup[i] = pending_dir
-                pending_dir = 0.0
-                pending_i = -1
-                saw_accel = False
-                saw_retest = False
-            elif pending_dir < 0 and close[i] <= val[i] and delta_ok:
+            delta_ok = (pending_dir > 0 and delta[i] >= 0) or (
+                pending_dir < 0 and delta[i] <= 0
+            )
+            long_ok = pending_dir > 0 and close[i] >= vah[i] and delta_ok
+            short_ok = pending_dir < 0 and close[i] <= val[i] and delta_ok
+            if long_ok or short_ok:
                 expand[i] = pending_dir
                 setup[i] = pending_dir
                 pending_dir = 0.0

@@ -261,7 +261,8 @@ def run_vp_auction_day_parallel(
         from nq.research.vp_month_aggregate import write_vp_month_aggregate  # noqa: PLC0415
 
         final_path = write_vp_month_aggregate(root)
-        notes = list(manifest.notes) + (
+        notes = (
+            *manifest.notes,
             f"FINAL_RESULT pooled descriptive verdict: `{final_path.name}`",
             "Pooled expectancy uses concatenated per-day fills — not a cross-day re-fit.",
         )
