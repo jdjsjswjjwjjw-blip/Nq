@@ -3,10 +3,10 @@
 ليست طبقة منفصلة عن المشروع: نفس الخط الموحّد ``run_research_pipeline`` ثم
 امتداد تنفيذي داخل نفس الاستراتيجية:
 
-1. تنظيف MBO بفلتر التضليل (دورة أمر كاملة — بلا أشباح).
-2. بناء ``vp_*`` + SSL‖M9‖ألفا عبر الخط الموحّد.
-3. اختيار إشارة VP بـ walk-forward purged **قبل** التنفيذ.
-4. حكم السوق بعد هولد (درجات من الخام) + بحث R:R معزول OOS.
+1. تسجيل التضليل مرة واحدة من الخام → فلتر دفتر (دورة أمر كاملة) + براميل إدج.
+2. بناء ``vp_*`` + FSM مزاد (توازن→كسر→تسارع→ريتست→توسّع) + SSL‖M9‖ألفا.
+3. اختيار إشارة VP/FSM بـ walk-forward purged **قبل** التنفيذ.
+4. حكم السوق بعد هولد (درجات من الخام المُعاد استخدامها) + بحث R:R معزول OOS.
 5. دمج أعمدة التنفيذ للتقرير فقط — بلا تشعّب مسارات.
 """
 
@@ -31,11 +31,13 @@ from nq.research.orchestrator import (
 )
 from nq.research.progress import ProgressLike, resolve_progress
 from nq.research.unified import UnifiedResearchReport
+from nq.simulation.auction import auction_states
 from nq.simulation.deceptive_liquidity import (
     DECEPTIVE_FEATURE_COLUMNS,
     DeceptiveLiquidityConfig,
     deceptive_features_by_bucket,
     filter_deceptive_liquidity,
+    score_deceptive_events,
 )
 from nq.simulation.edge_execution_plan import (
     EdgeSearchSpec,
@@ -54,6 +56,9 @@ _VP_AUCTION_FOCUS = (
     "vp_close_in_value",
     "vp_flip_to_imbalance",
     "vp_pullback_defense",
+    "vp_auction_setup",
+    "vp_fsm_break",
+    "vp_fsm_retest",
     "nq_delta",
 )
 
@@ -229,12 +234,30 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     log.step("VP: تحميل MBO")
     raw = _load_nq(nq, max_rows=max_rows, progress=log)
     raw_n = raw.height
+    iv_early = int(interval_ns) if interval_ns is not None else 1_000_000_000
+    # تسجيل التضليل مرة واحدة لليوم — يُعاد استخدامه للفلتر + براميل الإدج.
+    scored_raw: pl.DataFrame | None = None
+    deco_by_bucket: pl.DataFrame | None = None
+    if drop_deceptive or with_execution:
+        log.step("VP: تسجيل التضليل مرة واحدة", f"events={raw_n:,}")
+        scored_raw = score_deceptive_events(raw, config=deco_cfg, progress=log)
     if drop_deceptive:
-        log.step("VP: فلتر التضليل العلمي", "إسقاط دورة الأمر الكاملة")
-        cleaned = filter_deceptive_liquidity(raw, config=deco_cfg, progress=log)
+        log.step("VP: فلتر التضليل العلمي", "إسقاط دورة الأمر الكاملة · reuse scored")
+        cleaned = filter_deceptive_liquidity(
+            raw, config=deco_cfg, progress=log, scored=scored_raw
+        )
     else:
         cleaned = raw
     cleaned_n = cleaned.height
+    if with_execution and scored_raw is not None:
+        log.step("VP: براميل التضليل (مرة واحدة)", f"interval_ns={iv_early}")
+        deco_by_bucket = deceptive_features_by_bucket(
+            raw,
+            interval_ns=iv_early,
+            config=deco_cfg,
+            progress=log,
+            scored=scored_raw,
+        )
 
     partner: pl.DataFrame | str | Path
     if mnq is None:
@@ -308,8 +331,9 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     }
 
     if with_execution:
-        log.step("VP: حكم السوق + بحث R:R", "بعد WF · درجات تضليل من الخام")
+        log.step("VP: حكم السوق + بحث R:R", "بعد WF · درجات تضليل من الخام (reuse)")
         specs = edge_grid if edge_grid is not None else default_edge_search_grid()
+        auction_day = auction_states(cleaned, interval_ns=iv, progress=log)
         edge_table, best_edge, best_edge_row = search_best_edge_spec(
             cleaned,
             interval_ns=iv,
@@ -320,6 +344,9 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
             progress=log,
             min_oos_trades=min_oos_trades,
             min_oos_rr=min_oos_rr,
+            auction=auction_day,
+            deceptive_frame=deco_by_bucket,
+            scored=scored_raw,
         )
         if best_edge is not None:
             edge_trades = run_edge_plan(
@@ -330,6 +357,8 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 deceptive=deco_cfg,
                 score_mbo=raw,
                 progress=log,
+                auction=auction_day,
+                deceptive_frame=deco_by_bucket,
             )
         else:
             edge_trades = run_edge_plan(
@@ -338,16 +367,15 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 deceptive=deco_cfg,
                 score_mbo=raw,
                 progress=log,
+                auction=auction_day,
+                deceptive_frame=deco_by_bucket,
             )
         edge_summary = summarize_edge_trades(edge_trades)
         edge_trades = _with_gated_vp_columns(edge_trades, features)
-        if "deceptive_score" not in edge_trades.columns:
-            deco = deceptive_features_by_bucket(
-                raw, interval_ns=iv, config=deco_cfg, progress=log
-            )
-            if deco.height and AVAILABILITY_TS in deco.columns:
+        if "deceptive_score" not in edge_trades.columns and deco_by_bucket is not None:
+            if deco_by_bucket.height and AVAILABILITY_TS in deco_by_bucket.columns:
                 edge_trades = edge_trades.join_asof(
-                    deco.sort(AVAILABILITY_TS),
+                    deco_by_bucket.sort(AVAILABILITY_TS),
                     on=AVAILABILITY_TS,
                     strategy="backward",
                 )

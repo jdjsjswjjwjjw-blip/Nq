@@ -108,6 +108,45 @@ def test_deceptive_bucket_noise_cum_is_causal() -> None:
     assert "real_liquidity_ratio" in feats.columns
 
 
+def test_scored_frame_reused_for_filter_and_bucket_features(monkeypatch) -> None:
+    """تسجيل التضليل مرة واحدة يكفي للفلتر + براميل الإدج."""
+    frame = make_stream(
+        [
+            ("A", "B", _px(100.0), 8, 1),
+            ("A", "A", _px(101.0), 4, 2),
+            ("C", "B", _px(100.0), 8, 1),
+            ("T", "B", _px(100.0), 1, 0),
+        ],
+        event_ts=[0, 1_000_000, 10_000_000, 20_000_000],
+    )
+    cfg = DeceptiveLiquidityConfig(
+        short_life_ns=50_000_000,
+        drop_score=0.2,
+        storm_min_events=100,
+    )
+    calls = {"n": 0}
+    real_score = score_deceptive_events
+
+    def _counting_score(*args, **kwargs):
+        calls["n"] += 1
+        return real_score(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "nq.simulation.deceptive_liquidity.score_deceptive_events",
+        _counting_score,
+    )
+    scored = _counting_score(frame, config=cfg)
+    assert calls["n"] == 1
+    cleaned = filter_deceptive_liquidity(frame, config=cfg, scored=scored)
+    feats = deceptive_features_by_bucket(
+        frame, interval_ns=1_000_000_000, config=cfg, scored=scored
+    )
+    assert calls["n"] == 1
+    validate_mbo_frame(cleaned)
+    assert feats.height >= 1
+    assert "deceptive_score" in feats.columns
+
+
 def _session_with_imbalance(n_buckets: int = 40) -> pl.DataFrame:
     """جلسة اصطناعية: صفقات داخل قيمة ثم تمدّد صاعد مع سيولة حقيقية."""
     events: list[tuple[str, str, int, int, int]] = []

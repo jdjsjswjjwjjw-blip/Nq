@@ -103,6 +103,11 @@ _VP_AUCTION_SIGNAL_COLUMNS = (
     "vp_pullback_defense",
     "vp_poc_migration",
     "vp_flip_to_imbalance",
+    "vp_fsm_break",
+    "vp_fsm_accel",
+    "vp_fsm_retest",
+    "vp_fsm_expand",
+    "vp_auction_setup",
 )
 
 _FB_SIGNAL_COLUMNS = (

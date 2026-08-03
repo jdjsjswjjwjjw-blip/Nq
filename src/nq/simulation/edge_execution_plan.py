@@ -294,8 +294,14 @@ def run_edge_plan(
     deceptive: DeceptiveLiquidityConfig | None = None,
     score_mbo: pl.DataFrame | None = None,
     progress: ProgressLike | None = None,
+    auction: pl.DataFrame | None = None,
+    deceptive_frame: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """خط واحد: حقيقة السوق → خطة تنفيذ → محاكاة."""
+    """خط واحد: حقيقة السوق → خطة تنفيذ → محاكاة.
+
+    ``auction`` / ``deceptive_frame`` اختياريان لإعادة استخدام بناء لليوم
+    (تجنّب إعادة تسجيل التضليل بعد الفلتر/البحث).
+    """
     truth = build_market_truth_frame(
         mbo,
         interval_ns=interval_ns,
@@ -303,6 +309,8 @@ def run_edge_plan(
         deceptive=deceptive,
         score_mbo=score_mbo,
         progress=progress,
+        auction=auction,
+        deceptive_frame=deceptive_frame,
     )
     return simulate_edge_trades(truth, exec_cfg=exec_cfg)
 
@@ -379,18 +387,36 @@ def search_best_edge_spec(
     progress: ProgressLike | None = None,
     min_oos_trades: int = 3,
     min_oos_rr: float = 2.0,
+    auction: pl.DataFrame | None = None,
+    deceptive_frame: pl.DataFrame | None = None,
+    scored: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, EdgeSearchSpec | None, dict[str, float | str]]:
-    """يبحث عن أفضل دخول/خروج؛ يعيد ``best=None`` إن لم تُحقَّق القيود."""
+    """يبحث عن أفضل دخول/خروج؛ يعيد ``best=None`` إن لم تُحقَّق القيود.
+
+    ``auction`` / ``deceptive_frame`` / ``scored`` اختياريان لإعادة استخدام
+    بناء اليوم (مرة واحدة للتضليل عبر الفلتر + الإدج).
+    """
     specs = grid if grid is not None else default_edge_search_grid()
     rows: list[dict[str, float | str]] = []
     if progress is not None:
         progress.op(f"edge search: {len(specs)} مواصفات")
         progress.op("edge search: بناء auction + deceptive مرة واحدة (مشترك لكل المواصفات)")
-    states = auction_states(mbo, interval_ns=interval_ns, progress=progress)
-    score_src = score_mbo if score_mbo is not None else mbo
-    deco = deceptive_features_by_bucket(
-        score_src, interval_ns=interval_ns, config=deceptive, progress=progress
+    states = (
+        auction
+        if auction is not None
+        else auction_states(mbo, interval_ns=interval_ns, progress=progress)
     )
+    if deceptive_frame is not None:
+        deco = deceptive_frame
+    else:
+        score_src = score_mbo if score_mbo is not None else mbo
+        deco = deceptive_features_by_bucket(
+            score_src,
+            interval_ns=interval_ns,
+            config=deceptive,
+            progress=progress,
+            scored=scored,
+        )
     # hold_buckets هو الفرق الوحيد في MarketTruthConfig عبر الشبكة الافتراضية.
     truth_by_hold: dict[int, pl.DataFrame] = {}
     for i, spec in enumerate(specs):

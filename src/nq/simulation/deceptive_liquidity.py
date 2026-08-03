@@ -291,23 +291,28 @@ def filter_deceptive_liquidity(
     *,
     config: DeceptiveLiquidityConfig | None = None,
     progress: ProgressLike | None = None,
+    scored: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """يُسقط دورة الأمر المضلل كاملة (ADD+MODIFY+CANCEL) ويعيد MBO نظيف العقد.
 
     قاعدة علمية: إسقاط CANCEL وحدها يترك ADD شبحًا في إعادة بناء الدفتر.
     لذلك عند درجة ≥ ``drop_score`` على إلغاء/إضافة مضللة نُسقط كل أحداث
     ``order_id`` غير المنفَّذة. TRADE/FILL تُبقى دائمًا.
+
+    ``scored`` اختياري لإعادة استخدام ناتج ``score_deceptive_events`` (مرة واحدة لليوم).
     """
     if progress is not None:
         progress.op(f"filter_deceptive_liquidity: events={frame.height:,}")
-    scored = score_deceptive_events(frame, config=config, progress=progress)
-    if scored.height == 0:
+    scored_frame = (
+        scored if scored is not None else score_deceptive_events(frame, config=config, progress=progress)
+    )
+    if scored_frame.height == 0:
         cols = [c for c in MBO_SCHEMA if c in frame.columns]
         return frame.select(cols) if cols else frame
 
-    drop_event = scored["_deceptive_drop"].to_list()
-    actions = scored["action"].cast(pl.Utf8).to_list()
-    order_ids = scored["order_id"].to_list()
+    drop_event = scored_frame["_deceptive_drop"].to_list()
+    actions = scored_frame["action"].cast(pl.Utf8).to_list()
+    order_ids = scored_frame["order_id"].to_list()
     n = len(drop_event)
 
     # order_ids التي حُكم عليها مضللة (غير صفقات)
@@ -330,7 +335,7 @@ def filter_deceptive_liquidity(
             continue
         keep[i] = not bool(drop_event[i])
 
-    out = scored.filter(pl.Series("_keep", keep, dtype=pl.Boolean))
+    out = scored_frame.filter(pl.Series("_keep", keep, dtype=pl.Boolean))
     # عقد MBO فقط — بلا أعمدة درجة
     mbo_cols = [c for c in MBO_SCHEMA if c in out.columns]
     return out.select(mbo_cols)
@@ -342,17 +347,22 @@ def deceptive_features_by_bucket(
     interval_ns: int,
     config: DeceptiveLiquidityConfig | None = None,
     progress: ProgressLike | None = None,
+    scored: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """يجمّع درجة التضليل على براميل زمنية (متاح عند ``bucket_end``).
 
     * ``noise_instant`` — متوسط درجة التضليل في البرميل الحالي.
     * ``noise_cum`` — متوسط تراكمي سببي عبر البراميل (تغيّر مجمّع).
     * ``real_liquidity_ratio`` — 1 − حصة الحجم المضلل عند الإلغاءات/الإضافات.
+
+    ``scored`` اختياري لإعادة استخدام ناتج ``score_deceptive_events``.
     """
     if progress is not None:
         progress.op(f"deceptive_features_by_bucket: interval_ns={interval_ns}")
-    scored = score_deceptive_events(frame, config=config)
-    if scored.height == 0:
+    scored_frame = (
+        scored if scored is not None else score_deceptive_events(frame, config=config, progress=progress)
+    )
+    if scored_frame.height == 0:
         return pl.DataFrame(
             schema={
                 AVAILABILITY_TS: pl.Int64(),
@@ -362,7 +372,7 @@ def deceptive_features_by_bucket(
             }
         )
 
-    bucketed = add_time_bucket(scored, interval_ns=interval_ns)
+    bucketed = add_time_bucket(scored_frame, interval_ns=interval_ns)
     # حجم «مضلل» ≈ size عند أحداث بدرجة عالية (CANCEL/ADD المسقطة منطقيًا)
     high = pl.col("deceptive_score") >= _HIGH_DECEPTIVE_SCORE
     agg = (
