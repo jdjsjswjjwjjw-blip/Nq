@@ -148,6 +148,26 @@ def test_scored_frame_reused_for_filter_and_bucket_features(monkeypatch) -> None
     assert "deceptive_score" in feats.columns
 
 
+def test_score_deceptive_fast_path_handles_dense_book() -> None:
+    """مسار BBO التزايدي لا ينهار على دفتر كثيف (سابقًا O(live) كل حدث)."""
+    import time
+
+    from tests.mbo_factory import random_add_cancel_stream
+
+    frame = random_add_cancel_stream(20_000, seed=42)
+    # أضف صفقات حتى لا يبقى المسار ADD/CANCEL فقط
+    t0 = time.perf_counter()
+    scored = score_deceptive_events(
+        frame,
+        config=DeceptiveLiquidityConfig(storm_min_events=50),
+    )
+    elapsed = time.perf_counter() - t0
+    assert scored.height == frame.height
+    assert "deceptive_score" in scored.columns
+    # على 20k حدث يجب أن ينتهي في أقل من ثانيتين حتى على CPU بطيء
+    assert elapsed < 2.0, f"score too slow: {elapsed:.3f}s"
+
+
 def _session_with_imbalance(n_buckets: int = 40) -> pl.DataFrame:
     """جلسة اصطناعية: صفقات داخل قيمة ثم تمدّد صاعد مع سيولة حقيقية."""
     events: list[tuple[str, str, int, int, int]] = []

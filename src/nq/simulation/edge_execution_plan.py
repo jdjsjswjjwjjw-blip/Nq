@@ -405,7 +405,14 @@ def search_best_edge_spec(
     rows: list[dict[str, float | str]] = []
     if progress is not None:
         progress.op(f"edge search: {len(specs)} مواصفات")
-        progress.op("edge search: بناء auction + deceptive مرة واحدة (مشترك لكل المواصفات)")
+        if deceptive_frame is not None:
+            progress.op(
+                f"edge search: reuse deceptive_frame · buckets={deceptive_frame.height:,}"
+            )
+        elif scored is not None:
+            progress.op(f"edge search: reuse scored · rows={scored.height:,}")
+        else:
+            progress.op("edge search: بناء auction + deceptive (قد يعيد التسجيل إن لم يُمرَّر scored)")
     states = (
         auction
         if auction is not None
@@ -427,6 +434,8 @@ def search_best_edge_spec(
             progress=progress,
             scored=scored,
         )
+    if progress is not None:
+        progress.op(f"edge search: جاهز · auction={states.height:,} · deco={deco.height:,}")
     # hold_buckets هو الفرق الوحيد في MarketTruthConfig عبر الشبكة الافتراضية.
     truth_by_hold: dict[int, pl.DataFrame] = {}
     for i, spec in enumerate(specs):
