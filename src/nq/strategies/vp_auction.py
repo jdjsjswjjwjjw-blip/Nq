@@ -3,8 +3,9 @@
 ليست طبقة منفصلة عن المشروع: نفس الخط الموحّد ``run_research_pipeline`` ثم
 امتداد تنفيذي داخل نفس الاستراتيجية:
 
-1. تسجيل التضليل مرة واحدة من الخام → فلتر دفتر (دورة أمر كاملة) + براميل إدج.
-2. بناء ``vp_*`` + FSM مزاد (توازن→كسر→تسارع→ريتست→توسّع) + SSL‖M9‖ألفا.
+1. تسجيل التضليل مرة واحدة من الخام → فلتر دفتر + براميل إدج.
+2. رينج VP على **5 دقائق** (حدود علوي/متوسط/سفلي) + فعل على **30 ثانية**
+   (ارتداد من متوازن · كسر+دخول من مختلّ) + SSL‖M9‖ألفا.
 3. اختيار إشارة VP/FSM بـ walk-forward purged **قبل** التنفيذ.
 4. حكم السوق بعد هولد (درجات من الخام المُعاد استخدامها) + بحث R:R معزول OOS.
 5. دمج أعمدة التنفيذ للتقرير فقط — بلا تشعّب مسارات.
@@ -31,7 +32,11 @@ from nq.research.orchestrator import (
 )
 from nq.research.progress import ProgressLike, resolve_progress
 from nq.research.unified import UnifiedResearchReport
-from nq.simulation.auction import auction_states
+from nq.simulation.auction import (
+    VP_PROFILE_INTERVAL_NS,
+    VP_SIGNAL_INTERVAL_NS,
+    auction_action_states,
+)
 from nq.simulation.deceptive_liquidity import (
     DECEPTIVE_FEATURE_COLUMNS,
     DeceptiveLiquidityConfig,
@@ -220,24 +225,25 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     min_oos_trades: int = 3,
     min_oos_rr: float = 2.0,
     interval_ns: int | None = None,
+    profile_interval_ns: int | None = None,
     streaming_features: bool = False,
 ) -> VpAuctionResearchResult:
     """مسار VP المتصل بترتيب علمي آمن.
 
     1. تنظيف دفتر مضلل (بلا أشباح).
-    2. خط موحّد → ``vp_*`` (افتراضي: ``batch`` + SSL bucket — سريع).
-       ``streaming_features=True`` يفعّل tick_stream الكامل عند الحاجة.
+    2. خط موحّد → ``vp_*`` على ساعة فعل 30ث مع رينج VP 5د.
     3. Walk-forward على ``vp_*`` فقط (قبل أي أعمدة تنفيذ).
     4. ثم هولد/R:R؛ درجات التضليل من الخام؛ إلحاق التنفيذ للتقرير فقط.
     """
     generator = rng if rng is not None else np.random.default_rng(0)
     log = resolve_progress(None, quiet=quiet)
     deco_cfg = deceptive if deceptive is not None else DeceptiveLiquidityConfig()
+    sig_iv = int(interval_ns) if interval_ns is not None else VP_SIGNAL_INTERVAL_NS
+    prof_iv = int(profile_interval_ns) if profile_interval_ns is not None else VP_PROFILE_INTERVAL_NS
 
     log.step("VP: تحميل MBO")
     raw = _load_nq(nq, max_rows=max_rows, progress=log)
     raw_n = raw.height
-    iv_early = int(interval_ns) if interval_ns is not None else 1_000_000_000
     # تسجيل التضليل مرة واحدة لليوم — يُعاد استخدامه للفلتر + براميل الإدج.
     scored_raw: pl.DataFrame | None = None
     deco_by_bucket: pl.DataFrame | None = None
@@ -253,10 +259,10 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         cleaned = raw
     cleaned_n = cleaned.height
     if with_execution and scored_raw is not None:
-        log.step("VP: براميل التضليل (مرة واحدة)", f"interval_ns={iv_early}")
+        log.step("VP: براميل التضليل (مرة واحدة)", f"interval_ns={sig_iv}")
         deco_by_bucket = deceptive_features_by_bucket(
             raw,
-            interval_ns=iv_early,
+            interval_ns=sig_iv,
             config=deco_cfg,
             progress=log,
             scored=scored_raw,
@@ -283,7 +289,8 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         ssl_components=ssl_components,
         signal_columns=_VP_AUCTION_FOCUS,
         quiet=quiet,
-        interval_ns=int(interval_ns) if interval_ns is not None else 1_000_000_000,
+        interval_ns=sig_iv,
+        profile_interval_ns=prof_iv,
         # افتراضي سريع: VP من شريط الصفقات لا يحتاج tick_stream حدث-بحدث
         feature_mode="batch" if not streaming_features else "streaming",
         ssl_mode="bucket" if not streaming_features else "tick",
@@ -334,9 +341,17 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     }
 
     if with_execution:
-        log.step("VP: حكم السوق + بحث R:R", "بعد WF · درجات تضليل من الخام (reuse)")
+        log.step(
+            "VP: حكم السوق + بحث R:R",
+            f"بعد WF · رينج={prof_iv // 1_000_000_000}s · فعل={iv // 1_000_000_000}s",
+        )
         specs = edge_grid if edge_grid is not None else default_edge_search_grid()
-        auction_day = auction_states(cleaned, interval_ns=iv, progress=log)
+        auction_day = auction_action_states(
+            cleaned,
+            profile_interval_ns=prof_iv,
+            signal_interval_ns=iv,
+            progress=log,
+        )
         edge_table, best_edge, best_edge_row = search_best_edge_spec(
             cleaned,
             interval_ns=iv,

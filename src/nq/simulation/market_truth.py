@@ -19,7 +19,10 @@ import polars as pl
 from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.progress import ProgressLike
-from nq.simulation.auction import auction_states
+from nq.simulation.auction import (
+    VP_PROFILE_INTERVAL_NS,
+    auction_action_states,
+)
 from nq.simulation.common import BUCKET_END, BUCKET_START
 from nq.simulation.deceptive_liquidity import (
     DECEPTIVE_FEATURE_COLUMNS,
@@ -80,25 +83,31 @@ def build_market_truth_frame(  # noqa: PLR0912, PLR0915
     progress: ProgressLike | None = None,
     auction: pl.DataFrame | None = None,
     deceptive_frame: pl.DataFrame | None = None,
+    profile_interval_ns: int = VP_PROFILE_INTERVAL_NS,
 ) -> pl.DataFrame:
     """يبني إطار حكم السوق + بوابة دخول (بدون ملاحقة كل أمر).
 
     ``mbo``: مصدر حالات المزاد (عادة بعد تنظيف الدفتر).
     ``score_mbo``: مصدر درجات التضليل للهولد — يجب أن يكون **الخام قبل الإسقاط**
     وإلا تصبح بوابات السيولة الحقيقية بلا معنى بعد التنظيف.
-    ``auction`` / ``deceptive_frame``: اختياري لإعادة الاستخدام عبر شبكة بحث الإدج
-    (تجنّب إعادة بناء المزاد/التضليل لكل مواصفة).
+    ``auction`` / ``deceptive_frame``: اختياري لإعادة الاستخدام عبر شبكة بحث الإدج.
+    الرينج الافتراضي 5د على ساعة فعل ``interval_ns`` (30ث).
     """
     cfg = truth if truth is not None else MarketTruthConfig()
     if cfg.hold_buckets < 1:
         raise ValueError(f"hold_buckets must be >= 1, got {cfg.hold_buckets}")
 
     if progress is not None and (auction is None or deceptive_frame is None):
-        progress.op("market_truth: auction_states + deceptive buckets")
+        progress.op("market_truth: auction_action_states + deceptive buckets")
     states = (
         auction
         if auction is not None
-        else auction_states(mbo, interval_ns=interval_ns, progress=progress)
+        else auction_action_states(
+            mbo,
+            profile_interval_ns=profile_interval_ns,
+            signal_interval_ns=interval_ns,
+            progress=progress,
+        )
     )
     if deceptive_frame is not None:
         deco = deceptive_frame

@@ -22,7 +22,11 @@ import polars as pl
 
 from nq.contracts.mbo import PRICE_SCALE
 from nq.research.progress import ProgressLike
-from nq.simulation.auction import auction_states
+from nq.simulation.auction import (
+    VP_PROFILE_INTERVAL_NS,
+    VP_SIGNAL_INTERVAL_NS,
+    auction_action_states,
+)
 from nq.simulation.deceptive_liquidity import (
     DeceptiveLiquidityConfig,
     deceptive_features_by_bucket,
@@ -390,11 +394,12 @@ def search_best_edge_spec(
     auction: pl.DataFrame | None = None,
     deceptive_frame: pl.DataFrame | None = None,
     scored: pl.DataFrame | None = None,
+    profile_interval_ns: int = VP_PROFILE_INTERVAL_NS,
 ) -> tuple[pl.DataFrame, EdgeSearchSpec | None, dict[str, float | str]]:
     """يبحث عن أفضل دخول/خروج؛ يعيد ``best=None`` إن لم تُحقَّق القيود.
 
     ``auction`` / ``deceptive_frame`` / ``scored`` اختياريان لإعادة استخدام
-    بناء اليوم (مرة واحدة للتضليل عبر الفلتر + الإدج).
+    بناء اليوم. الرينج الافتراضي 5د على ساعة فعل ``interval_ns`` (30ث).
     """
     specs = grid if grid is not None else default_edge_search_grid()
     rows: list[dict[str, float | str]] = []
@@ -404,7 +409,12 @@ def search_best_edge_spec(
     states = (
         auction
         if auction is not None
-        else auction_states(mbo, interval_ns=interval_ns, progress=progress)
+        else auction_action_states(
+            mbo,
+            profile_interval_ns=profile_interval_ns,
+            signal_interval_ns=interval_ns,
+            progress=progress,
+        )
     )
     if deceptive_frame is not None:
         deco = deceptive_frame

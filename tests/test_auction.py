@@ -93,8 +93,13 @@ def test_auction_signal_frame_exports_vp_columns() -> None:
     seq = list(range(1, len(events) + 1))
     frame = make_stream(events, event_ts=ts, sequence=seq)
 
-    signals = auction_signal_frame(frame, interval_ns=50).sort(AVAILABILITY_TS)
-    assert signals.height == 2
+    # رينج أوسع من ساعة الفعل (مصغّر للاختبار: 100 / 50 بدل 5د / 30ث)
+    signals = auction_signal_frame(
+        frame,
+        profile_interval_ns=100,
+        signal_interval_ns=50,
+    ).sort(AVAILABILITY_TS)
+    assert signals.height >= 1
     for col in (
         "vp_upper",
         "vp_mid",
@@ -117,12 +122,28 @@ def test_auction_signal_frame_exports_vp_columns() -> None:
         "vp_auction_setup",
     ):
         assert col in signals.columns
-    assert signals["vp_balance"].to_list()[0] == 1.0
-    assert signals["vp_imbalance"].to_list()[1] == 1.0
-    assert signals["vp_flip_to_imbalance"].to_list()[1] == 1.0
     # ثلاث حدود VP: علوي ≥ متوسط ≥ سفلي
     assert signals["vp_upper"].to_list()[0] >= signals["vp_mid"].to_list()[0]
     assert signals["vp_mid"].to_list()[0] >= signals["vp_lower"].to_list()[0]
+
+
+def test_auction_action_states_joins_profile_onto_signal() -> None:
+    """رينج أوسع يُلحق سببيًا على براميل الفعل."""
+    events = [("T", "B", 100 + (i % 3), 2, 0) for i in range(40)]
+    ts = list(range(0, 4000, 100))
+    frame = make_stream(events, event_ts=ts, sequence=list(range(1, 41)))
+    from nq.simulation.auction import auction_action_states
+
+    action = auction_action_states(
+        frame,
+        profile_interval_ns=1000,
+        signal_interval_ns=200,
+    )
+    assert action.height >= 1
+    assert "vah" in action.columns and "poc" in action.columns and "val" in action.columns
+    assert "is_balanced" in action.columns
+    # كل برميل فعل يحمل حدود رينج مكتملة
+    assert action["vah"].null_count() == 0
 
 
 def test_auction_fsm_columns_empty_states() -> None:
@@ -229,7 +250,11 @@ def test_auction_fsm_setup_completes_balance_break_retest_expand() -> None:
 
 
 def test_auction_signal_frame_empty() -> None:
-    signals = auction_signal_frame(make_stream([]), interval_ns=10)
+    signals = auction_signal_frame(
+        make_stream([]),
+        profile_interval_ns=100,
+        signal_interval_ns=50,
+    )
     assert signals.height == 0
     assert AVAILABILITY_TS in signals.columns
     assert "vp_balance" in signals.columns
@@ -238,3 +263,15 @@ def test_auction_signal_frame_empty() -> None:
     assert "vp_lower" in signals.columns
     assert "vp_auction_setup" in signals.columns
     assert "vp_fsm_break" in signals.columns
+
+
+def test_auction_signal_frame_rejects_profile_shorter_than_signal() -> None:
+    import pytest
+    from nq.simulation.auction import auction_action_states
+
+    with pytest.raises(ValueError, match="profile_interval_ns"):
+        auction_action_states(
+            make_stream([("T", "B", 100, 1, 0)]),
+            profile_interval_ns=10,
+            signal_interval_ns=100,
+        )

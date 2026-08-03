@@ -1,25 +1,18 @@
 """مُحاكي المزاد (Auction Market Simulator).
 
-يستند إلى نظرية المزاد ومنطقة القيمة لوصف حالة السوق لكل نافذة زمنية.
+يستند إلى نظرية المزاد ومنطقة القيمة لوصف حالة السوق.
+
+**إطاران زمنيان (افتراضي):**
+* رينج / Volume Profile: ``5`` دقائق — حدود VP الثلاثة + نظام توازن/اختلال.
+* فعل / دخول: ``30`` ثانية — ارتدادات من سوق متوازن، وكسر+دخول من سوق مختلّ.
 
 Volume Profile يُعرَّف دائمًا بـ **ثلاث حدود**:
 * ``upper`` = VAH (حد علوي لمنطقة القيمة)
 * ``mid`` = POC (حد متوسط / مركز القبول)
 * ``lower`` = VAL (حد سفلي لمنطقة القيمة)
 
-حالات المزاد:
-* التوازن/الاختلال (Balance / Imbalance): السوق **متوازن** حين يُغلق داخل منطقة
-  القيمة الجلسية المتطوّرة (قبول القيمة، ``close_in_value``) دون تمدّد مدى،
-  ومع بقاء حصّة حجم **النافذة الحالية** داخل [VAL,VAH] فوق العتبة. و**مختلّ**
-  حين يُغلق خارج القيمة أو مع تمدّد. ``in_value_fraction`` ذو معنى فقط مع
-  VA تراكمي (لا micro-profile معزول لكل نافذة).
-* التمدّد (Expansion): ``expansion_ratio = range_t / range_{t-1}``.
-* دفاع الارتداد (Pullback Defense): نهاية جديدة ثم إغلاق داخل القيمة.
-* آلة حالات المزاد (FSM): توازن → كسر حد علوي/سفلي → تسارع → ريتست يحمي
-  المركز (mid/POC) → توسّع.
-
-كل الحالات سببية: كل صف يعتمد على نافذته والنوافذ السابقة فقط، ومتاح عند
-``bucket_end``.
+كل الحالات سببية: كل صف يعتمد على نوافذه المكتملة فقط، ومتاح عند
+``bucket_end`` (join_asof خلفي من 5د → 30ث).
 """
 
 from __future__ import annotations
@@ -31,17 +24,23 @@ from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.time import sort_causal
 from nq.research.progress import ProgressLike
-from nq.simulation.common import BUCKET_START, add_time_bucket, extract_trades
+from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 from nq.simulation.volume_profile import developing_value_area
+
+_NS: int = 1_000_000_000
+#: رينج VP / قبول القيمة — 5 دقائق.
+VP_PROFILE_INTERVAL_NS: int = 5 * 60 * _NS
+#: ساعة الفعل: ارتداد / كسر / دخول — 30 ثانية.
+VP_SIGNAL_INTERVAL_NS: int = 30 * _NS
 
 _DEFAULT_BALANCE_THRESHOLD = 0.6
 _DEFAULT_EXPANSION_THRESHOLD = 1.5
-#: أقصى براميل بعد الكسر لاعتبار الريتست (على فريم 1ث ≈ نصف دقيقة).
-_DEFAULT_RETEST_WINDOW = 30
-#: نافذة حجم للتسارع السببي.
-_DEFAULT_ACCEL_LOOKBACK = 10
+#: نافذة ريتست بعد الكسر بعدد براميل الإشارة (30ث → برميل واحد ≈ 30ث).
+_DEFAULT_RETEST_WINDOW = 2
+#: نافذة حجم للتسارع السببي على ساعة الإشارة.
+_DEFAULT_ACCEL_LOOKBACK = 3
 _DEFAULT_ACCEL_MULT = 1.5
-#: قرب الريتست من المركز (mid/POC) كنسبة من عرض منطقة القيمة.
+#: قرب الريتست/الارتداد من المركز (mid/POC) كنسبة من عرض منطقة القيمة.
 _DEFAULT_RETEST_MID_FRAC = 0.25
 
 _FSM_SIGNAL_COLUMNS = (
@@ -65,6 +64,16 @@ _VP_REL_BOUND_COLUMNS = (
     "vp_rel_lower",
 )
 
+_PROFILE_JOIN_COLS = (
+    "poc",
+    "vah",
+    "val",
+    "poc_migration",
+    "is_balanced",
+    "is_expansion",
+    "in_value_fraction",
+)
+
 
 def auction_states(
     frame: pl.DataFrame,
@@ -78,6 +87,7 @@ def auction_states(
     """يصنّف حالة المزاد لكل نافذة زمنية (متاح عند ``bucket_end``).
 
     يستخدم منطقة قيمة **تراكمية** عبر النوافذ (قبول/رفض القيمة الجلسي).
+    لرينج الاستراتيجية استدعِ بـ ``VP_PROFILE_INTERVAL_NS`` (5د).
     """
     dva = developing_value_area(
         frame,
@@ -146,7 +156,6 @@ def auction_states(
         closed_in_value.alias("close_in_value"),
         is_expansion.alias("is_expansion"),
     ).with_columns(
-        # مع VA تراكمي: حصّة حجم النافذة داخل القيمة مقياس حيّ (قد تكون < fraction)
         (
             pl.col("close_in_value")
             & ~pl.col("is_expansion")
@@ -158,6 +167,135 @@ def auction_states(
     )
 
 
+def auction_action_states(
+    frame: pl.DataFrame,
+    *,
+    profile_interval_ns: int = VP_PROFILE_INTERVAL_NS,
+    signal_interval_ns: int = VP_SIGNAL_INTERVAL_NS,
+    fraction: float = 0.7,
+    balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
+    expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
+    """براميل فعل ``30ث`` مع حدود/نظام رينج ``5د`` ملتحمة سببيًا (asof خلفي).
+
+    * الرينج (VAH/POC/VAL + توازن) من ``profile_interval_ns``.
+    * الإغلاق/المدى/الحجم وحركة الارتداد-الكسر من ``signal_interval_ns``.
+    """
+    if signal_interval_ns < 1 or profile_interval_ns < 1:
+        raise ValueError("profile_interval_ns and signal_interval_ns must be >= 1")
+    if profile_interval_ns < signal_interval_ns:
+        raise ValueError(
+            f"profile_interval_ns ({profile_interval_ns}) must be >= "
+            f"signal_interval_ns ({signal_interval_ns})"
+        )
+
+    if progress is not None:
+        progress.op(
+            "auction_action_states: "
+            f"profile={profile_interval_ns // _NS}s · signal={signal_interval_ns // _NS}s"
+        )
+
+    profile = auction_states(
+        frame,
+        interval_ns=profile_interval_ns,
+        fraction=fraction,
+        balance_threshold=balance_threshold,
+        expansion_threshold=expansion_threshold,
+        progress=progress,
+    )
+    empty = pl.DataFrame(
+        schema={
+            AVAILABILITY_TS: pl.Int64(),
+            BUCKET_START: pl.Int64(),
+            BUCKET_END: pl.Int64(),
+            "high": pl.Int64(),
+            "low": pl.Int64(),
+            "close": pl.Int64(),
+            "bucket_volume": pl.Int64(),
+            "poc": pl.Int64(),
+            "vah": pl.Int64(),
+            "val": pl.Int64(),
+            "poc_migration": pl.Int64(),
+            "is_balanced": pl.Boolean(),
+            "is_expansion": pl.Boolean(),
+            "in_value_fraction": pl.Float64(),
+            "close_in_value": pl.Boolean(),
+            "made_new_high": pl.Boolean(),
+            "made_new_low": pl.Boolean(),
+            "pullback_defended": pl.Boolean(),
+            "range": pl.Int64(),
+            "expansion_ratio": pl.Float64(),
+        }
+    )
+    if profile.height == 0:
+        return empty
+
+    trades = extract_trades(add_time_bucket(sort_causal(frame), interval_ns=signal_interval_ns))
+    if trades.height == 0:
+        return empty
+
+    signal = (
+        trades.sort(EVENT_TS)
+        .group_by(BUCKET_START, maintain_order=True)
+        .agg(
+            pl.col("price").max().alias("high"),
+            pl.col("price").min().alias("low"),
+            pl.col("price").last().alias("close"),
+            pl.col("size").cast(pl.Int64).sum().alias("bucket_volume"),
+            pl.col(BUCKET_END).first().alias(BUCKET_END),
+            pl.col(AVAILABILITY_TS).first().alias(AVAILABILITY_TS),
+        )
+        .sort(AVAILABILITY_TS)
+    )
+
+    profile_right = (
+        profile.select(AVAILABILITY_TS, *_PROFILE_JOIN_COLS)
+        .sort(AVAILABILITY_TS)
+    )
+    merged = signal.join_asof(profile_right, on=AVAILABILITY_TS, strategy="backward")
+    # بدون رينج 5د مكتمل بعد — أسقط البراميل الأولى
+    merged = merged.filter(pl.col("vah").is_not_null() & pl.col("val").is_not_null())
+    if merged.height == 0:
+        return empty
+
+    prev_high = pl.col("high").shift(1)
+    prev_low = pl.col("low").shift(1)
+    price_range = pl.col("high") - pl.col("low")
+    prev_range = price_range.shift(1)
+    closed_in_value = (pl.col("close") >= pl.col("val")) & (pl.col("close") <= pl.col("vah"))
+    made_new_high = (prev_high.is_not_null()) & (pl.col("high") > prev_high)
+    made_new_low = (prev_low.is_not_null()) & (pl.col("low") < prev_low)
+    expansion_ratio = (
+        pl.when((prev_range.is_not_null()) & (prev_range > 0))
+        .then(price_range.cast(pl.Float64) / prev_range.cast(pl.Float64))
+        .otherwise(None)
+    )
+    # على 30ث: تمدّد المدى المحلي؛ نظام is_expansion من الرينج 5د يبقى من الـ profile.
+    return (
+        merged.sort(BUCKET_START)
+        .with_columns(
+            price_range.alias("range"),
+            expansion_ratio.alias("expansion_ratio"),
+            made_new_high.alias("made_new_high"),
+            made_new_low.alias("made_new_low"),
+            closed_in_value.alias("close_in_value"),
+            pl.col("is_balanced").fill_null(value=False),
+            pl.col("is_expansion").fill_null(value=False),
+            pl.col("in_value_fraction").fill_null(0.0),
+            pl.col("poc_migration").fill_null(0),
+        )
+        .with_columns(
+            # ارتداد 30ث داخل رينج 5د متوازن: قمة/قاع جديد ثم إغلاق داخل القيمة.
+            (
+                pl.col("is_balanced")
+                & (pl.col("made_new_high") | pl.col("made_new_low"))
+                & pl.col("close_in_value")
+            ).alias("pullback_defended"),
+        )
+    )
+
+
 def auction_fsm_columns(
     states: pl.DataFrame,
     *,
@@ -166,12 +304,10 @@ def auction_fsm_columns(
     accel_mult: float = _DEFAULT_ACCEL_MULT,
     retest_mid_frac: float = _DEFAULT_RETEST_MID_FRAC,
 ) -> pl.DataFrame:
-    """آلة حالات مزاد سببية على براميل ``auction_states``.
+    """آلة حالات على براميل الفعل (30ث) بحدود الرينج (5د).
 
-    التسلسل على حدود VP الثلاثة (علوي/متوسط/سفلي):
-    توازن → كسر ``upper``/``lower`` → تسارع حجم → ريتست يحمي ``mid`` → توسّع.
-
-    ``vp_auction_setup`` = اتجاه الإعداد المكتمل (+1/−1) عند اكتمال السلسلة؛ 0 وإلا.
+    * سوق **متوازن**: ارتداد نحو ``mid`` → ``vp_fsm_retest``.
+    * سوق **مختلّ**: كسر ``upper``/``lower`` → تسارع → ريتست mid → توسّع → setup.
     """
     n = states.height
     empty = {c: pl.Series(c, [0.0] * n if n else [], dtype=pl.Float64) for c in _FSM_SIGNAL_COLUMNS}
@@ -200,9 +336,23 @@ def auction_fsm_columns(
     saw_retest = False
 
     for i in range(n):
+        va_w = max(float(vah[i] - val[i]), 1.0)
+        near_mid = abs(float(close[i] - poc[i])) <= retest_mid_frac * va_w
+
+        # --- متوازن: ابحث عن ارتدادات 30ث نحو المركز ---
+        if bool(balanced[i]):
+            pending_dir = 0.0
+            pending_i = -1
+            saw_accel = False
+            saw_retest = False
+            if bool(pullback[i]) and near_mid:
+                # اتجاه الارتداد: فوق mid → دفاع صاعد نسبيًا، والعكس
+                retest[i] = 1.0 if close[i] >= poc[i] else -1.0
+            continue
+
+        # --- مختلّ: كسر + دخول على 30ث ---
         prev_bal = bool(balanced[i - 1]) if i > 0 else False
-        # كسر حد علوي/سفلي: كان متوازنًا والآن إغلاق خارج [lower, upper]
-        if prev_bal and not bool(balanced[i]):
+        if prev_bal or pending_dir == 0.0:
             if close[i] > vah[i]:
                 brk[i] = 1.0
             elif close[i] < val[i]:
@@ -217,12 +367,10 @@ def auction_fsm_columns(
             continue
         age = i - pending_i
         if age > retest_window and not saw_retest:
-            # انتهت نافذة الريتست بلا حماية للمركز
             pending_dir = 0.0
             pending_i = -1
             continue
 
-        # تسارع حجم سببي بعد الكسر
         if age >= 1 and not saw_accel:
             start = max(0, i - accel_lookback)
             hist = vol[start:i]
@@ -231,19 +379,15 @@ def auction_fsm_columns(
                 accel[i] = pending_dir
                 saw_accel = True
 
-        # ريتست يحمي المركز (mid/POC) بعد الكسر — لا الاكتفاء بحافة الكسر فقط.
         if age >= 1 and saw_accel and not saw_retest:
-            va_w = max(float(vah[i] - val[i]), 1.0)
-            near_mid = abs(float(close[i] - poc[i])) <= retest_mid_frac * va_w
             if near_mid and (bool(pullback[i]) or bool(in_value[i])):
                 retest[i] = pending_dir
                 saw_retest = True
 
-        # توسّع مع اتجاه الكسر بعد الريتست (فوق upper أو تحت lower)
-        if saw_retest and bool(expansion[i]):
+        if saw_retest and (bool(expansion[i]) or age >= 1):
             if pending_dir > 0 and close[i] >= vah[i]:
                 expand[i] = pending_dir
-                setup[i] = pending_dir
+                setup[i] = pending_dir  # دخول مع اتجاه الكسر
                 pending_dir = 0.0
                 pending_i = -1
                 saw_accel = False
@@ -270,34 +414,32 @@ def auction_fsm_columns(
 def auction_signal_frame(
     frame: pl.DataFrame,
     *,
-    interval_ns: int,
+    interval_ns: int | None = None,
+    profile_interval_ns: int = VP_PROFILE_INTERVAL_NS,
+    signal_interval_ns: int | None = None,
     fraction: float = 0.7,
     balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
     expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
     retest_window: int = _DEFAULT_RETEST_WINDOW,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """إشارات بحثية من Volume Profile + المزاد (توازن/اختلال/تمدّد + FSM).
+    """إشارات بحثية: رينج 5د + فعل 30ث (ارتداد متوازن / كسر+دخول مختلّ).
 
-    جاهزة للدمج asof في إطار البحث الموحّد:
-
-    * ``vp_upper`` / ``vp_mid`` / ``vp_lower`` — حدود VP الثلاثة (VAH/POC/VAL) بالدولار.
-    * ``vp_rel_upper`` / ``vp_rel_mid`` / ``vp_rel_lower`` — مسافة نسبية عن كل حد.
-    * ``vp_balance`` — ``+1`` متوازن، ``-1`` مختلّ.
-    * ``vp_imbalance`` — ``1`` عند الاختلال، ``0`` وإلا.
-    * ``vp_expansion`` — ``1`` عند تمدّد المدى، ``0`` وإلا.
-    * ``vp_close_in_value`` — قبول الإغلاق داخل منطقة القيمة.
-    * ``vp_in_value_frac`` — حصّة الحجم داخل [VAL, VAH].
-    * ``vp_pullback_defense`` — دفاع ارتداد إلى القيمة.
-    * ``vp_poc_migration`` — إزاحة POC عن النافذة السابقة (سببي).
-    * ``vp_flip_to_imbalance`` — انتقال من توازن → اختلال.
-    * ``vp_fsm_*`` / ``vp_auction_setup`` — سلسلة المزاد السببية.
+    ``interval_ns`` مرادف قديم لـ ``signal_interval_ns`` (ساعة البحث/الفعل).
     """
+    sig_iv = int(signal_interval_ns if signal_interval_ns is not None else (
+        interval_ns if interval_ns is not None else VP_SIGNAL_INTERVAL_NS
+    ))
+    prof_iv = int(profile_interval_ns)
     if progress is not None:
-        progress.op(f"auction_signal_frame: بناء حالات المزاد · interval_ns={interval_ns}")
-    states = auction_states(
+        progress.op(
+            "auction_signal_frame: "
+            f"رينج={prof_iv // _NS}s · فعل={sig_iv // _NS}s"
+        )
+    states = auction_action_states(
         frame,
-        interval_ns=interval_ns,
+        profile_interval_ns=prof_iv,
+        signal_interval_ns=sig_iv,
         fraction=fraction,
         balance_threshold=balance_threshold,
         expansion_threshold=expansion_threshold,
@@ -370,6 +512,9 @@ def auction_signal_frame(
 
 
 __all__ = [
+    "VP_PROFILE_INTERVAL_NS",
+    "VP_SIGNAL_INTERVAL_NS",
+    "auction_action_states",
     "auction_fsm_columns",
     "auction_signal_frame",
     "auction_states",
