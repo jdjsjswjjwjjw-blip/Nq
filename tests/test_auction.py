@@ -107,6 +107,11 @@ def test_auction_signal_frame_exports_vp_columns() -> None:
         "vp_rel_upper",
         "vp_rel_mid",
         "vp_rel_lower",
+        "vp_excess_upper",
+        "vp_excess_lower",
+        "vp_of_delta",
+        "vp_absorb",
+        "vp_look_fail",
         "vp_balance",
         "vp_imbalance",
         "vp_expansion",
@@ -240,6 +245,9 @@ def test_auction_fsm_setup_completes_balance_break_retest_expand() -> None:
                 False,
                 False,
             ],
+            "delta": [0.0, 0.0, 5.0, 8.0, 2.0, -1.0, 0.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            "absorb": [0.0] * n,
+            "look_fail": [0.0] * n,
         }
     )
     fsm = auction_fsm_columns(states, retest_window=8, accel_lookback=3, accel_mult=1.5)
