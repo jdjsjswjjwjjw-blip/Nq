@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from nq.simulation.auction import auction_signal_frame, auction_states
+from nq.simulation.auction import auction_fsm_columns, auction_signal_frame, auction_states
 from nq.simulation.bottom_book import (
     BOTTOM_BOOK_COLUMNS,
     attach_bottom_book_asof,
@@ -86,6 +86,7 @@ __all__ = [
     "ValueArea",
     "add_time_bucket",
     "attach_bottom_book_asof",
+    "auction_fsm_columns",
     "auction_signal_frame",
     "auction_states",
     "bottom_book_features_at_bar_close",
