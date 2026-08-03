@@ -95,6 +95,12 @@ _BATCH_SIGNAL_COLUMNS = (
 )
 
 _VP_AUCTION_SIGNAL_COLUMNS = (
+    "vp_upper",
+    "vp_mid",
+    "vp_lower",
+    "vp_rel_upper",
+    "vp_rel_mid",
+    "vp_rel_lower",
     "vp_balance",
     "vp_imbalance",
     "vp_expansion",

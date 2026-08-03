@@ -50,6 +50,9 @@ from nq.simulation.market_truth import MARKET_TRUTH_COLUMNS
 from nq.strategies.fvg_hypothesis import walk_forward_select_hypotheses
 
 _VP_AUCTION_FOCUS = (
+    "vp_rel_upper",
+    "vp_rel_mid",
+    "vp_rel_lower",
     "vp_balance",
     "vp_imbalance",
     "vp_expansion",

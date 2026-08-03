@@ -96,6 +96,12 @@ def test_auction_signal_frame_exports_vp_columns() -> None:
     signals = auction_signal_frame(frame, interval_ns=50).sort(AVAILABILITY_TS)
     assert signals.height == 2
     for col in (
+        "vp_upper",
+        "vp_mid",
+        "vp_lower",
+        "vp_rel_upper",
+        "vp_rel_mid",
+        "vp_rel_lower",
         "vp_balance",
         "vp_imbalance",
         "vp_expansion",
@@ -114,6 +120,9 @@ def test_auction_signal_frame_exports_vp_columns() -> None:
     assert signals["vp_balance"].to_list()[0] == 1.0
     assert signals["vp_imbalance"].to_list()[1] == 1.0
     assert signals["vp_flip_to_imbalance"].to_list()[1] == 1.0
+    # ثلاث حدود VP: علوي ≥ متوسط ≥ سفلي
+    assert signals["vp_upper"].to_list()[0] >= signals["vp_mid"].to_list()[0]
+    assert signals["vp_mid"].to_list()[0] >= signals["vp_lower"].to_list()[0]
 
 
 def test_auction_fsm_columns_empty_states() -> None:
@@ -131,19 +140,85 @@ def test_auction_fsm_columns_empty_states() -> None:
 
 
 def test_auction_fsm_setup_completes_balance_break_retest_expand() -> None:
-    """سلسلة اصطناعية: توازن → كسر أعلى → تسارع → ريتست → توسّع."""
+    """سلسلة اصطناعية: توازن → كسر أعلى → تسارع → ريتست عند mid → توسّع."""
     n = 12
     states = pl.DataFrame(
         {
             "bucket_start": list(range(n)),
-            "is_balanced": [True, True, False, False, False, False, False, False, False, False, False, False],
-            "close": [100.0, 100.5, 103.0, 104.0, 105.0, 101.1, 101.0, 103.0, 106.0, 108.0, 110.0, 112.0],
+            "is_balanced": [
+                True,
+                True,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+            ],
+            "close": [
+                100.0,
+                100.5,
+                103.0,
+                104.0,
+                105.0,
+                100.2,
+                100.1,
+                103.0,
+                106.0,
+                108.0,
+                110.0,
+                112.0,
+            ],
             "vah": [101.0] * n,
+            "poc": [100.0] * n,
             "val": [99.0] * n,
             "bucket_volume": [10.0, 10.0, 10.0, 40.0, 12.0, 11.0, 10.0, 10.0, 20.0, 22.0, 25.0, 30.0],
-            "is_expansion": [False, False, False, False, False, False, False, False, True, True, True, True],
-            "pullback_defended": [False, False, False, False, False, True, True, False, False, False, False, False],
-            "close_in_value": [True, True, False, False, False, True, True, False, False, False, False, False],
+            "is_expansion": [
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                True,
+                True,
+                True,
+                True,
+            ],
+            "pullback_defended": [
+                False,
+                False,
+                False,
+                False,
+                False,
+                True,
+                True,
+                False,
+                False,
+                False,
+                False,
+                False,
+            ],
+            "close_in_value": [
+                True,
+                True,
+                False,
+                False,
+                False,
+                True,
+                True,
+                False,
+                False,
+                False,
+                False,
+                False,
+            ],
         }
     )
     fsm = auction_fsm_columns(states, retest_window=8, accel_lookback=3, accel_mult=1.5)
@@ -158,5 +233,8 @@ def test_auction_signal_frame_empty() -> None:
     assert signals.height == 0
     assert AVAILABILITY_TS in signals.columns
     assert "vp_balance" in signals.columns
+    assert "vp_upper" in signals.columns
+    assert "vp_mid" in signals.columns
+    assert "vp_lower" in signals.columns
     assert "vp_auction_setup" in signals.columns
     assert "vp_fsm_break" in signals.columns

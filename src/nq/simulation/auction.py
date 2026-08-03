@@ -1,7 +1,13 @@
 """مُحاكي المزاد (Auction Market Simulator).
 
-يستند إلى نظرية المزاد ومنطقة القيمة لوصف حالة السوق لكل نافذة زمنية:
+يستند إلى نظرية المزاد ومنطقة القيمة لوصف حالة السوق لكل نافذة زمنية.
 
+Volume Profile يُعرَّف دائمًا بـ **ثلاث حدود**:
+* ``upper`` = VAH (حد علوي لمنطقة القيمة)
+* ``mid`` = POC (حد متوسط / مركز القبول)
+* ``lower`` = VAL (حد سفلي لمنطقة القيمة)
+
+حالات المزاد:
 * التوازن/الاختلال (Balance / Imbalance): السوق **متوازن** حين يُغلق داخل منطقة
   القيمة الجلسية المتطوّرة (قبول القيمة، ``close_in_value``) دون تمدّد مدى،
   ومع بقاء حصّة حجم **النافذة الحالية** داخل [VAL,VAH] فوق العتبة. و**مختلّ**
@@ -9,7 +15,8 @@
   VA تراكمي (لا micro-profile معزول لكل نافذة).
 * التمدّد (Expansion): ``expansion_ratio = range_t / range_{t-1}``.
 * دفاع الارتداد (Pullback Defense): نهاية جديدة ثم إغلاق داخل القيمة.
-* آلة حالات المزاد (FSM): توازن → كسر → تسارع → ريتست يحمي المركز → توسّع.
+* آلة حالات المزاد (FSM): توازن → كسر حد علوي/سفلي → تسارع → ريتست يحمي
+  المركز (mid/POC) → توسّع.
 
 كل الحالات سببية: كل صف يعتمد على نافذته والنوافذ السابقة فقط، ومتاح عند
 ``bucket_end``.
@@ -20,6 +27,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
+from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.time import sort_causal
 from nq.research.progress import ProgressLike
@@ -33,6 +41,8 @@ _DEFAULT_RETEST_WINDOW = 30
 #: نافذة حجم للتسارع السببي.
 _DEFAULT_ACCEL_LOOKBACK = 10
 _DEFAULT_ACCEL_MULT = 1.5
+#: قرب الريتست من المركز (mid/POC) كنسبة من عرض منطقة القيمة.
+_DEFAULT_RETEST_MID_FRAC = 0.25
 
 _FSM_SIGNAL_COLUMNS = (
     "vp_fsm_break",
@@ -40,6 +50,19 @@ _FSM_SIGNAL_COLUMNS = (
     "vp_fsm_retest",
     "vp_fsm_expand",
     "vp_auction_setup",
+)
+
+#: ثلاث حدود VP الصريحة (علوي / متوسط / سفلي) بالدولار.
+_VP_BOUND_COLUMNS = (
+    "vp_upper",
+    "vp_mid",
+    "vp_lower",
+)
+#: مسافات نسبية عن الحدود الثلاثة: (close − bound) / max(VAH−VAL, ε).
+_VP_REL_BOUND_COLUMNS = (
+    "vp_rel_upper",
+    "vp_rel_mid",
+    "vp_rel_lower",
 )
 
 
@@ -141,11 +164,12 @@ def auction_fsm_columns(
     retest_window: int = _DEFAULT_RETEST_WINDOW,
     accel_lookback: int = _DEFAULT_ACCEL_LOOKBACK,
     accel_mult: float = _DEFAULT_ACCEL_MULT,
+    retest_mid_frac: float = _DEFAULT_RETEST_MID_FRAC,
 ) -> pl.DataFrame:
     """آلة حالات مزاد سببية على براميل ``auction_states``.
 
-    التسلسل:
-    توازن → كسر حدود VA → تسارع حجم → ريتست يحمي المركز → توسّع مع الاتجاه.
+    التسلسل على حدود VP الثلاثة (علوي/متوسط/سفلي):
+    توازن → كسر ``upper``/``lower`` → تسارع حجم → ريتست يحمي ``mid`` → توسّع.
 
     ``vp_auction_setup`` = اتجاه الإعداد المكتمل (+1/−1) عند اكتمال السلسلة؛ 0 وإلا.
     """
@@ -156,8 +180,9 @@ def auction_fsm_columns(
 
     balanced = states["is_balanced"].to_numpy()
     close = states["close"].to_numpy().astype(np.float64)
-    vah = states["vah"].to_numpy().astype(np.float64)
-    val = states["val"].to_numpy().astype(np.float64)
+    vah = states["vah"].to_numpy().astype(np.float64)  # upper
+    poc = states["poc"].to_numpy().astype(np.float64)  # mid
+    val = states["val"].to_numpy().astype(np.float64)  # lower
     vol = states["bucket_volume"].to_numpy().astype(np.float64)
     expansion = states["is_expansion"].to_numpy()
     pullback = states["pullback_defended"].to_numpy()
@@ -176,7 +201,7 @@ def auction_fsm_columns(
 
     for i in range(n):
         prev_bal = bool(balanced[i - 1]) if i > 0 else False
-        # كسر: كان متوازنًا والآن إغلاق خارج VA
+        # كسر حد علوي/سفلي: كان متوازنًا والآن إغلاق خارج [lower, upper]
         if prev_bal and not bool(balanced[i]):
             if close[i] > vah[i]:
                 brk[i] = 1.0
@@ -192,7 +217,7 @@ def auction_fsm_columns(
             continue
         age = i - pending_i
         if age > retest_window and not saw_retest:
-            # انتهت نافذة الريتست بلا حماية
+            # انتهت نافذة الريتست بلا حماية للمركز
             pending_dir = 0.0
             pending_i = -1
             continue
@@ -206,18 +231,15 @@ def auction_fsm_columns(
                 accel[i] = pending_dir
                 saw_accel = True
 
-        # ريتست: العودة لحدود القيمة بعد الكسر مع دفاع/قبول القيمة.
+        # ريتست يحمي المركز (mid/POC) بعد الكسر — لا الاكتفاء بحافة الكسر فقط.
         if age >= 1 and saw_accel and not saw_retest:
             va_w = max(float(vah[i] - val[i]), 1.0)
-            if pending_dir > 0:
-                near_break = abs(float(close[i] - vah[i])) <= 0.15 * va_w
-            else:
-                near_break = abs(float(close[i] - val[i])) <= 0.15 * va_w
-            if near_break and (bool(pullback[i]) or bool(in_value[i])):
+            near_mid = abs(float(close[i] - poc[i])) <= retest_mid_frac * va_w
+            if near_mid and (bool(pullback[i]) or bool(in_value[i])):
                 retest[i] = pending_dir
                 saw_retest = True
 
-        # توسّع مع اتجاه الكسر بعد الريتست
+        # توسّع مع اتجاه الكسر بعد الريتست (فوق upper أو تحت lower)
         if saw_retest and bool(expansion[i]):
             if pending_dir > 0 and close[i] >= vah[i]:
                 expand[i] = pending_dir
@@ -259,6 +281,8 @@ def auction_signal_frame(
 
     جاهزة للدمج asof في إطار البحث الموحّد:
 
+    * ``vp_upper`` / ``vp_mid`` / ``vp_lower`` — حدود VP الثلاثة (VAH/POC/VAL) بالدولار.
+    * ``vp_rel_upper`` / ``vp_rel_mid`` / ``vp_rel_lower`` — مسافة نسبية عن كل حد.
     * ``vp_balance`` — ``+1`` متوازن، ``-1`` مختلّ.
     * ``vp_imbalance`` — ``1`` عند الاختلال، ``0`` وإلا.
     * ``vp_expansion`` — ``1`` عند تمدّد المدى، ``0`` وإلا.
@@ -281,6 +305,8 @@ def auction_signal_frame(
     )
     base_schema = {
         AVAILABILITY_TS: pl.Int64(),
+        **{c: pl.Float64() for c in _VP_BOUND_COLUMNS},
+        **{c: pl.Float64() for c in _VP_REL_BOUND_COLUMNS},
         "vp_balance": pl.Float64(),
         "vp_imbalance": pl.Float64(),
         "vp_expansion": pl.Float64(),
@@ -294,9 +320,23 @@ def auction_signal_frame(
     if states.height == 0:
         return pl.DataFrame(schema=base_schema)
 
+    scale = float(PRICE_SCALE)
     classic = (
         states.sort(BUCKET_START)
         .with_columns(
+            (pl.col("vah").cast(pl.Float64) * scale).alias("vp_upper"),
+            (pl.col("poc").cast(pl.Float64) * scale).alias("vp_mid"),
+            (pl.col("val").cast(pl.Float64) * scale).alias("vp_lower"),
+            pl.max_horizontal(
+                pl.col("vah").cast(pl.Float64) - pl.col("val").cast(pl.Float64),
+                pl.lit(1.0),
+            ).alias("_va_w"),
+            pl.col("close").cast(pl.Float64).alias("_close"),
+        )
+        .with_columns(
+            ((pl.col("_close") - pl.col("vah")) / pl.col("_va_w")).alias("vp_rel_upper"),
+            ((pl.col("_close") - pl.col("poc")) / pl.col("_va_w")).alias("vp_rel_mid"),
+            ((pl.col("_close") - pl.col("val")) / pl.col("_va_w")).alias("vp_rel_lower"),
             pl.when(pl.col("is_balanced")).then(1.0).otherwise(-1.0).alias("vp_balance"),
             pl.when(~pl.col("is_balanced")).then(1.0).otherwise(0.0).alias("vp_imbalance"),
             pl.when(pl.col("is_expansion")).then(1.0).otherwise(0.0).alias("vp_expansion"),
@@ -313,6 +353,8 @@ def auction_signal_frame(
         )
         .select(
             AVAILABILITY_TS,
+            *_VP_BOUND_COLUMNS,
+            *_VP_REL_BOUND_COLUMNS,
             "vp_balance",
             "vp_imbalance",
             "vp_expansion",
