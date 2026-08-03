@@ -3,10 +3,11 @@
 ليست طبقة منفصلة عن المشروع: نفس الخط الموحّد ``run_research_pipeline`` ثم
 امتداد تنفيذي داخل نفس الاستراتيجية:
 
-1. تنظيف MBO بفلتر التضليل (دورة أمر كاملة — بلا أشباح).
-2. بناء ``vp_*`` + SSL‖M9‖ألفا عبر الخط الموحّد.
-3. اختيار إشارة VP بـ walk-forward purged **قبل** التنفيذ.
-4. حكم السوق بعد هولد (درجات من الخام) + بحث R:R معزول OOS.
+1. تسجيل التضليل مرة واحدة من الخام → فلتر دفتر + براميل إدج.
+2. رينج VP على **5 دقائق** (حدود علوي/متوسط/سفلي) + فعل على **30 ثانية**
+   (ارتداد من متوازن · كسر+دخول من مختلّ) + SSL‖M9‖ألفا.
+3. اختيار إشارة VP/FSM بـ walk-forward purged **قبل** التنفيذ.
+4. حكم السوق بعد هولد (درجات من الخام المُعاد استخدامها) + بحث R:R معزول OOS.
 5. دمج أعمدة التنفيذ للتقرير فقط — بلا تشعّب مسارات.
 """
 
@@ -31,11 +32,17 @@ from nq.research.orchestrator import (
 )
 from nq.research.progress import ProgressLike, resolve_progress
 from nq.research.unified import UnifiedResearchReport
+from nq.simulation.auction import (
+    VP_PROFILE_INTERVAL_NS,
+    VP_SIGNAL_INTERVAL_NS,
+    auction_action_states,
+)
 from nq.simulation.deceptive_liquidity import (
     DECEPTIVE_FEATURE_COLUMNS,
     DeceptiveLiquidityConfig,
     deceptive_features_by_bucket,
     filter_deceptive_liquidity,
+    score_deceptive_events,
 )
 from nq.simulation.edge_execution_plan import (
     EdgeSearchSpec,
@@ -48,12 +55,23 @@ from nq.simulation.market_truth import MARKET_TRUTH_COLUMNS
 from nq.strategies.fvg_hypothesis import walk_forward_select_hypotheses
 
 _VP_AUCTION_FOCUS = (
+    "vp_rel_upper",
+    "vp_rel_mid",
+    "vp_rel_lower",
+    "vp_excess_upper",
+    "vp_excess_lower",
+    "vp_of_delta",
+    "vp_absorb",
+    "vp_look_fail",
     "vp_balance",
     "vp_imbalance",
     "vp_expansion",
     "vp_close_in_value",
     "vp_flip_to_imbalance",
     "vp_pullback_defense",
+    "vp_auction_setup",
+    "vp_fsm_break",
+    "vp_fsm_retest",
     "nq_delta",
 )
 
@@ -212,29 +230,52 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     min_oos_trades: int = 3,
     min_oos_rr: float = 2.0,
     interval_ns: int | None = None,
+    profile_interval_ns: int | None = None,
     streaming_features: bool = False,
 ) -> VpAuctionResearchResult:
     """مسار VP المتصل بترتيب علمي آمن.
 
     1. تنظيف دفتر مضلل (بلا أشباح).
-    2. خط موحّد → ``vp_*`` (افتراضي: ``batch`` + SSL bucket — سريع).
-       ``streaming_features=True`` يفعّل tick_stream الكامل عند الحاجة.
+    2. خط موحّد → ``vp_*`` على ساعة فعل 30ث مع رينج VP 5د.
     3. Walk-forward على ``vp_*`` فقط (قبل أي أعمدة تنفيذ).
     4. ثم هولد/R:R؛ درجات التضليل من الخام؛ إلحاق التنفيذ للتقرير فقط.
     """
     generator = rng if rng is not None else np.random.default_rng(0)
     log = resolve_progress(None, quiet=quiet)
     deco_cfg = deceptive if deceptive is not None else DeceptiveLiquidityConfig()
+    sig_iv = int(interval_ns) if interval_ns is not None else VP_SIGNAL_INTERVAL_NS
+    prof_iv = (
+        int(profile_interval_ns)
+        if profile_interval_ns is not None
+        else VP_PROFILE_INTERVAL_NS
+    )
 
     log.step("VP: تحميل MBO")
     raw = _load_nq(nq, max_rows=max_rows, progress=log)
     raw_n = raw.height
+    # تسجيل التضليل مرة واحدة لليوم — يُعاد استخدامه للفلتر + براميل الإدج.
+    scored_raw: pl.DataFrame | None = None
+    deco_by_bucket: pl.DataFrame | None = None
+    if drop_deceptive or with_execution:
+        log.step("VP: تسجيل التضليل مرة واحدة", f"events={raw_n:,}")
+        scored_raw = score_deceptive_events(raw, config=deco_cfg, progress=log)
     if drop_deceptive:
-        log.step("VP: فلتر التضليل العلمي", "إسقاط دورة الأمر الكاملة")
-        cleaned = filter_deceptive_liquidity(raw, config=deco_cfg)
+        log.step("VP: فلتر التضليل العلمي", "إسقاط دورة الأمر الكاملة · reuse scored")
+        cleaned = filter_deceptive_liquidity(
+            raw, config=deco_cfg, progress=log, scored=scored_raw
+        )
     else:
         cleaned = raw
     cleaned_n = cleaned.height
+    if with_execution and scored_raw is not None:
+        log.step("VP: براميل التضليل (مرة واحدة)", f"interval_ns={sig_iv}")
+        deco_by_bucket = deceptive_features_by_bucket(
+            raw,
+            interval_ns=sig_iv,
+            config=deco_cfg,
+            progress=log,
+            scored=scored_raw,
+        )
 
     partner: pl.DataFrame | str | Path
     if mnq is None:
@@ -257,7 +298,8 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         ssl_components=ssl_components,
         signal_columns=_VP_AUCTION_FOCUS,
         quiet=quiet,
-        interval_ns=int(interval_ns) if interval_ns is not None else 1_000_000_000,
+        interval_ns=sig_iv,
+        profile_interval_ns=prof_iv,
         # افتراضي سريع: VP من شريط الصفقات لا يحتاج tick_stream حدث-بحدث
         feature_mode="batch" if not streaming_features else "streaming",
         ssl_mode="bucket" if not streaming_features else "tick",
@@ -308,8 +350,17 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     }
 
     if with_execution:
-        log.step("VP: حكم السوق + بحث R:R", "بعد WF · درجات تضليل من الخام")
+        log.step(
+            "VP: حكم السوق + بحث R:R",
+            f"بعد WF · رينج={prof_iv // 1_000_000_000}s · فعل={iv // 1_000_000_000}s",
+        )
         specs = edge_grid if edge_grid is not None else default_edge_search_grid()
+        auction_day = auction_action_states(
+            cleaned,
+            profile_interval_ns=prof_iv,
+            signal_interval_ns=iv,
+            progress=log,
+        )
         edge_table, best_edge, best_edge_row = search_best_edge_spec(
             cleaned,
             interval_ns=iv,
@@ -320,6 +371,9 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
             progress=log,
             min_oos_trades=min_oos_trades,
             min_oos_rr=min_oos_rr,
+            auction=auction_day,
+            deceptive_frame=deco_by_bucket,
+            scored=scored_raw,
         )
         if best_edge is not None:
             edge_trades = run_edge_plan(
@@ -330,6 +384,8 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 deceptive=deco_cfg,
                 score_mbo=raw,
                 progress=log,
+                auction=auction_day,
+                deceptive_frame=deco_by_bucket,
             )
         else:
             edge_trades = run_edge_plan(
@@ -338,19 +394,22 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 deceptive=deco_cfg,
                 score_mbo=raw,
                 progress=log,
+                auction=auction_day,
+                deceptive_frame=deco_by_bucket,
             )
         edge_summary = summarize_edge_trades(edge_trades)
         edge_trades = _with_gated_vp_columns(edge_trades, features)
-        if "deceptive_score" not in edge_trades.columns:
-            deco = deceptive_features_by_bucket(
-                raw, interval_ns=iv, config=deco_cfg, progress=log
+        if (
+            "deceptive_score" not in edge_trades.columns
+            and deco_by_bucket is not None
+            and deco_by_bucket.height
+            and AVAILABILITY_TS in deco_by_bucket.columns
+        ):
+            edge_trades = edge_trades.join_asof(
+                deco_by_bucket.sort(AVAILABILITY_TS),
+                on=AVAILABILITY_TS,
+                strategy="backward",
             )
-            if deco.height and AVAILABILITY_TS in deco.columns:
-                edge_trades = edge_trades.join_asof(
-                    deco.sort(AVAILABILITY_TS),
-                    on=AVAILABILITY_TS,
-                    strategy="backward",
-                )
         features = _attach_execution_layer(features, edge_trades)
 
     assistant = ResearchAssistant(alpha=alpha)

@@ -66,6 +66,9 @@ def build_coverage_report(
     for result in results:
         ev = metric_to_evidence(result)
         if result.triggered and result.name not in reject_set:
+            # Skip duplicate metric names rather than crashing the whole pipeline.
+            if ev.id in research.store:
+                continue
             research.store.add(ev)
             evidence_list.append(ev)
             alerts.append(

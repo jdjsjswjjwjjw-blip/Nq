@@ -1,14 +1,17 @@
 # فرضيات Volume Profile + التوازن/الاختلال — NQ فقط
 # Volume Profile / Auction balance–imbalance hypotheses (NQ-only)
-# افتراضي سريع: batch features + bucket SSL (إشارات vp_* من شريط الصفقات)
+# رينج VP = 5 دقائق · فعل (ارتداد/كسر/دخول) = 30 ثانية
 
 [determinism]
 global_seed = 20260719
 
 [temporal]
-interval_ns = 1_000_000_000
+# ساعة البحث/الفعل (ارتداد متوازن · كسر+دخول مختلّ)
+interval_ns = 30_000_000_000
+# رينج Volume Profile / حدود VA الثلاثة
+profile_interval_ns = 300_000_000_000
 horizon = 1
-embargo_ns = 1_000_000_000
+embargo_ns = 30_000_000_000
 
 [cross_market]
 latency_ns = 0
@@ -29,18 +32,29 @@ n_splits = 3
 [features]
 mode = "batch"
 
-# فرز مركّز على VP / المزاد (متوازن · مختلّ · تمدّد · انقلاب)
+# فرز مركّز على VP / المزاد (متوازن · مختلّ · تمدّد · انقلاب · حدود نسبية)
 [signals]
 include_failed_fvg = false
 include_auction_vp = true
 include_failed_breakout = false
 columns = [
+  "vp_rel_upper",
+  "vp_rel_mid",
+  "vp_rel_lower",
+  "vp_excess_upper",
+  "vp_excess_lower",
+  "vp_of_delta",
+  "vp_absorb",
+  "vp_look_fail",
   "vp_balance",
   "vp_imbalance",
   "vp_expansion",
   "vp_close_in_value",
   "vp_flip_to_imbalance",
   "vp_pullback_defense",
+  "vp_auction_setup",
+  "vp_fsm_break",
+  "vp_fsm_retest",
   "nq_delta",
 ]
 

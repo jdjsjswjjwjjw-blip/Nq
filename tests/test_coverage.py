@@ -17,7 +17,8 @@ from nq.coverage import (
 )
 from nq.coverage.blocks import resolve_block_columns
 from nq.coverage.distance import fold_information_gap_perm_null
-from nq.coverage.monitor import run_coverage_on_features
+from nq.coverage.metrics import MetricResult, metric_to_evidence
+from nq.coverage.monitor import build_coverage_report, run_coverage_on_features
 from nq.simulation.cross_market import cross_market_features
 from tests.mbo_factory import Event, make_stream, random_add_cancel_stream
 
@@ -120,6 +121,21 @@ def test_coverage_nq_only_reuses_descriptors() -> None:
         progress=None,
     )
     assert report.metrics.height > 0
+
+
+def test_build_coverage_report_skips_duplicate_evidence_ids() -> None:
+    """LORI historically emitted many identical transition_surprise names."""
+    dup = MetricResult(
+        "lori:transition_surprise",
+        5.0,
+        0.01,
+        1,
+        "novel transition 0->1 (TS=5.00)",
+        True,
+    )
+    report = build_coverage_report([dup, dup])
+    assert len(report.evidence) == 1
+    assert report.evidence[0].id == metric_to_evidence(dup).id
 
 
 def test_run_all_metrics_on_cross_market_features() -> None:

@@ -19,6 +19,9 @@ def test_run_vp_auction_research_uses_unified_features() -> None:
         rng=make_generator(5),
         quiet=True,
         with_execution=False,
+        # مصغّر: فعل 10μs · رينج 20μs (بدل 30ث / 5د على بيانات اصطناعية قصيرة)
+        interval_ns=10_000,
+        profile_interval_ns=20_000,
     )
     assert "vp_balance" in result.features.columns
     assert "vp_imbalance" in result.features.columns
@@ -39,6 +42,8 @@ def test_run_vp_auction_research_produces_report() -> None:
         rng=make_generator(6),
         quiet=True,
         with_execution=False,
+        interval_ns=10_000,
+        profile_interval_ns=20_000,
     )
     md = result.unified.to_markdown()
     assert "قناة 1 — SSL" in md
@@ -75,6 +80,8 @@ def test_run_vp_auction_connected_execution_layer() -> None:
         min_oos_rr=0.0,
         # عيّنة اصطناعية صغيرة؛ batch على هذا المصنع قد يُفرّغ البراميل
         streaming_features=True,
+        interval_ns=1_000_000_000,
+        profile_interval_ns=2_000_000_000,
     )
     assert result.with_execution is True
     assert result.raw_mbo_rows == mbo.height

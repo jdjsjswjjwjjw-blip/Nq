@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import polars as pl
 
 from nq.contracts.mbo import MBO_SCHEMA, PRICE_SCALE, validate_mbo_frame
+from nq.simulation.auction import auction_action_states
 from nq.simulation.deceptive_liquidity import (
     DeceptiveLiquidityConfig,
     deceptive_features_by_bucket,
@@ -23,7 +26,7 @@ from nq.simulation.edge_execution_plan import (
 )
 from nq.simulation.market_truth import MarketTruthConfig, build_market_truth_frame
 from nq.strategies.liquidity_edge import run_liquidity_edge_research
-from tests.mbo_factory import make_stream
+from tests.mbo_factory import make_stream, random_add_cancel_stream
 
 
 def _px(dollars: float) -> int:
@@ -108,6 +111,61 @@ def test_deceptive_bucket_noise_cum_is_causal() -> None:
     assert "real_liquidity_ratio" in feats.columns
 
 
+def test_scored_frame_reused_for_filter_and_bucket_features(monkeypatch) -> None:
+    """تسجيل التضليل مرة واحدة يكفي للفلتر + براميل الإدج."""
+    frame = make_stream(
+        [
+            ("A", "B", _px(100.0), 8, 1),
+            ("A", "A", _px(101.0), 4, 2),
+            ("C", "B", _px(100.0), 8, 1),
+            ("T", "B", _px(100.0), 1, 0),
+        ],
+        event_ts=[0, 1_000_000, 10_000_000, 20_000_000],
+    )
+    cfg = DeceptiveLiquidityConfig(
+        short_life_ns=50_000_000,
+        drop_score=0.2,
+        storm_min_events=100,
+    )
+    calls = {"n": 0}
+    real_score = score_deceptive_events
+
+    def _counting_score(*args, **kwargs):
+        calls["n"] += 1
+        return real_score(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "nq.simulation.deceptive_liquidity.score_deceptive_events",
+        _counting_score,
+    )
+    scored = _counting_score(frame, config=cfg)
+    assert calls["n"] == 1
+    cleaned = filter_deceptive_liquidity(frame, config=cfg, scored=scored)
+    feats = deceptive_features_by_bucket(
+        frame, interval_ns=1_000_000_000, config=cfg, scored=scored
+    )
+    assert calls["n"] == 1
+    validate_mbo_frame(cleaned)
+    assert feats.height >= 1
+    assert "deceptive_score" in feats.columns
+
+
+def test_score_deceptive_fast_path_handles_dense_book() -> None:
+    """مسار BBO التزايدي لا ينهار على دفتر كثيف (سابقًا O(live) كل حدث)."""
+    frame = random_add_cancel_stream(20_000, seed=42)
+    # أضف صفقات حتى لا يبقى المسار ADD/CANCEL فقط
+    t0 = time.perf_counter()
+    scored = score_deceptive_events(
+        frame,
+        config=DeceptiveLiquidityConfig(storm_min_events=50),
+    )
+    elapsed = time.perf_counter() - t0
+    assert scored.height == frame.height
+    assert "deceptive_score" in scored.columns
+    # على 20k حدث يجب أن ينتهي في أقل من ثانيتين حتى على CPU بطيء
+    assert elapsed < 2.0, f"score too slow: {elapsed:.3f}s"
+
+
 def _session_with_imbalance(n_buckets: int = 40) -> pl.DataFrame:
     """جلسة اصطناعية: صفقات داخل قيمة ثم تمدّد صاعد مع سيولة حقيقية."""
     events: list[tuple[str, str, int, int, int]] = []
@@ -138,6 +196,7 @@ def test_market_truth_hold_and_verdict_columns() -> None:
     truth = build_market_truth_frame(
         mbo,
         interval_ns=1_000_000_000,
+        profile_interval_ns=2_000_000_000,
         truth=MarketTruthConfig(
             hold_buckets=2,
             min_real_liquidity=0.0,
@@ -223,6 +282,7 @@ def test_search_rejects_ineligible_grid() -> None:
     table, best, row = search_best_edge_spec(
         mbo,
         interval_ns=1_000_000_000,
+        profile_interval_ns=2_000_000_000,
         grid=grid,
         train_frac=0.5,
         deceptive=DeceptiveLiquidityConfig(storm_min_events=10_000),
@@ -245,12 +305,18 @@ def test_oos_simulations_are_independent() -> None:
         target_mode="rr_multiple",
         rr_multiple=2.0,
     )
+    auction = auction_action_states(
+        mbo,
+        profile_interval_ns=2_000_000_000,
+        signal_interval_ns=1_000_000_000,
+    )
     row = score_edge_spec_oos(
         mbo,
         spec,
         interval_ns=1_000_000_000,
         train_frac=0.5,
         deceptive=DeceptiveLiquidityConfig(storm_min_events=10_000),
+        auction=auction,
     )
     assert "oos_n" in row
     assert "train_expectancy" in row
@@ -279,6 +345,7 @@ def test_search_and_strategy_smoke() -> None:
     table, best, row = search_best_edge_spec(
         mbo,
         interval_ns=1_000_000_000,
+        profile_interval_ns=2_000_000_000,
         grid=grid,
         train_frac=0.5,
         deceptive=DeceptiveLiquidityConfig(storm_min_events=10_000),
@@ -291,6 +358,8 @@ def test_search_and_strategy_smoke() -> None:
 
     result = run_liquidity_edge_research(
         mbo,
+        interval_ns=1_000_000_000,
+        profile_interval_ns=2_000_000_000,
         train_frac=0.5,
         min_oos_trades=0,
         min_oos_rr=0.0,
@@ -298,6 +367,7 @@ def test_search_and_strategy_smoke() -> None:
         drop_deceptive=True,
         deceptive=DeceptiveLiquidityConfig(storm_min_events=10_000),
         quiet=True,
+        streaming_features=True,
     )
     assert result.vp.with_execution is True
     assert result.raw_mbo_rows == mbo.height

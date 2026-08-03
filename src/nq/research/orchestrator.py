@@ -36,7 +36,7 @@ from nq.models.tick_stream import TickStream
 from nq.research.assistant import LanguageModel, ResearchAssistant
 from nq.research.progress import PipelineProgress, resolve_progress
 from nq.research.unified import UnifiedResearchReport, build_unified_report
-from nq.simulation.auction import auction_signal_frame
+from nq.simulation.auction import VP_PROFILE_INTERVAL_NS, auction_signal_frame
 from nq.simulation.bottom_book import (
     BOTTOM_BOOK_COLUMNS,
     attach_bottom_book_asof,
@@ -95,6 +95,17 @@ _BATCH_SIGNAL_COLUMNS = (
 )
 
 _VP_AUCTION_SIGNAL_COLUMNS = (
+    "vp_upper",
+    "vp_mid",
+    "vp_lower",
+    "vp_rel_upper",
+    "vp_rel_mid",
+    "vp_rel_lower",
+    "vp_excess_upper",
+    "vp_excess_lower",
+    "vp_of_delta",
+    "vp_absorb",
+    "vp_look_fail",
     "vp_balance",
     "vp_imbalance",
     "vp_expansion",
@@ -103,6 +114,11 @@ _VP_AUCTION_SIGNAL_COLUMNS = (
     "vp_pullback_defense",
     "vp_poc_migration",
     "vp_flip_to_imbalance",
+    "vp_fsm_break",
+    "vp_fsm_accel",
+    "vp_fsm_retest",
+    "vp_fsm_expand",
+    "vp_auction_setup",
 )
 
 _FB_SIGNAL_COLUMNS = (
@@ -173,6 +189,8 @@ class PipelineConfig:
     # عمق موحّد: ضوضاء + أسفل الدفتر
     filter_depth_noise: bool = True
     include_bottom_book: bool = True
+    #: رينج Volume Profile (افتراضي 5 دقائق) — مستقل عن ساعة البحث/الفعل.
+    profile_interval_ns: int = VP_PROFILE_INTERVAL_NS
 
     @classmethod
     def from_toml(cls, path: Path | str) -> PipelineConfig:
@@ -236,6 +254,12 @@ class PipelineConfig:
             use_micro_interval=use_micro,
             filter_depth_noise=bool(raw.get("depth", {}).get("filter_noise", True)),
             include_bottom_book=bool(raw.get("depth", {}).get("include_bottom_book", True)),
+            profile_interval_ns=int(
+                temporal.get(
+                    "profile_interval_ns",
+                    signals.get("profile_interval_ns", VP_PROFILE_INTERVAL_NS),
+                )
+            ),
         )
 
 
@@ -330,11 +354,17 @@ def _attach_auction_vp(
     nq: pl.DataFrame,
     *,
     interval_ns: int,
+    profile_interval_ns: int = VP_PROFILE_INTERVAL_NS,
     progress: PipelineProgress | None = None,
 ) -> pl.DataFrame:
-    """يلحق إشارات Volume Profile / المزاد (توازن·اختلال·تمدّد) asof خلفي."""
+    """يلحق إشارات Volume Profile / المزاد (رينج 5د · فعل 30ث) asof خلفي."""
     log = progress if progress is not None else PipelineProgress(enabled=False)
-    signals = auction_signal_frame(nq, interval_ns=interval_ns, progress=log)
+    signals = auction_signal_frame(
+        nq,
+        signal_interval_ns=interval_ns,
+        profile_interval_ns=profile_interval_ns,
+        progress=log,
+    )
     zero_exprs = [pl.lit(0.0).alias(c) for c in _VP_AUCTION_SIGNAL_COLUMNS]
     if signals.height == 0 or features.height == 0:
         return features.with_columns(zero_exprs)
@@ -640,7 +670,13 @@ def _build_research_features(
     if cfg.include_auction_vp:
         log.step("إلحاق Volume Profile / Auction (asof خلفي)")
         log.op("auction_signal_frame + join_asof backward")
-        features = _attach_auction_vp(features, nq, interval_ns=cfg.interval_ns, progress=log)
+        features = _attach_auction_vp(
+            features,
+            nq,
+            interval_ns=cfg.interval_ns,
+            profile_interval_ns=cfg.profile_interval_ns,
+            progress=log,
+        )
         log.op(f"بعد Auction/VP: {features.height:,} صف")
     if cfg.include_failed_breakout:
         log.step("إلحاق Failed Breakout + عمق عند مستوى الكسر")

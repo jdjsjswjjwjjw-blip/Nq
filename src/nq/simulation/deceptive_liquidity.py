@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Final
 
@@ -39,6 +40,8 @@ _MODIFY = MboAction.MODIFY.value
 _DEFAULT_TICK: Final = 0.25
 _TICK_FIXED: Final = round(_DEFAULT_TICK / PRICE_SCALE)
 _HIGH_DECEPTIVE_SCORE: Final = 0.5
+#: نبضة تسجيل كل N حدث — يمنع «عمى» الإدج على أيام 30–60M.
+_SCORE_HEARTBEAT_EVERY: Final = 100_000
 
 DECEPTIVE_FEATURE_COLUMNS: Final[tuple[str, ...]] = (
     "deceptive_score",
@@ -95,11 +98,14 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
     frame: pl.DataFrame,
     *,
     config: DeceptiveLiquidityConfig | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يُلحق بكل حدث MBO درجة تضليل سببية ومكوّناتها.
 
     الصفقات/التنفيذات تحصل على درجة 0 وتُبقى دائمًا. الإضافات تُسجَّل؛ الحكم
     النهائي عند الإلغاء/بعد وصول السعر للمستوى.
+
+    أداء: BBO ونافذة العاصفة تُحدَّث تزايديًا (بلا مسح كل الأوامر الحية كل حدث).
     """
     cfg = config if config is not None else DeceptiveLiquidityConfig()
     if frame.height == 0:
@@ -117,17 +123,24 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
     order_ids = work["order_id"].to_list()
     event_ts = work[EVENT_TS].to_list()
     n = len(actions)
+    if progress is not None:
+        progress.op(f"score_deceptive_events: events={n:,}")
 
     # oid -> (add_ts, price, side, size, modify_count, touched_by_trade)
     live: dict[int, tuple[int, int, str, int, int, bool]] = {}
     executed_oids: set[int] = set()
-    # price -> set of resting oids (للمشاركة عند وصول الصفقة)
     by_price: dict[int, set[int]] = {}
 
+    # عدّاد مستويات السعر (عدد الأوامر) — تحديث BBO O(1) غالبًا، وإعادة max/min عند حذف الأفضل فقط.
+    bid_levels: Counter[int] = Counter()
+    ask_levels: Counter[int] = Counter()
     best_bid: int | None = None
     best_ask: int | None = None
+
     recent: list[tuple[int, bool]] = []  # (ts, is_cancel)
     head = 0
+    n_win = 0
+    n_cancel = 0
 
     scores = [0.0] * n
     spoof_f = [0.0] * n
@@ -142,53 +155,91 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
             return None
         return (best_bid + best_ask) / 2.0
 
-    def _refresh_bbo() -> None:
+    def _level_add(side: str, price: int) -> None:
         nonlocal best_bid, best_ask
-        bids = [meta[1] for meta in live.values() if meta[2] == "B"]
-        asks = [meta[1] for meta in live.values() if meta[2] == "A"]
-        best_bid = max(bids) if bids else None
-        best_ask = min(asks) if asks else None
+        if side == "B":
+            bid_levels[price] += 1
+            if best_bid is None or price > best_bid:
+                best_bid = price
+        elif side == "A":
+            ask_levels[price] += 1
+            if best_ask is None or price < best_ask:
+                best_ask = price
 
+    def _level_remove(side: str, price: int) -> None:
+        nonlocal best_bid, best_ask
+        if side == "B":
+            left = bid_levels.get(price, 0) - 1
+            if left <= 0:
+                bid_levels.pop(price, None)
+                if best_bid == price:
+                    best_bid = max(bid_levels) if bid_levels else None
+            else:
+                bid_levels[price] = left
+        elif side == "A":
+            left = ask_levels.get(price, 0) - 1
+            if left <= 0:
+                ask_levels.pop(price, None)
+                if best_ask == price:
+                    best_ask = min(ask_levels) if ask_levels else None
+            else:
+                ask_levels[price] = left
+
+    def _storm_expire(ts: int) -> None:
+        nonlocal head, n_win, n_cancel
+        cutoff = ts - cfg.storm_window_ns
+        while head < len(recent) and recent[head][0] < cutoff:
+            _, was_cancel = recent[head]
+            n_win -= 1
+            if was_cancel:
+                n_cancel -= 1
+            head += 1
+
+    def _storm_push(ts: int, is_cancel: bool) -> None:
+        nonlocal n_win, n_cancel
+        recent.append((ts, is_cancel))
+        n_win += 1
+        if is_cancel:
+            n_cancel += 1
+
+    hb = _SCORE_HEARTBEAT_EVERY
     for i in range(n):
-        action = str(actions[i])
-        side = str(sides[i])
+        if progress is not None and (i == 0 or (i + 1) % hb == 0 or i + 1 == n):
+            progress.heartbeat(i + 1, n, label="deceptive-score", force=True)
+        action = actions[i]
+        side = sides[i]
         price = int(prices[i])
         size = int(sizes[i])
         oid = int(order_ids[i])
         ts = int(event_ts[i])
 
-        cutoff = ts - cfg.storm_window_ns
-        while head < len(recent) and recent[head][0] < cutoff:
-            head += 1
-        window = recent[head:]
-        n_win = len(window)
-        n_cancel = sum(1 for _, c in window if c)
+        _storm_expire(ts)
         in_storm = (
             n_win >= cfg.storm_min_events
+            and n_win > 0
             and (n_cancel / float(n_win)) >= cfg.storm_cancel_ratio
         )
 
         if action in (_TRADE, _FILL):
             executed_oids.add(oid)
-            # أوامر راقدة على نفس السعر ولم تُنفَّذ → مرشّح عدم مشاركة
-            resting = by_price.get(price, set())
-            for other in list(resting):
-                if other == oid or other in executed_oids:
-                    continue
-                meta = live.get(other)
-                if meta is None:
-                    continue
-                add_ts, _px, _sd, _sz, mods, _touched = meta
-                live[other] = (add_ts, _px, _sd, _sz, mods, True)
-            recent.append((ts, False))
+            resting = by_price.get(price)
+            if resting:
+                for other in list(resting):
+                    if other == oid or other in executed_oids:
+                        continue
+                    meta = live.get(other)
+                    if meta is None:
+                        continue
+                    add_ts, _px, _sd, _sz, mods, _touched = meta
+                    live[other] = (add_ts, _px, _sd, _sz, mods, True)
+            _storm_push(ts, False)
             continue
 
         if action == _ADD:
             live[oid] = (ts, price, side, size, 0, False)
             by_price.setdefault(price, set()).add(oid)
-            _refresh_bbo()
+            _level_add(side, price)
             mid = _mid()
-            # إضافة ضخمة بعيدة أثناء عاصفة = تضليل فوري (إسقاط الإضافة)
             if in_storm and mid is not None and size >= cfg.spoof_min_size:
                 dist = abs(price - mid) / float(_TICK_FIXED)
                 if dist >= cfg.spoof_ticks_from_mid:
@@ -200,8 +251,8 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
                         drop_mask[i] = True
                         by_price.get(price, set()).discard(oid)
                         live.pop(oid, None)
-                        _refresh_bbo()
-            recent.append((ts, False))
+                        _level_remove(side, price)
+            _storm_push(ts, False)
             continue
 
         if action == _MODIFY:
@@ -209,13 +260,14 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
             if meta is not None:
                 add_ts, old_px, old_side, _old_sz, mods, touched = meta
                 by_price.get(old_px, set()).discard(oid)
+                _level_remove(old_side, old_px)
                 live[oid] = (add_ts, price, old_side, size, mods + 1, touched)
                 by_price.setdefault(price, set()).add(oid)
-                _refresh_bbo()
+                _level_add(old_side, price)
                 if mods + 1 >= cfg.bait_modify_min and oid not in executed_oids:
                     bait_f[i] = 1.0
                     scores[i] = max(scores[i], w[2])
-            recent.append((ts, False))
+            _storm_push(ts, False)
             continue
 
         if action == _CANCEL:
@@ -226,7 +278,7 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
             nonpart = 0.0
             storm = 1.0 if in_storm else 0.0
             if meta is not None:
-                add_ts, add_px, _, add_sz, mods, touched = meta
+                add_ts, add_px, add_side, add_sz, mods, touched = meta
                 dt = ts - add_ts
                 if dt <= cfg.short_life_ns and oid not in executed_oids:
                     short_life = 1.0
@@ -248,14 +300,13 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
                 if touched and oid not in executed_oids:
                     nonpart = 1.0
                     nonpart_f[i] = 1.0
-                # عاصفة بعيدة عن الداخل
                 if in_storm and mid is not None:
                     dist = abs(add_px - mid) / float(_TICK_FIXED)
                     if dist >= cfg.storm_ticks_from_inside:
                         storm = 1.0
                 by_price.get(add_px, set()).discard(oid)
                 live.pop(oid, None)
-                _refresh_bbo()
+                _level_remove(add_side, add_px)
             storm_f[i] = storm
             score = (
                 w[0] * short_life
@@ -267,10 +318,10 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
             scores[i] = float(min(1.0, score))
             if scores[i] >= cfg.drop_score:
                 drop_mask[i] = True
-            recent.append((ts, True))
+            _storm_push(ts, True)
             continue
 
-        recent.append((ts, False))
+        _storm_push(ts, False)
 
     return work.with_columns(
         pl.Series("deceptive_score", scores, dtype=pl.Float64),
@@ -287,21 +338,31 @@ def filter_deceptive_liquidity(
     frame: pl.DataFrame,
     *,
     config: DeceptiveLiquidityConfig | None = None,
+    progress: ProgressLike | None = None,
+    scored: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """يُسقط دورة الأمر المضلل كاملة (ADD+MODIFY+CANCEL) ويعيد MBO نظيف العقد.
 
     قاعدة علمية: إسقاط CANCEL وحدها يترك ADD شبحًا في إعادة بناء الدفتر.
     لذلك عند درجة ≥ ``drop_score`` على إلغاء/إضافة مضللة نُسقط كل أحداث
     ``order_id`` غير المنفَّذة. TRADE/FILL تُبقى دائمًا.
+
+    ``scored`` اختياري لإعادة استخدام ناتج ``score_deceptive_events`` (مرة واحدة لليوم).
     """
-    scored = score_deceptive_events(frame, config=config)
-    if scored.height == 0:
+    if progress is not None:
+        progress.op(f"filter_deceptive_liquidity: events={frame.height:,}")
+    scored_frame = (
+        scored
+        if scored is not None
+        else score_deceptive_events(frame, config=config, progress=progress)
+    )
+    if scored_frame.height == 0:
         cols = [c for c in MBO_SCHEMA if c in frame.columns]
         return frame.select(cols) if cols else frame
 
-    drop_event = scored["_deceptive_drop"].to_list()
-    actions = scored["action"].cast(pl.Utf8).to_list()
-    order_ids = scored["order_id"].to_list()
+    drop_event = scored_frame["_deceptive_drop"].to_list()
+    actions = scored_frame["action"].cast(pl.Utf8).to_list()
+    order_ids = scored_frame["order_id"].to_list()
     n = len(drop_event)
 
     # order_ids التي حُكم عليها مضللة (غير صفقات)
@@ -324,7 +385,7 @@ def filter_deceptive_liquidity(
             continue
         keep[i] = not bool(drop_event[i])
 
-    out = scored.filter(pl.Series("_keep", keep, dtype=pl.Boolean))
+    out = scored_frame.filter(pl.Series("_keep", keep, dtype=pl.Boolean))
     # عقد MBO فقط — بلا أعمدة درجة
     mbo_cols = [c for c in MBO_SCHEMA if c in out.columns]
     return out.select(mbo_cols)
@@ -336,17 +397,31 @@ def deceptive_features_by_bucket(
     interval_ns: int,
     config: DeceptiveLiquidityConfig | None = None,
     progress: ProgressLike | None = None,
+    scored: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """يجمّع درجة التضليل على براميل زمنية (متاح عند ``bucket_end``).
 
     * ``noise_instant`` — متوسط درجة التضليل في البرميل الحالي.
     * ``noise_cum`` — متوسط تراكمي سببي عبر البراميل (تغيّر مجمّع).
     * ``real_liquidity_ratio`` — 1 − حصة الحجم المضلل عند الإلغاءات/الإضافات.
+
+    ``scored`` اختياري لإعادة استخدام ناتج ``score_deceptive_events`` (مرة واحدة لليوم).
     """
-    if progress is not None:
-        progress.op(f"deceptive_features_by_bucket: interval_ns={interval_ns}")
-    scored = score_deceptive_events(frame, config=config)
-    if scored.height == 0:
+    if scored is not None:
+        if progress is not None:
+            progress.op(
+                f"deceptive_features_by_bucket: reuse scored · rows={scored.height:,} · "
+                f"interval_ns={interval_ns}"
+            )
+        scored_frame = scored
+    else:
+        if progress is not None:
+            progress.op(
+                f"deceptive_features_by_bucket: scoring fresh · events={frame.height:,} · "
+                f"interval_ns={interval_ns}"
+            )
+        scored_frame = score_deceptive_events(frame, config=config, progress=progress)
+    if scored_frame.height == 0:
         return pl.DataFrame(
             schema={
                 AVAILABILITY_TS: pl.Int64(),
@@ -356,7 +431,9 @@ def deceptive_features_by_bucket(
             }
         )
 
-    bucketed = add_time_bucket(scored, interval_ns=interval_ns)
+    if progress is not None:
+        progress.op("deceptive_features_by_bucket: تجميع براميل polars")
+    bucketed = add_time_bucket(scored_frame, interval_ns=interval_ns)
     # حجم «مضلل» ≈ size عند أحداث بدرجة عالية (CANCEL/ADD المسقطة منطقيًا)
     high = pl.col("deceptive_score") >= _HIGH_DECEPTIVE_SCORE
     agg = (
@@ -402,14 +479,16 @@ def deceptive_features_by_bucket(
         )
         .drop(["_dec_sz", "_all_sz"])
     )
-    # ضمان ترتيب الأعمدة
     cols = [
         AVAILABILITY_TS,
         BUCKET_START,
         BUCKET_END,
         *DECEPTIVE_FEATURE_COLUMNS,
     ]
-    return agg.select([c for c in cols if c in agg.columns])
+    out = agg.select([c for c in cols if c in agg.columns])
+    if progress is not None:
+        progress.op(f"deceptive_features_by_bucket: done · buckets={out.height:,}")
+    return out
 
 
 __all__ = [

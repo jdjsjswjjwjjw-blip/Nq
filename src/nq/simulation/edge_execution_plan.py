@@ -22,7 +22,14 @@ import polars as pl
 
 from nq.contracts.mbo import PRICE_SCALE
 from nq.research.progress import ProgressLike
-from nq.simulation.deceptive_liquidity import DeceptiveLiquidityConfig
+from nq.simulation.auction import (
+    VP_PROFILE_INTERVAL_NS,
+    auction_action_states,
+)
+from nq.simulation.deceptive_liquidity import (
+    DeceptiveLiquidityConfig,
+    deceptive_features_by_bucket,
+)
 from nq.simulation.market_truth import MarketTruthConfig, build_market_truth_frame
 
 FloatArray = npt.NDArray[np.float64]
@@ -290,8 +297,14 @@ def run_edge_plan(
     deceptive: DeceptiveLiquidityConfig | None = None,
     score_mbo: pl.DataFrame | None = None,
     progress: ProgressLike | None = None,
+    auction: pl.DataFrame | None = None,
+    deceptive_frame: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """خط واحد: حقيقة السوق → خطة تنفيذ → محاكاة."""
+    """خط واحد: حقيقة السوق → خطة تنفيذ → محاكاة.
+
+    ``auction`` / ``deceptive_frame`` اختياريان لإعادة استخدام بناء لليوم
+    (تجنّب إعادة تسجيل التضليل بعد الفلتر/البحث).
+    """
     truth = build_market_truth_frame(
         mbo,
         interval_ns=interval_ns,
@@ -299,6 +312,8 @@ def run_edge_plan(
         deceptive=deceptive,
         score_mbo=score_mbo,
         progress=progress,
+        auction=auction,
+        deceptive_frame=deceptive_frame,
     )
     return simulate_edge_trades(truth, exec_cfg=exec_cfg)
 
@@ -311,6 +326,9 @@ def score_edge_spec_oos(
     train_frac: float = 0.6,
     deceptive: DeceptiveLiquidityConfig | None = None,
     score_mbo: pl.DataFrame | None = None,
+    truth_frame: pl.DataFrame | None = None,
+    auction: pl.DataFrame | None = None,
+    deceptive_frame: pl.DataFrame | None = None,
 ) -> dict[str, float | str]:
     """تقييم فرضية بمحاكاة مستقلة على التدريب ثم الاختبار (بلا تسرّب عبر القطع)."""
     if not _TRAIN_FRAC_MIN < train_frac < _TRAIN_FRAC_MAX:
@@ -326,13 +344,17 @@ def score_edge_spec_oos(
         "oos_avg_rr": 0.0,
         "oos_profit_factor": 0.0,
     }
-    truth = build_market_truth_frame(
-        mbo,
-        interval_ns=interval_ns,
-        truth=spec.truth_config(),
-        deceptive=deceptive,
-        score_mbo=score_mbo,
-    )
+    truth = truth_frame
+    if truth is None:
+        truth = build_market_truth_frame(
+            mbo,
+            interval_ns=interval_ns,
+            truth=spec.truth_config(),
+            deceptive=deceptive,
+            score_mbo=score_mbo,
+            auction=auction,
+            deceptive_frame=deceptive_frame,
+        )
     if truth.height < _MIN_TRUTH_ROWS_FOR_OOS:
         return empty
     cut = int(truth.height * train_frac)
@@ -357,7 +379,7 @@ def score_edge_spec_oos(
     }
 
 
-def search_best_edge_spec(
+def search_best_edge_spec(  # noqa: PLR0912
     mbo: pl.DataFrame,
     *,
     interval_ns: int,
@@ -368,22 +390,75 @@ def search_best_edge_spec(
     progress: ProgressLike | None = None,
     min_oos_trades: int = 3,
     min_oos_rr: float = 2.0,
+    auction: pl.DataFrame | None = None,
+    deceptive_frame: pl.DataFrame | None = None,
+    scored: pl.DataFrame | None = None,
+    profile_interval_ns: int = VP_PROFILE_INTERVAL_NS,
 ) -> tuple[pl.DataFrame, EdgeSearchSpec | None, dict[str, float | str]]:
-    """يبحث عن أفضل دخول/خروج؛ يعيد ``best=None`` إن لم تُحقَّق القيود."""
+    """يبحث عن أفضل دخول/خروج؛ يعيد ``best=None`` إن لم تُحقَّق القيود.
+
+    ``auction`` / ``deceptive_frame`` / ``scored`` اختياريان لإعادة استخدام
+    بناء اليوم. الرينج الافتراضي 5د على ساعة فعل ``interval_ns`` (30ث).
+    """
     specs = grid if grid is not None else default_edge_search_grid()
     rows: list[dict[str, float | str]] = []
     if progress is not None:
         progress.op(f"edge search: {len(specs)} مواصفات")
-    for spec in specs:
+        if deceptive_frame is not None:
+            progress.op(
+                f"edge search: reuse deceptive_frame · buckets={deceptive_frame.height:,}"
+            )
+        elif scored is not None:
+            progress.op(f"edge search: reuse scored · rows={scored.height:,}")
+        else:
+            progress.op("edge search: بناء auction + deceptive (قد يعيد التسجيل إن لم يُمرَّر scored)")
+    states = (
+        auction
+        if auction is not None
+        else auction_action_states(
+            mbo,
+            profile_interval_ns=profile_interval_ns,
+            signal_interval_ns=interval_ns,
+            progress=progress,
+        )
+    )
+    if deceptive_frame is not None:
+        deco = deceptive_frame
+    else:
+        score_src = score_mbo if score_mbo is not None else mbo
+        deco = deceptive_features_by_bucket(
+            score_src,
+            interval_ns=interval_ns,
+            config=deceptive,
+            progress=progress,
+            scored=scored,
+        )
+    if progress is not None:
+        progress.op(f"edge search: جاهز · auction={states.height:,} · deco={deco.height:,}")
+    # hold_buckets هو الفرق الوحيد في MarketTruthConfig عبر الشبكة الافتراضية.
+    truth_by_hold: dict[int, pl.DataFrame] = {}
+    for i, spec in enumerate(specs):
+        hold = int(spec.hold_buckets)
+        if hold not in truth_by_hold:
+            if progress is not None:
+                progress.op(f"edge search: market_truth hold={hold}")
+            truth_by_hold[hold] = build_market_truth_frame(
+                mbo,
+                interval_ns=interval_ns,
+                truth=spec.truth_config(),
+                auction=states,
+                deceptive_frame=deco,
+            )
         row = score_edge_spec_oos(
             mbo,
             spec,
             interval_ns=interval_ns,
             train_frac=train_frac,
-            deceptive=deceptive,
-            score_mbo=score_mbo,
+            truth_frame=truth_by_hold[hold],
         )
         rows.append(row)
+        if progress is not None:
+            progress.heartbeat(i + 1, len(specs), label="edge-spec")
     table = pl.DataFrame(rows) if rows else pl.DataFrame()
     if table.height == 0:
         return table, None, {}
