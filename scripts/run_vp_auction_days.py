@@ -31,6 +31,9 @@ if sys.version_info < _MIN_PYTHON:
 from nq.research.day_parallel import discover_day_inputs  # noqa: E402
 from nq.research.vp_day_parallel import run_vp_auction_day_parallel  # noqa: E402
 
+# فوق هذا الحد لأيام كاملة يزداد خطر قتل workers عند M9/reconstruct.
+_JOBS_WARN_THRESHOLD = 8
+
 
 def _collect_nq_paths(args: argparse.Namespace) -> list[Path]:
     paths: list[Path] = []
@@ -111,6 +114,12 @@ def main() -> None:
         f"mode={'streaming-snapshots' if args.streaming else 'batch'}",
         flush=True,
     )
+    if args.jobs > 8:  # noqa: PLR2004 — حد تحذير عملي لأيام كاملة
+        print(
+            f"[nq] تحذير: jobs={args.jobs} مرتفع لأيام كاملة — "
+            "يُفضَّل 4–6 لتفادي قتل workers عند M9/reconstruct",
+            flush=True,
+        )
     print(
         f"[nq] live progress per day → {args.output}/<YYYY-MM-DD>/progress.log",
         flush=True,
