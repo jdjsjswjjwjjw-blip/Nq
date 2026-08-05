@@ -10,6 +10,7 @@ import json
 import traceback
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -136,7 +137,7 @@ def _run_one_vp_day(payload: dict[str, Any]) -> DayJobResult:
         )
 
 
-def run_vp_auction_day_parallel(
+def run_vp_auction_day_parallel(  # noqa: PLR0912, PLR0915
     days: Sequence[DayInput],
     *,
     output_root: Path | str,
@@ -207,39 +208,118 @@ def run_vp_auction_day_parallel(
             if fail_fast and not r.ok:
                 break
     else:
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_run_one_vp_day, p): p["day_id"] for p in payloads}
-            for fut in as_completed(futures):
-                res = fut.result()
-                results.append(res)
+        pending = list(payloads)
+        pool_workers = workers
+        while pending:
+            batch = pending
+            pending = []
+            print(
+                f"[nq] VP day-parallel pool: {len(batch)} يوم · workers={pool_workers}",
+                flush=True,
+            )
+            try:
+                with ProcessPoolExecutor(max_workers=pool_workers) as pool:
+                    futures = {
+                        pool.submit(_run_one_vp_day, p): p for p in batch
+                    }
+                    for fut in as_completed(futures):
+                        payload = futures[fut]
+                        day_id = str(payload["day_id"])
+                        try:
+                            res = fut.result()
+                        except BrokenProcessPool as exc:
+                            # عامل قُتل فجأة (غالبًا OOM/SIGKILL) — لا نُسقط الشهر كاملًا.
+                            print(
+                                f"[nq] BrokenProcessPool at day={day_id}: {exc}",
+                                flush=True,
+                            )
+                            done_ids = {r.day_id for r in results}
+                            unfinished = [
+                                p
+                                for p in batch
+                                if str(p["day_id"]) not in done_ids
+                            ]
+                            # اليوم الحالي فشل؛ الباقي يُعاد بعمال أقل.
+                            failed_now = next(
+                                (p for p in unfinished if str(p["day_id"]) == day_id),
+                                unfinished[0] if unfinished else None,
+                            )
+                            if failed_now is not None:
+                                results.append(
+                                    DayJobResult(
+                                        day_id=str(failed_now["day_id"]),
+                                        ok=False,
+                                        nq_path=str(failed_now["nq_path"]),
+                                        mnq_path=(
+                                            str(failed_now["mnq_path"])
+                                            if failed_now.get("mnq_path")
+                                            else None
+                                        ),
+                                        output_dir=str(
+                                            Path(failed_now["output_dir"]).resolve()
+                                        ),
+                                        mode="search",
+                                        error=(
+                                            "BrokenProcessPool: worker terminated abruptly "
+                                            "(likely OOM/SIGKILL during heavy M9/reconstruct). "
+                                            f"{exc}"
+                                        ),
+                                        seed=int(failed_now["seed"]),
+                                    )
+                                )
+                                _append_pool_crash_log(
+                                    Path(failed_now["output_dir"]),
+                                    str(failed_now["day_id"]),
+                                    str(exc),
+                                )
+                            pending = [
+                                p
+                                for p in unfinished
+                                if failed_now is None
+                                or str(p["day_id"]) != str(failed_now["day_id"])
+                            ]
+                            pool_workers = max(1, pool_workers // 2)
+                            print(
+                                f"[nq] retry {len(pending)} remaining days with "
+                                f"workers={pool_workers}",
+                                flush=True,
+                            )
+                            break
+                        results.append(res)
+                        print(
+                            f"[nq] day {res.day_id}: {'OK' if res.ok else 'FAIL'} "
+                            f"({sum(1 for x in results if x.ok)} ok / "
+                            f"{len(results)} done / {len(payloads)} total) "
+                            f"log={root / res.day_id / 'progress.log'}",
+                            flush=True,
+                        )
+                        _write_status(root, results, len(payloads))
+                        if fail_fast and not res.ok:
+                            pending = []
+                            for other in futures:
+                                other.cancel()
+                            break
+            except BrokenProcessPool as exc:
+                print(f"[nq] pool died: {exc}", flush=True)
+                done_ids = {r.day_id for r in results}
+                pending = [p for p in batch if str(p["day_id"]) not in done_ids]
+                pool_workers = max(1, pool_workers // 2)
+
+            if pending and pool_workers <= 1:
                 print(
-                    f"[nq] day {res.day_id}: {'OK' if res.ok else 'FAIL'} "
-                    f"({sum(1 for x in results if x.ok)} ok / "
-                    f"{len(results)} done / {len(payloads)} total) "
-                    f"log={root / res.day_id / 'progress.log'}",
+                    f"[nq] falling back to serial for {len(pending)} days",
                     flush=True,
                 )
-                status = root / "STATUS.txt"
-                status.write_text(
-                    "\n".join(
-                        [
-                            f"done={len(results)}/{len(payloads)}",
-                            f"ok={sum(1 for x in results if x.ok)}",
-                            f"failed={sum(1 for x in results if not x.ok)}",
-                            "",
-                            *[
-                                f"{'OK' if r.ok else 'FAIL'} {r.day_id}"
-                                for r in sorted(results, key=lambda x: x.day_id)
-                            ],
-                        ]
+                for payload in pending:
+                    results.append(_run_one_vp_day(payload))
+                    r = results[-1]
+                    print(
+                        f"[nq] day {r.day_id}: {'OK' if r.ok else 'FAIL'} "
+                        f"(serial) log={root / r.day_id / 'progress.log'}",
+                        flush=True,
                     )
-                    + "\n",
-                    encoding="utf-8",
-                )
-                if fail_fast and not res.ok:
-                    for other in futures:
-                        other.cancel()
-                    break
+                    _write_status(root, results, len(payloads))
+                pending = []
 
     results_sorted = tuple(sorted(results, key=lambda r: r.day_id))
     n_ok = sum(1 for r in results_sorted if r.ok)
@@ -279,6 +359,38 @@ def run_vp_auction_day_parallel(
         )
         (root / "summary.md").write_text(manifest.to_markdown(), encoding="utf-8")
     return manifest
+
+
+def _write_status(root: Path, results: list[DayJobResult], n_total: int) -> None:
+    status = root / "STATUS.txt"
+    status.write_text(
+        "\n".join(
+            [
+                f"done={len(results)}/{n_total}",
+                f"ok={sum(1 for x in results if x.ok)}",
+                f"failed={sum(1 for x in results if not x.ok)}",
+                "",
+                *[
+                    f"{'OK' if r.ok else 'FAIL'} {r.day_id}"
+                    for r in sorted(results, key=lambda x: x.day_id)
+                ],
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _append_pool_crash_log(out: Path, day_id: str, detail: str) -> None:
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        with (out / "progress.log").open("a", encoding="utf-8") as ef:
+            ef.write(
+                f"\n[nq] day={day_id} FAILED: BrokenProcessPool "
+                f"(worker terminated abruptly — likely OOM/SIGKILL)\n{detail}\n"
+            )
+    except OSError:
+        pass
 
 
 __all__ = [
