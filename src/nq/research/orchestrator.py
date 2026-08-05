@@ -33,6 +33,7 @@ from nq.features.streaming import (
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_pipeline, run_ssl_tick_pipeline
 from nq.models.tick_stream import TickStream
+from nq.orderbook import reconstruct, scan_book_tob_and_depth
 from nq.research.assistant import LanguageModel, ResearchAssistant
 from nq.research.progress import PipelineProgress, resolve_progress
 from nq.research.unified import UnifiedResearchReport, build_unified_report
@@ -276,6 +277,8 @@ def _run_coverage_task(
     n_permutations: int,
     seed: int,
     progress: PipelineProgress | None = None,
+    nq_top_of_book: pl.DataFrame | None = None,
+    mnq_top_of_book: pl.DataFrame | None = None,
 ) -> CoverageReport:
     return run_coverage_on_features(
         nq,
@@ -289,6 +292,8 @@ def _run_coverage_task(
         n_permutations=n_permutations,
         rng=np.random.default_rng(seed),
         progress=progress,
+        nq_top_of_book=nq_top_of_book,
+        mnq_top_of_book=mnq_top_of_book,
     )
 
 
@@ -365,6 +370,14 @@ def _attach_auction_vp(
         profile_interval_ns=profile_interval_ns,
         progress=log,
     )
+    return _attach_auction_vp_signals(features, signals)
+
+
+def _attach_auction_vp_signals(
+    features: pl.DataFrame,
+    signals: pl.DataFrame,
+) -> pl.DataFrame:
+    """يلحق إشارات مزاد محسوبة مسبقًا بـ asof خلفي."""
     zero_exprs = [pl.lit(0.0).alias(c) for c in _VP_AUCTION_SIGNAL_COLUMNS]
     if signals.height == 0 or features.height == 0:
         return features.with_columns(zero_exprs)
@@ -581,14 +594,21 @@ def _build_research_features(
     cfg: PipelineConfig,
     *,
     progress: PipelineProgress | None = None,
-) -> tuple[pl.DataFrame, TickStream | None]:
+) -> tuple[
+    pl.DataFrame,
+    TickStream | None,
+    pl.DataFrame | None,
+    pl.DataFrame | None,
+]:
     """يبني إطار البحث: streaming/batch ثم عمق (+noise/bottom) ثم FVG نبضة / Auction asof / FB نبضة.
 
-    يُعيد أيضًا ``TickStream`` عند الوضع streaming لإعادة استخدامه في SSL-tick
-    بدون إعادة بناء آلة الحالة.
+    يُعيد أيضًا ``TickStream`` عند الوضع streaming، وTOB المحسوب مسبقًا في
+    الوضع batch لإعادة استخدامه في cross-market وM9.
     """
     log = progress if progress is not None else PipelineProgress(enabled=False)
     tick_stream: TickStream | None = None
+    nq_top_of_book: pl.DataFrame | None = None
+    mnq_top_of_book: pl.DataFrame | None = None
     if cfg.use_micro_interval:
         log.note(
             f"ساعة البحث = micro_interval_ns={cfg.micro_interval_ns} (use_micro_interval=true)"
@@ -600,6 +620,19 @@ def _build_research_features(
         if nq is mnq
         else f"NQ={nq.height:,} · MNQ={mnq.height:,}"
     )
+    interval_30m = 30 * 60 * 1_000_000_000
+    depth_intervals: list[int] = [cfg.interval_ns]
+    if cfg.include_failed_breakout:
+        depth_intervals.append(interval_30m)
+    depth_intervals = list(dict.fromkeys(int(value) for value in depth_intervals))
+
+    cleaned_nq = nq
+    if cfg.filter_depth_noise:
+        log.step("فلتر ضوضاء العمق (سببي) قبل لقطات الدفتر")
+        cleaned_nq = filter_depth_noise(nq, config=DepthNoiseConfig())
+        log.op(f"depth_noise: {nq.height:,} → {cleaned_nq.height:,}")
+
+    depth_by_iv: dict[int, pl.DataFrame]
     if cfg.feature_mode == "streaming":
         log.step(
             "بناء الميزات (streaming state-machine)",
@@ -612,7 +645,38 @@ def _build_research_features(
             progress=log,
             return_tick=True,
         )
+        log.step(
+            "إلحاق عمق الدفتر السببي (مسح موحّد)",
+            f"intervals={depth_intervals} · bottom_book={cfg.include_bottom_book}",
+        )
+        depth_by_iv = depth_at_bar_close_multi(
+            cleaned_nq,
+            interval_ns_list=tuple(depth_intervals),
+            n_levels=5,
+            progress=log,
+        )
     else:
+        log.step(
+            "مسح دفتر موحّد للعمق وTOB",
+            f"intervals={depth_intervals} · bottom_book={cfg.include_bottom_book}",
+        )
+        nq_scan, depth_by_iv = scan_book_tob_and_depth(
+            cleaned_nq,
+            interval_ns_list=tuple(depth_intervals),
+            n_levels=5,
+            progress=log,
+            progress_label="book_scan:NQ",
+        )
+        nq_top_of_book = nq_scan.top_of_book
+        if nq is mnq:
+            mnq_top_of_book = nq_top_of_book
+        else:
+            mnq_top_of_book = reconstruct(
+                mnq,
+                progress=log,
+                progress_label="book_scan:MNQ",
+            ).top_of_book
+
         log.step(
             "بناء الميزات (batch cross-market)",
             f"{market_pair} · interval_ns={cfg.interval_ns}",
@@ -625,32 +689,10 @@ def _build_research_features(
             lead_lag_window=cfg.lead_lag_window,
             latency_ns=cfg.latency_ns,
             progress=log,
+            nq_top_of_book=nq_top_of_book,
+            mnq_top_of_book=mnq_top_of_book,
         )
     log.note(f"إطار الميزات الأساسي: {features.height:,} صف × {features.width} عمود")
-
-    interval_30m = 30 * 60 * 1_000_000_000
-    cleaned_nq = nq
-    if cfg.filter_depth_noise:
-        log.step("فلتر ضوضاء العمق (سببي) قبل لقطات الدفتر")
-        cleaned_nq = filter_depth_noise(nq, config=DepthNoiseConfig())
-        log.op(f"depth_noise: {nq.height:,} → {cleaned_nq.height:,}")
-
-    depth_by_iv: dict[int, pl.DataFrame] = {}
-    # مسح موحّد لكل الفواصل المطلوبة (ساعة البحث ± 30m لـ FB) — بلا مرور ثانٍ
-    depth_intervals: list[int] = [cfg.interval_ns]
-    if cfg.include_failed_breakout:
-        depth_intervals.append(interval_30m)
-    depth_intervals = list(dict.fromkeys(int(x) for x in depth_intervals))
-    log.step(
-        "إلحاق عمق الدفتر السببي (مسح موحّد)",
-        f"intervals={depth_intervals} · bottom_book={cfg.include_bottom_book}",
-    )
-    depth_by_iv = depth_at_bar_close_multi(
-        cleaned_nq,
-        interval_ns_list=tuple(depth_intervals),
-        n_levels=5,
-        progress=log,
-    )
     features = _attach_causal_depth(
         features,
         nq,
@@ -688,7 +730,7 @@ def _build_research_features(
             progress=log,
         )
         log.op(f"بعد Failed Breakout: {features.height:,} صف")
-    return features, tick_stream
+    return features, tick_stream, nq_top_of_book, mnq_top_of_book
 
 
 def run_ssl_research_pipeline(  # noqa: PLR0915
@@ -716,6 +758,8 @@ def run_ssl_research_pipeline(  # noqa: PLR0915
     rng: np.random.Generator | None = None,
     progress: PipelineProgress | None = None,
     tick_stream: TickStream | None = None,
+    nq_top_of_book: pl.DataFrame | None = None,
+    mnq_top_of_book: pl.DataFrame | None = None,
 ) -> tuple[SSLPipelineResult, CoverageReport, AlphaDiscovery, UnifiedResearchReport]:
     """يشغّل SSL + M9 + ألفا → تقرير شامل (الميزات مُبنية مسبقًا).
 
@@ -796,6 +840,8 @@ def run_ssl_research_pipeline(  # noqa: PLR0915
                 n_permutations=n_permutations,
                 seed=seed,
                 progress=log,
+                nq_top_of_book=nq_top_of_book,
+                mnq_top_of_book=mnq_top_of_book,
             )
 
     if parallel_coverage and (features.height > 0 or ssl_mode == "tick"):
@@ -1036,7 +1082,12 @@ def run_research_pipeline(
             )
         )
 
-        features, tick_stream = _build_research_features(nq_frame, mnq_frame, cfg, progress=log)
+        features, tick_stream, nq_top_of_book, mnq_top_of_book = _build_research_features(
+            nq_frame,
+            mnq_frame,
+            cfg,
+            progress=log,
+        )
         resolved_signals = signal_columns if signal_columns is not None else cfg.signal_columns
 
         ssl_result, coverage_result, alpha_result, unified = run_ssl_research_pipeline(
@@ -1063,6 +1114,8 @@ def run_research_pipeline(
             rng=generator,
             progress=log,
             tick_stream=tick_stream,
+            nq_top_of_book=nq_top_of_book,
+            mnq_top_of_book=mnq_top_of_book,
         )
 
         result = UnifiedResearchResult(

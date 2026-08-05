@@ -23,6 +23,7 @@ from nq.simulation.auction import (
     auction_action_states,
     auction_fsm_columns,
     auction_signal_frame,
+    auction_signals_from_states,
     auction_states,
 )
 from nq.simulation.bottom_book import (
@@ -98,6 +99,7 @@ __all__ = [
     "auction_action_states",
     "auction_fsm_columns",
     "auction_signal_frame",
+    "auction_signals_from_states",
     "auction_states",
     "bottom_book_features_at_bar_close",
     "build_market_truth_frame",

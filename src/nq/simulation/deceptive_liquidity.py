@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Final
 
@@ -42,6 +43,7 @@ _TICK_FIXED: Final = round(_DEFAULT_TICK / PRICE_SCALE)
 _HIGH_DECEPTIVE_SCORE: Final = 0.5
 #: نبضة تسجيل كل N حدث — يمنع «عمى» الإدج على أيام 30–60M.
 _SCORE_HEARTBEAT_EVERY: Final = 100_000
+_SCORE_CHUNK: Final = 250_000
 
 DECEPTIVE_FEATURE_COLUMNS: Final[tuple[str, ...]] = (
     "deceptive_score",
@@ -116,15 +118,28 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
 
     w = _normalize_weights(cfg)
     work = sort_causal(frame)
-    actions = work["action"].cast(pl.Utf8).to_list()
-    sides = work["side"].cast(pl.Utf8).to_list()
-    prices = work["price"].to_list()
-    sizes = work["size"].to_list()
-    order_ids = work["order_id"].to_list()
-    event_ts = work[EVENT_TS].to_list()
-    n = len(actions)
+    n = work.height
     if progress is not None:
         progress.op(f"score_deceptive_events: events={n:,}")
+
+    def _chunk_events() -> Iterator[tuple[str, str, int, int, int, int]]:
+        for start in range(0, n, _SCORE_CHUNK):
+            chunk = work.slice(start, min(_SCORE_CHUNK, n - start))
+            actions: list[str] = chunk["action"].cast(pl.Utf8).to_list()
+            sides: list[str] = chunk["side"].cast(pl.Utf8).to_list()
+            prices = chunk["price"].to_numpy()
+            sizes = chunk["size"].to_numpy()
+            order_ids = chunk["order_id"].to_numpy()
+            event_ts = chunk[EVENT_TS].to_numpy()
+            for i, action in enumerate(actions):
+                yield (
+                    action,
+                    sides[i],
+                    int(prices[i]),
+                    int(sizes[i]),
+                    int(order_ids[i]),
+                    int(event_ts[i]),
+                )
 
     # oid -> (add_ts, price, side, size, modify_count, touched_by_trade)
     live: dict[int, tuple[int, int, str, int, int, bool]] = {}
@@ -203,15 +218,9 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
             n_cancel += 1
 
     hb = _SCORE_HEARTBEAT_EVERY
-    for i in range(n):
+    for i, (action, side, price, size, oid, ts) in enumerate(_chunk_events()):
         if progress is not None and (i == 0 or (i + 1) % hb == 0 or i + 1 == n):
             progress.heartbeat(i + 1, n, label="deceptive-score", force=True)
-        action = actions[i]
-        side = sides[i]
-        price = int(prices[i])
-        size = int(sizes[i])
-        oid = int(order_ids[i])
-        ts = int(event_ts[i])
 
         _storm_expire(ts)
         in_storm = (

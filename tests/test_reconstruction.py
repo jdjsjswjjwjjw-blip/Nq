@@ -5,7 +5,8 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from nq.orderbook import reconstruct, reconstruct_by_instrument
+from nq.orderbook import reconstruct, reconstruct_by_instrument, scan_book_tob_and_depth
+from nq.simulation.depth_lifecycle import depth_at_bar_close_multi
 from tests.mbo_factory import make_stream
 
 
@@ -77,3 +78,36 @@ def test_empty_frame_reconstruction() -> None:
     result = reconstruct(make_stream([]))
     assert result.top_of_book.height == 0
     assert result.integrity.n_events == 0
+
+
+def test_unified_scan_matches_separate_tob_and_depth() -> None:
+    frame = make_stream(
+        [
+            ("A", "B", 100, 5, 1),
+            ("A", "A", 103, 4, 2),
+            ("A", "B", 99, 3, 3),
+            ("M", "A", 102, 6, 2),
+            ("F", "B", 100, 2, 1),
+            ("C", "N", 0, 0, 3),
+        ],
+        event_ts=[0, 4, 11, 14, 25, 31],
+    )
+    intervals = (10, 20)
+
+    unified, unified_depth = scan_book_tob_and_depth(
+        frame,
+        interval_ns_list=intervals,
+        n_levels=3,
+    )
+    separate = reconstruct(frame)
+    separate_depth = depth_at_bar_close_multi(
+        frame,
+        interval_ns_list=intervals,
+        n_levels=3,
+    )
+
+    assert unified.top_of_book.equals(separate.top_of_book)
+    assert unified.integrity == separate.integrity
+    assert unified.book.orders == separate.book.orders
+    for interval in intervals:
+        assert unified_depth[interval].equals(separate_depth[interval])

@@ -170,7 +170,7 @@ def test_build_research_features_can_skip_bottom_book() -> None:
         include_auction_vp=False,
         feature_mode="batch",
     )
-    features, _ = _build_research_features(nq, mnq, cfg)
+    features, _, _, _ = _build_research_features(nq, mnq, cfg)
     assert "bb_l2_l5_bid" not in features.columns
 
 

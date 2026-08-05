@@ -508,6 +508,96 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
     )
 
 
+def auction_signals_from_states(
+    states: pl.DataFrame,
+    *,
+    retest_window: int = _DEFAULT_RETEST_WINDOW,
+) -> pl.DataFrame:
+    """يحوّل حالات المزاد المحسوبة مسبقًا إلى أعمدة VP/FSM دون إعادة مسح MBO."""
+    base_schema = {
+        AVAILABILITY_TS: pl.Int64(),
+        **{c: pl.Float64() for c in _VP_BOUND_COLUMNS},
+        **{c: pl.Float64() for c in _VP_REL_BOUND_COLUMNS},
+        **{c: pl.Float64() for c in _VP_STRUCTURE_OF_COLUMNS},
+        "vp_balance": pl.Float64(),
+        "vp_imbalance": pl.Float64(),
+        "vp_expansion": pl.Float64(),
+        "vp_close_in_value": pl.Float64(),
+        "vp_in_value_frac": pl.Float64(),
+        "vp_pullback_defense": pl.Float64(),
+        "vp_poc_migration": pl.Float64(),
+        "vp_flip_to_imbalance": pl.Float64(),
+        **{c: pl.Float64() for c in _FSM_SIGNAL_COLUMNS},
+    }
+    if states.height == 0:
+        return pl.DataFrame(schema=base_schema)
+
+    ordered = states.sort(BUCKET_START)
+    scale = float(PRICE_SCALE)
+    classic = (
+        ordered.with_columns(
+            (pl.col("vah").cast(pl.Float64) * scale).alias("vp_upper"),
+            (pl.col("poc").cast(pl.Float64) * scale).alias("vp_mid"),
+            (pl.col("val").cast(pl.Float64) * scale).alias("vp_lower"),
+            pl.max_horizontal(
+                pl.col("vah").cast(pl.Float64) - pl.col("val").cast(pl.Float64),
+                pl.lit(1.0),
+            ).alias("_va_w"),
+            pl.col("close").cast(pl.Float64).alias("_close"),
+            pl.col("bucket_volume").cast(pl.Float64).alias("_bvol"),
+        )
+        .with_columns(
+            ((pl.col("_close") - pl.col("vah")) / pl.col("_va_w")).alias("vp_rel_upper"),
+            ((pl.col("_close") - pl.col("poc")) / pl.col("_va_w")).alias("vp_rel_mid"),
+            ((pl.col("_close") - pl.col("val")) / pl.col("_va_w")).alias("vp_rel_lower"),
+            (pl.col("excess_upper").cast(pl.Float64) / pl.col("_va_w")).alias(
+                "vp_excess_upper"
+            ),
+            (pl.col("excess_lower").cast(pl.Float64) / pl.col("_va_w")).alias(
+                "vp_excess_lower"
+            ),
+            pl.when(pl.col("_bvol") > 0)
+            .then(pl.col("delta").cast(pl.Float64) / pl.col("_bvol"))
+            .otherwise(0.0)
+            .alias("vp_of_delta"),
+            pl.col("absorb").cast(pl.Float64).alias("vp_absorb"),
+            pl.col("look_fail").cast(pl.Float64).alias("vp_look_fail"),
+            pl.when(pl.col("is_balanced")).then(1.0).otherwise(-1.0).alias("vp_balance"),
+            pl.when(~pl.col("is_balanced")).then(1.0).otherwise(0.0).alias("vp_imbalance"),
+            pl.when(pl.col("is_expansion")).then(1.0).otherwise(0.0).alias("vp_expansion"),
+            pl.when(pl.col("close_in_value"))
+            .then(1.0)
+            .otherwise(0.0)
+            .alias("vp_close_in_value"),
+            pl.col("in_value_fraction").cast(pl.Float64).alias("vp_in_value_frac"),
+            pl.when(pl.col("pullback_defended"))
+            .then(1.0)
+            .otherwise(0.0)
+            .alias("vp_pullback_defense"),
+            pl.col("poc_migration").cast(pl.Float64).alias("vp_poc_migration"),
+            (pl.col("is_balanced").shift(1).fill_null(value=False) & ~pl.col("is_balanced"))
+            .cast(pl.Float64)
+            .alias("vp_flip_to_imbalance"),
+        )
+        .select(
+            AVAILABILITY_TS,
+            *_VP_BOUND_COLUMNS,
+            *_VP_REL_BOUND_COLUMNS,
+            *_VP_STRUCTURE_OF_COLUMNS,
+            "vp_balance",
+            "vp_imbalance",
+            "vp_expansion",
+            "vp_close_in_value",
+            "vp_in_value_frac",
+            "vp_pullback_defense",
+            "vp_poc_migration",
+            "vp_flip_to_imbalance",
+        )
+    )
+    fsm = auction_fsm_columns(ordered, retest_window=retest_window)
+    return classic.hstack(fsm)
+
+
 def auction_signal_frame(
     frame: pl.DataFrame,
     *,
@@ -542,81 +632,7 @@ def auction_signal_frame(
         expansion_threshold=expansion_threshold,
         progress=progress,
     )
-    base_schema = {
-        AVAILABILITY_TS: pl.Int64(),
-        **{c: pl.Float64() for c in _VP_BOUND_COLUMNS},
-        **{c: pl.Float64() for c in _VP_REL_BOUND_COLUMNS},
-        **{c: pl.Float64() for c in _VP_STRUCTURE_OF_COLUMNS},
-        "vp_balance": pl.Float64(),
-        "vp_imbalance": pl.Float64(),
-        "vp_expansion": pl.Float64(),
-        "vp_close_in_value": pl.Float64(),
-        "vp_in_value_frac": pl.Float64(),
-        "vp_pullback_defense": pl.Float64(),
-        "vp_poc_migration": pl.Float64(),
-        "vp_flip_to_imbalance": pl.Float64(),
-        **{c: pl.Float64() for c in _FSM_SIGNAL_COLUMNS},
-    }
-    if states.height == 0:
-        return pl.DataFrame(schema=base_schema)
-
-    scale = float(PRICE_SCALE)
-    classic = (
-        states.sort(BUCKET_START)
-        .with_columns(
-            (pl.col("vah").cast(pl.Float64) * scale).alias("vp_upper"),
-            (pl.col("poc").cast(pl.Float64) * scale).alias("vp_mid"),
-            (pl.col("val").cast(pl.Float64) * scale).alias("vp_lower"),
-            pl.max_horizontal(
-                pl.col("vah").cast(pl.Float64) - pl.col("val").cast(pl.Float64),
-                pl.lit(1.0),
-            ).alias("_va_w"),
-            pl.col("close").cast(pl.Float64).alias("_close"),
-            pl.col("bucket_volume").cast(pl.Float64).alias("_bvol"),
-        )
-        .with_columns(
-            ((pl.col("_close") - pl.col("vah")) / pl.col("_va_w")).alias("vp_rel_upper"),
-            ((pl.col("_close") - pl.col("poc")) / pl.col("_va_w")).alias("vp_rel_mid"),
-            ((pl.col("_close") - pl.col("val")) / pl.col("_va_w")).alias("vp_rel_lower"),
-            (pl.col("excess_upper").cast(pl.Float64) / pl.col("_va_w")).alias("vp_excess_upper"),
-            (pl.col("excess_lower").cast(pl.Float64) / pl.col("_va_w")).alias("vp_excess_lower"),
-            pl.when(pl.col("_bvol") > 0)
-            .then(pl.col("delta").cast(pl.Float64) / pl.col("_bvol"))
-            .otherwise(0.0)
-            .alias("vp_of_delta"),
-            pl.col("absorb").cast(pl.Float64).alias("vp_absorb"),
-            pl.col("look_fail").cast(pl.Float64).alias("vp_look_fail"),
-            pl.when(pl.col("is_balanced")).then(1.0).otherwise(-1.0).alias("vp_balance"),
-            pl.when(~pl.col("is_balanced")).then(1.0).otherwise(0.0).alias("vp_imbalance"),
-            pl.when(pl.col("is_expansion")).then(1.0).otherwise(0.0).alias("vp_expansion"),
-            pl.when(pl.col("close_in_value")).then(1.0).otherwise(0.0).alias("vp_close_in_value"),
-            pl.col("in_value_fraction").cast(pl.Float64).alias("vp_in_value_frac"),
-            pl.when(pl.col("pullback_defended"))
-            .then(1.0)
-            .otherwise(0.0)
-            .alias("vp_pullback_defense"),
-            pl.col("poc_migration").cast(pl.Float64).alias("vp_poc_migration"),
-            (pl.col("is_balanced").shift(1).fill_null(value=False) & ~pl.col("is_balanced"))
-            .cast(pl.Float64)
-            .alias("vp_flip_to_imbalance"),
-        )
-        .select(
-            AVAILABILITY_TS,
-            *_VP_BOUND_COLUMNS,
-            *_VP_REL_BOUND_COLUMNS,
-            *_VP_STRUCTURE_OF_COLUMNS,
-            "vp_balance",
-            "vp_imbalance",
-            "vp_expansion",
-            "vp_close_in_value",
-            "vp_in_value_frac",
-            "vp_pullback_defense",
-            "vp_poc_migration",
-            "vp_flip_to_imbalance",
-        )
-    )
-    fsm = auction_fsm_columns(states.sort(BUCKET_START), retest_window=retest_window)
-    return classic.hstack(fsm)
+    return auction_signals_from_states(states, retest_window=retest_window)
 
 
 __all__ = [
@@ -625,5 +641,6 @@ __all__ = [
     "auction_action_states",
     "auction_fsm_columns",
     "auction_signal_frame",
+    "auction_signals_from_states",
     "auction_states",
 ]

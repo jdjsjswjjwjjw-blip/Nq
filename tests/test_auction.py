@@ -10,6 +10,7 @@ from nq.simulation.auction import (
     auction_action_states,
     auction_fsm_columns,
     auction_signal_frame,
+    auction_signals_from_states,
     auction_states,
 )
 from tests.mbo_factory import make_stream
@@ -154,6 +155,28 @@ def test_auction_action_states_joins_profile_onto_signal() -> None:
     assert "is_balanced" in action.columns
     # كل برميل فعل يحمل حدود رينج مكتملة
     assert action["vah"].null_count() == 0
+
+
+def test_auction_signals_from_states_matches_full_signal_frame() -> None:
+    events = [("T", "B", 100 + (i % 4), 2, 0) for i in range(40)]
+    frame = make_stream(
+        events,
+        event_ts=list(range(0, 4000, 100)),
+        sequence=list(range(1, 41)),
+    )
+    states = auction_action_states(
+        frame,
+        profile_interval_ns=1000,
+        signal_interval_ns=200,
+    )
+    from_states = auction_signals_from_states(states, retest_window=3)
+    direct = auction_signal_frame(
+        frame,
+        profile_interval_ns=1000,
+        signal_interval_ns=200,
+        retest_window=3,
+    )
+    assert from_states.equals(direct)
 
 
 def test_auction_fsm_columns_empty_states() -> None:

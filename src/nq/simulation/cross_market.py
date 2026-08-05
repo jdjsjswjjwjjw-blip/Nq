@@ -39,11 +39,16 @@ def _market_windows(
     frame: pl.DataFrame,
     *,
     interval_ns: int,
+    top_of_book: pl.DataFrame | None = None,
     progress: ProgressLike | None = None,
     progress_label: str = "market_windows",
 ) -> pl.DataFrame:
     """يبني سلسلة نافذية لسوق واحد: سعر الإغلاق (mid) والدلتا العدوانية."""
-    tob = reconstruct(frame, progress=progress, progress_label=progress_label).top_of_book
+    tob = (
+        top_of_book
+        if top_of_book is not None
+        else reconstruct(frame, progress=progress, progress_label=progress_label).top_of_book
+    )
     both = pl.col("best_bid").is_not_null() & pl.col("best_ask").is_not_null()
     tob = add_time_bucket(
         tob.with_columns(
@@ -129,6 +134,8 @@ def cross_market_features(
     lead_lag_window: int = _DEFAULT_LEAD_LAG_WINDOW,
     min_trap_delta: int = _DEFAULT_MIN_TRAP_DELTA,
     latency_ns: int = 0,
+    nq_top_of_book: pl.DataFrame | None = None,
+    mnq_top_of_book: pl.DataFrame | None = None,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يشتق ميزات عبر السوقين على شبكة زمنية موحّدة (متاحة عند ``bucket_end``).
@@ -151,13 +158,21 @@ def cross_market_features(
         else:
             progress.op(f"cross_market: نوافذ NQ ثم MNQ · interval_ns={interval_ns}")
     nq_w = _market_windows(
-        nq, interval_ns=interval_ns, progress=progress, progress_label="cross:NQ"
+        nq,
+        interval_ns=interval_ns,
+        top_of_book=nq_top_of_book,
+        progress=progress,
+        progress_label="cross:NQ",
     )
     if nq_only:
         mnq_w = nq_w
     else:
         mnq_w = _market_windows(
-            mnq, interval_ns=interval_ns, progress=progress, progress_label="cross:MNQ"
+            mnq,
+            interval_ns=interval_ns,
+            top_of_book=mnq_top_of_book,
+            progress=progress,
+            progress_label="cross:MNQ",
         )
     aligned = _align_markets(nq_w, mnq_w, latency_ns=latency_ns)
     if aligned.height == 0:

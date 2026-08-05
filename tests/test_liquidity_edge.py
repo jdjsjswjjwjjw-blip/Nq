@@ -7,6 +7,7 @@ import time
 import numpy as np
 import polars as pl
 
+import nq.simulation.deceptive_liquidity as deceptive_module
 from nq.contracts.mbo import MBO_SCHEMA, PRICE_SCALE, validate_mbo_frame
 from nq.simulation.auction import auction_action_states
 from nq.simulation.deceptive_liquidity import (
@@ -55,6 +56,24 @@ def test_score_marks_short_life_cancel_as_deceptive() -> None:
     assert cancel_row.height == 1
     assert float(cancel_row["deceptive_score"][0]) > 0.0
     assert float(cancel_row["flicker_flag"][0]) == 1.0
+
+
+def test_score_deceptive_chunk_boundaries_preserve_scores(monkeypatch) -> None:
+    frame = make_stream(
+        [
+            ("A", "B", _px(100.0), 8, 1),
+            ("A", "A", _px(101.0), 6, 2),
+            ("M", "B", _px(99.75), 8, 1),
+            ("T", "A", _px(99.75), 1, 0),
+            ("C", "B", _px(99.75), 8, 1),
+            ("C", "A", _px(101.0), 6, 2),
+        ],
+        event_ts=[0, 1, 2, 3, 4, 5],
+    )
+    expected = score_deceptive_events(frame)
+    monkeypatch.setattr(deceptive_module, "_SCORE_CHUNK", 2)
+    chunked = score_deceptive_events(frame)
+    assert chunked.equals(expected)
 
 
 def test_filter_keeps_trades_drops_full_spoof_lifecycle() -> None:

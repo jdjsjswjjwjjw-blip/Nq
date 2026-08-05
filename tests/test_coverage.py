@@ -19,6 +19,7 @@ from nq.coverage.blocks import resolve_block_columns
 from nq.coverage.distance import fold_information_gap_perm_null
 from nq.coverage.metrics import MetricResult, metric_to_evidence
 from nq.coverage.monitor import build_coverage_report, run_coverage_on_features
+from nq.orderbook import reconstruct
 from nq.simulation.cross_market import cross_market_features
 from tests.mbo_factory import Event, make_stream, random_add_cancel_stream
 
@@ -55,6 +56,18 @@ def test_mbo_window_descriptors_nonempty() -> None:
     assert desc.height >= 1
     assert "add_count" in desc.columns
     assert "cancel_ratio" in desc.columns
+
+
+def test_mbo_window_descriptors_reuses_equivalent_top_of_book() -> None:
+    frame = random_add_cancel_stream(500, seed=91)
+    expected = mbo_window_descriptors(frame, interval_ns=10_000)
+    top_of_book = reconstruct(frame).top_of_book
+    reused = mbo_window_descriptors(
+        frame,
+        interval_ns=10_000,
+        top_of_book=top_of_book,
+    )
+    assert reused.equals(expected)
 
 
 def test_resolve_block_columns() -> None:
