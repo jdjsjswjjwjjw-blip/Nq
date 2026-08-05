@@ -114,7 +114,7 @@ def main() -> None:
         f"mode={'streaming-snapshots' if args.streaming else 'batch'}",
         flush=True,
     )
-    if args.jobs > 8:  # noqa: PLR2004 — حد تحذير عملي لأيام كاملة
+    if args.jobs > _JOBS_WARN_THRESHOLD:
         print(
             f"[nq] تحذير: jobs={args.jobs} مرتفع لأيام كاملة — "
             "يُفضَّل 4–6 لتفادي قتل workers عند M9/reconstruct",
