@@ -102,6 +102,8 @@ def auction_states(
     يستخدم منطقة قيمة **تراكمية** عبر النوافذ (قبول/رفض القيمة الجلسي).
     لرينج الاستراتيجية استدعِ بـ ``VP_PROFILE_INTERVAL_NS`` (5د).
     """
+    if progress is not None:
+        progress.op(f"auction_states: developing_value_area · interval_ns={interval_ns}")
     dva = developing_value_area(
         frame,
         interval_ns=interval_ns,
