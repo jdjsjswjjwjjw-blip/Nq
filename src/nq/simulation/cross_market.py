@@ -157,22 +157,28 @@ def cross_market_features(
             )
         else:
             progress.op(f"cross_market: نوافذ NQ ثم MNQ · interval_ns={interval_ns}")
+    nq_window_kwargs: dict[str, pl.DataFrame] = {}
+    if nq_top_of_book is not None:
+        nq_window_kwargs["top_of_book"] = nq_top_of_book
     nq_w = _market_windows(
         nq,
         interval_ns=interval_ns,
-        top_of_book=nq_top_of_book,
         progress=progress,
         progress_label="cross:NQ",
+        **nq_window_kwargs,
     )
     if nq_only:
         mnq_w = nq_w
     else:
+        mnq_window_kwargs: dict[str, pl.DataFrame] = {}
+        if mnq_top_of_book is not None:
+            mnq_window_kwargs["top_of_book"] = mnq_top_of_book
         mnq_w = _market_windows(
             mnq,
             interval_ns=interval_ns,
-            top_of_book=mnq_top_of_book,
             progress=progress,
             progress_label="cross:MNQ",
+            **mnq_window_kwargs,
         )
     aligned = _align_markets(nq_w, mnq_w, latency_ns=latency_ns)
     if aligned.height == 0:

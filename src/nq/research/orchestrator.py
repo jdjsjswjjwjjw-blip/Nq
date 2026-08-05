@@ -588,7 +588,7 @@ def _attach_causal_depth(
     return out
 
 
-def _build_research_features(
+def _build_research_features(  # noqa: PLR0915
     nq: pl.DataFrame,
     mnq: pl.DataFrame,
     cfg: PipelineConfig,
