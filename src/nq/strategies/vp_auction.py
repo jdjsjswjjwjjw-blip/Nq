@@ -276,6 +276,11 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
             progress=log,
             scored=scored_raw,
         )
+    # حرّر إطار التسجيل الكامل قبل الخط الموحّد (M9 يعيد بناء الدفتر على كل الأحداث).
+    # الإدج لاحقًا يكفيه ``deco_by_bucket`` إن وُجد — لا حاجة للإبقاء على scored لكل حدث.
+    if scored_raw is not None:
+        scored_raw = None
+        log.op("تحرير scored_raw قبل SSL/M9 · الإبقاء على براميل التضليل فقط")
 
     partner: pl.DataFrame | str | Path
     if mnq is None:
@@ -305,6 +310,8 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         ssl_mode="bucket" if not streaming_features else "tick",
         filter_depth_noise=streaming_features,
         include_bottom_book=streaming_features,
+        # لا توازي SSL‖M9 داخل اليوم — مع توازي الأيام يضاعف ضغط الذاكرة
+        parallel_coverage=False,
     )
     result = run_research_pipeline(
         cleaned,
