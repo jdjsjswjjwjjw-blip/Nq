@@ -30,13 +30,17 @@ from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extr
 def order_flow_summary(frame: pl.DataFrame, *, interval_ns: int) -> pl.DataFrame:
     """يلخّص تدفّق الأوامر العدواني لكل نافذة زمنية (متاح عند ``bucket_end``)."""
     trades = extract_trades(add_time_bucket(frame, interval_ns=interval_ns))
-    buckets = trades.sort(EVENT_TS).group_by(BUCKET_START, maintain_order=True).agg(
-        pl.col("buy_volume").sum(),
-        pl.col("sell_volume").sum(),
-        (pl.col("buy_volume") > 0).sum().alias("buy_trades"),
-        (pl.col("sell_volume") > 0).sum().alias("sell_trades"),
-        pl.col(BUCKET_END).first(),
-        pl.col(AVAILABILITY_TS).first(),
+    buckets = (
+        trades.sort(EVENT_TS)
+        .group_by(BUCKET_START, maintain_order=True)
+        .agg(
+            pl.col("buy_volume").sum(),
+            pl.col("sell_volume").sum(),
+            (pl.col("buy_volume") > 0).sum().alias("buy_trades"),
+            (pl.col("sell_volume") > 0).sum().alias("sell_trades"),
+            pl.col(BUCKET_END).first(),
+            pl.col(AVAILABILITY_TS).first(),
+        )
     )
     delta = pl.col("buy_volume") - pl.col("sell_volume")
     consumption = pl.col("buy_volume") + pl.col("sell_volume")

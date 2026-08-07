@@ -16,6 +16,7 @@ from nq.orderbook.reconstruction import (
     ReconstructionResult,
     reconstruct,
     reconstruct_by_instrument,
+    scan_book_tob_and_depth,
 )
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "check_integrity",
     "reconstruct",
     "reconstruct_by_instrument",
+    "scan_book_tob_and_depth",
     "walk_buy_vwap",
     "walk_sell_vwap",
 ]

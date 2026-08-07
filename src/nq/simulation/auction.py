@@ -102,6 +102,8 @@ def auction_states(
     يستخدم منطقة قيمة **تراكمية** عبر النوافذ (قبول/رفض القيمة الجلسي).
     لرينج الاستراتيجية استدعِ بـ ``VP_PROFILE_INTERVAL_NS`` (5د).
     """
+    if progress is not None:
+        progress.op(f"auction_states: developing_value_area · interval_ns={interval_ns}")
     dva = developing_value_area(
         frame,
         interval_ns=interval_ns,
@@ -120,11 +122,15 @@ def auction_states(
 
     trades = extract_trades(add_time_bucket(sort_causal(frame), interval_ns=interval_ns))
 
-    stats = trades.sort(EVENT_TS).group_by(BUCKET_START, maintain_order=True).agg(
-        pl.col("price").max().alias("high"),
-        pl.col("price").min().alias("low"),
-        pl.col("price").last().alias("close"),
-        pl.col("size").cast(pl.Int64).sum().alias("bucket_volume"),
+    stats = (
+        trades.sort(EVENT_TS)
+        .group_by(BUCKET_START, maintain_order=True)
+        .agg(
+            pl.col("price").max().alias("high"),
+            pl.col("price").min().alias("low"),
+            pl.col("price").last().alias("close"),
+            pl.col("size").cast(pl.Int64).sum().alias("bucket_volume"),
+        )
     )
 
     # حجم صفقات النافذة الحالية داخل منطقة القيمة الجلسية المتطوّرة
@@ -311,24 +317,18 @@ def auction_action_states(
     )
     touch = float(bound_touch_frac)
     near_lower = (
-        (pl.col("low").cast(pl.Float64) - pl.col("val").cast(pl.Float64)).abs()
-        <= touch * va_w
-    )
+        pl.col("low").cast(pl.Float64) - pl.col("val").cast(pl.Float64)
+    ).abs() <= touch * va_w
     near_upper = (
-        (pl.col("high").cast(pl.Float64) - pl.col("vah").cast(pl.Float64)).abs()
-        <= touch * va_w
-    )
+        pl.col("high").cast(pl.Float64) - pl.col("vah").cast(pl.Float64)
+    ).abs() <= touch * va_w
     # امتصاص شرائي عند VAL: بيع عدواني كثيف بلا كسر الإغلاق تحت القيمة.
     absorb_buy = near_lower & (pl.col("sell_volume") > pl.col("buy_volume")) & closed_in_value
     # امتصاص بيعي عند VAH: شراء عدواني كثيف بلا إغلاق فوق القيمة.
     absorb_sell = near_upper & (pl.col("buy_volume") > pl.col("sell_volume")) & closed_in_value
     # Look above/below and fail (ورقة VP): اختراق المدى ثم إغلاق داخل + ضغط معاكس.
-    look_fail_up = (
-        (pl.col("high") > pl.col("vah")) & closed_in_value & (pl.col("delta") < 0)
-    )
-    look_fail_dn = (
-        (pl.col("low") < pl.col("val")) & closed_in_value & (pl.col("delta") > 0)
-    )
+    look_fail_up = (pl.col("high") > pl.col("vah")) & closed_in_value & (pl.col("delta") < 0)
+    look_fail_dn = (pl.col("low") < pl.col("val")) & closed_in_value & (pl.col("delta") > 0)
 
     return (
         merged.sort(BUCKET_START)
@@ -484,9 +484,7 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
             saw_retest = True
 
         if saw_retest and (bool(expansion[i]) or age >= 1):
-            delta_ok = (pending_dir > 0 and delta[i] >= 0) or (
-                pending_dir < 0 and delta[i] <= 0
-            )
+            delta_ok = (pending_dir > 0 and delta[i] >= 0) or (pending_dir < 0 and delta[i] <= 0)
             long_ok = pending_dir > 0 and close[i] >= vah[i] and delta_ok
             short_ok = pending_dir < 0 and close[i] <= val[i] and delta_ok
             if long_ok or short_ok:
@@ -508,40 +506,12 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
     )
 
 
-def auction_signal_frame(
-    frame: pl.DataFrame,
+def auction_signals_from_states(
+    states: pl.DataFrame,
     *,
-    interval_ns: int | None = None,
-    profile_interval_ns: int = VP_PROFILE_INTERVAL_NS,
-    signal_interval_ns: int | None = None,
-    fraction: float = 0.7,
-    balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
-    expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
     retest_window: int = _DEFAULT_RETEST_WINDOW,
-    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """إشارات بحثية: رينج 5د + فعل 30ث (ارتداد متوازن / كسر+دخول مختلّ).
-
-    ``interval_ns`` مرادف قديم لـ ``signal_interval_ns`` (ساعة البحث/الفعل).
-    """
-    sig_iv = int(signal_interval_ns if signal_interval_ns is not None else (
-        interval_ns if interval_ns is not None else VP_SIGNAL_INTERVAL_NS
-    ))
-    prof_iv = int(profile_interval_ns)
-    if progress is not None:
-        progress.op(
-            "auction_signal_frame: "
-            f"رينج={prof_iv // _NS}s · فعل={sig_iv // _NS}s"
-        )
-    states = auction_action_states(
-        frame,
-        profile_interval_ns=prof_iv,
-        signal_interval_ns=sig_iv,
-        fraction=fraction,
-        balance_threshold=balance_threshold,
-        expansion_threshold=expansion_threshold,
-        progress=progress,
-    )
+    """يحوّل حالات المزاد المحسوبة مسبقًا إلى أعمدة VP/FSM دون إعادة مسح MBO."""
     base_schema = {
         AVAILABILITY_TS: pl.Int64(),
         **{c: pl.Float64() for c in _VP_BOUND_COLUMNS},
@@ -560,10 +530,10 @@ def auction_signal_frame(
     if states.height == 0:
         return pl.DataFrame(schema=base_schema)
 
+    ordered = states.sort(BUCKET_START)
     scale = float(PRICE_SCALE)
     classic = (
-        states.sort(BUCKET_START)
-        .with_columns(
+        ordered.with_columns(
             (pl.col("vah").cast(pl.Float64) * scale).alias("vp_upper"),
             (pl.col("poc").cast(pl.Float64) * scale).alias("vp_mid"),
             (pl.col("val").cast(pl.Float64) * scale).alias("vp_lower"),
@@ -615,8 +585,44 @@ def auction_signal_frame(
             "vp_flip_to_imbalance",
         )
     )
-    fsm = auction_fsm_columns(states.sort(BUCKET_START), retest_window=retest_window)
+    fsm = auction_fsm_columns(ordered, retest_window=retest_window)
     return classic.hstack(fsm)
+
+
+def auction_signal_frame(
+    frame: pl.DataFrame,
+    *,
+    interval_ns: int | None = None,
+    profile_interval_ns: int = VP_PROFILE_INTERVAL_NS,
+    signal_interval_ns: int | None = None,
+    fraction: float = 0.7,
+    balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
+    expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
+    retest_window: int = _DEFAULT_RETEST_WINDOW,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
+    """إشارات بحثية: رينج 5د + فعل 30ث (ارتداد متوازن / كسر+دخول مختلّ).
+
+    ``interval_ns`` مرادف قديم لـ ``signal_interval_ns`` (ساعة البحث/الفعل).
+    """
+    sig_iv = int(
+        signal_interval_ns
+        if signal_interval_ns is not None
+        else (interval_ns if interval_ns is not None else VP_SIGNAL_INTERVAL_NS)
+    )
+    prof_iv = int(profile_interval_ns)
+    if progress is not None:
+        progress.op(f"auction_signal_frame: رينج={prof_iv // _NS}s · فعل={sig_iv // _NS}s")
+    states = auction_action_states(
+        frame,
+        profile_interval_ns=prof_iv,
+        signal_interval_ns=sig_iv,
+        fraction=fraction,
+        balance_threshold=balance_threshold,
+        expansion_threshold=expansion_threshold,
+        progress=progress,
+    )
+    return auction_signals_from_states(states, retest_window=retest_window)
 
 
 __all__ = [
@@ -625,5 +631,6 @@ __all__ = [
     "auction_action_states",
     "auction_fsm_columns",
     "auction_signal_frame",
+    "auction_signals_from_states",
     "auction_states",
 ]

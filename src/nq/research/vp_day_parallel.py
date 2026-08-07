@@ -201,8 +201,7 @@ def run_vp_auction_day_parallel(  # noqa: PLR0912, PLR0915
             results.append(_run_one_vp_day(payload))
             r = results[-1]
             print(
-                f"[nq] day {r.day_id}: {'OK' if r.ok else 'FAIL'} "
-                f"({len(results)}/{len(payloads)})",
+                f"[nq] day {r.day_id}: {'OK' if r.ok else 'FAIL'} ({len(results)}/{len(payloads)})",
                 flush=True,
             )
             if fail_fast and not r.ok:
@@ -219,9 +218,7 @@ def run_vp_auction_day_parallel(  # noqa: PLR0912, PLR0915
             )
             try:
                 with ProcessPoolExecutor(max_workers=pool_workers) as pool:
-                    futures = {
-                        pool.submit(_run_one_vp_day, p): p for p in batch
-                    }
+                    futures = {pool.submit(_run_one_vp_day, p): p for p in batch}
                     for fut in as_completed(futures):
                         payload = futures[fut]
                         day_id = str(payload["day_id"])
@@ -234,11 +231,7 @@ def run_vp_auction_day_parallel(  # noqa: PLR0912, PLR0915
                                 flush=True,
                             )
                             done_ids = {r.day_id for r in results}
-                            unfinished = [
-                                p
-                                for p in batch
-                                if str(p["day_id"]) not in done_ids
-                            ]
+                            unfinished = [p for p in batch if str(p["day_id"]) not in done_ids]
                             # اليوم الحالي فشل؛ الباقي يُعاد بعمال أقل.
                             failed_now = next(
                                 (p for p in unfinished if str(p["day_id"]) == day_id),
@@ -255,9 +248,7 @@ def run_vp_auction_day_parallel(  # noqa: PLR0912, PLR0915
                                             if failed_now.get("mnq_path")
                                             else None
                                         ),
-                                        output_dir=str(
-                                            Path(failed_now["output_dir"]).resolve()
-                                        ),
+                                        output_dir=str(Path(failed_now["output_dir"]).resolve()),
                                         mode="search",
                                         error=(
                                             "BrokenProcessPool: worker terminated abruptly "

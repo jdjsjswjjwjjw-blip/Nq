@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import numpy as np
 import polars as pl
+import pytest
 
+import nq.simulation.deceptive_liquidity as deceptive_module
 from nq.contracts.mbo import MBO_SCHEMA, PRICE_SCALE, validate_mbo_frame
 from nq.simulation.auction import auction_action_states
 from nq.simulation.deceptive_liquidity import (
@@ -55,6 +58,24 @@ def test_score_marks_short_life_cancel_as_deceptive() -> None:
     assert cancel_row.height == 1
     assert float(cancel_row["deceptive_score"][0]) > 0.0
     assert float(cancel_row["flicker_flag"][0]) == 1.0
+
+
+def test_score_deceptive_chunk_boundaries_preserve_scores(monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = make_stream(
+        [
+            ("A", "B", _px(100.0), 8, 1),
+            ("A", "A", _px(101.0), 6, 2),
+            ("M", "B", _px(99.75), 8, 1),
+            ("T", "A", _px(99.75), 1, 0),
+            ("C", "B", _px(99.75), 8, 1),
+            ("C", "A", _px(101.0), 6, 2),
+        ],
+        event_ts=[0, 1, 2, 3, 4, 5],
+    )
+    expected = score_deceptive_events(frame)
+    monkeypatch.setattr(deceptive_module, "_SCORE_CHUNK", 2)
+    chunked = score_deceptive_events(frame)
+    assert chunked.equals(expected)
 
 
 def test_filter_keeps_trades_drops_full_spoof_lifecycle() -> None:
@@ -111,7 +132,9 @@ def test_deceptive_bucket_noise_cum_is_causal() -> None:
     assert "real_liquidity_ratio" in feats.columns
 
 
-def test_scored_frame_reused_for_filter_and_bucket_features(monkeypatch) -> None:
+def test_scored_frame_reused_for_filter_and_bucket_features(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """تسجيل التضليل مرة واحدة يكفي للفلتر + براميل الإدج."""
     frame = make_stream(
         [
@@ -130,7 +153,7 @@ def test_scored_frame_reused_for_filter_and_bucket_features(monkeypatch) -> None
     calls = {"n": 0}
     real_score = score_deceptive_events
 
-    def _counting_score(*args, **kwargs):
+    def _counting_score(*args: Any, **kwargs: Any) -> pl.DataFrame:
         calls["n"] += 1
         return real_score(*args, **kwargs)
 

@@ -141,9 +141,7 @@ def _build_axis_cache(
             centered = _centered_abs_distance(sub[:, j]).astype(np.float32, copy=False)
             layers[j] = centered
             dvar_a[j] = float((centered * centered).sum() * inv)
-        return _AxisDcorCache(
-            stacked=layers, raw_columns=[], dvar_a=dvar_a, n=n, precomputed=True
-        )
+        return _AxisDcorCache(stacked=layers, raw_columns=[], dvar_a=dvar_a, n=n, precomputed=True)
     raw = [sub[:, j].astype(np.float32, copy=False) for j in range(sub.shape[1])]
     return _AxisDcorCache(stacked=None, raw_columns=raw, dvar_a=None, n=n, precomputed=False)
 
@@ -171,10 +169,11 @@ def _max_dep_cached(cache: _AxisDcorCache, target_sub: FloatArray) -> float:
         return 0.0
     if not cache.raw_columns:
         return 0.0
-    centered_b = _centered_abs_distance(y)
+    centered_b64 = _centered_abs_distance(y)
     best = 0.0
     for col in cache.raw_columns:
-        best = max(best, _dcor_from_centered(_centered_abs_distance(col), centered_b))
+        col64 = np.asarray(col, dtype=np.float64)
+        best = max(best, _dcor_from_centered(_centered_abs_distance(col64), centered_b64))
     return best
 
 
@@ -245,9 +244,7 @@ def fold_information_gap_perm_null(
         perm_gaps: list[float] = []
         for desc_cache, feat_cache, y in caches:
             perm = rng.permutation(y)
-            perm_gaps.append(
-                _max_dep_cached(desc_cache, perm) - _max_dep_cached(feat_cache, perm)
-            )
+            perm_gaps.append(_max_dep_cached(desc_cache, perm) - _max_dep_cached(feat_cache, perm))
         null[i] = float(np.mean(perm_gaps))
         if progress is not None:
             progress.heartbeat(i + 1, n_permutations, label=progress_label)

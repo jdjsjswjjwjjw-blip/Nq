@@ -113,48 +113,53 @@ class OrderBook:
         ``TRADE`` و ``NONE`` لا يعدّلان الأوامر القائمة (التنفيذ يجري عبر ``FILL``).
         كل مرجع لأمر غير معروف يزيد ``unknown_order_refs``.
         """
+        orders = self.orders
+        bids = self.bids
+        asks = self.asks
+        add_level = self._add_level
+        reduce_level = self._reduce
         if action == _ADD:
             is_bid = side == _BID
-            self.orders[order_id] = (is_bid, price, size)
-            self._add_level(self.bids if is_bid else self.asks, price, size, is_bid=is_bid)
+            orders[order_id] = (is_bid, price, size)
+            add_level(bids if is_bid else asks, price, size, is_bid=is_bid)
             return
 
         if action == _CANCEL:
-            rec = self.orders.pop(order_id, None)
+            rec = orders.pop(order_id, None)
             if rec is None:
                 self.unknown_order_refs += 1
                 return
             is_bid, p, s = rec
-            self._reduce(self.bids if is_bid else self.asks, p, s, is_bid=is_bid)
+            reduce_level(bids if is_bid else asks, p, s, is_bid=is_bid)
             return
 
         if action == _FILL:
-            rec = self.orders.get(order_id)
+            rec = orders.get(order_id)
             if rec is None:
                 self.unknown_order_refs += 1
                 return
             is_bid, p, s = rec
-            self._reduce(self.bids if is_bid else self.asks, p, size, is_bid=is_bid)
+            reduce_level(bids if is_bid else asks, p, size, is_bid=is_bid)
             remaining = s - size
             if remaining > 0:
-                self.orders[order_id] = (is_bid, p, remaining)
+                orders[order_id] = (is_bid, p, remaining)
             else:
-                self.orders.pop(order_id, None)
+                orders.pop(order_id, None)
             return
 
         if action == _MODIFY:
-            rec = self.orders.get(order_id)
+            rec = orders.get(order_id)
             if rec is None:
                 self.unknown_order_refs += 1
                 is_bid = side == _BID
-                self.orders[order_id] = (is_bid, price, size)
-                self._add_level(self.bids if is_bid else self.asks, price, size, is_bid=is_bid)
+                orders[order_id] = (is_bid, price, size)
+                add_level(bids if is_bid else asks, price, size, is_bid=is_bid)
                 return
             is_bid, old_price, old_size = rec
-            level = self.bids if is_bid else self.asks
-            self._reduce(level, old_price, old_size, is_bid=is_bid)
-            self._add_level(level, price, size, is_bid=is_bid)
-            self.orders[order_id] = (is_bid, price, size)
+            level = bids if is_bid else asks
+            reduce_level(level, old_price, old_size, is_bid=is_bid)
+            add_level(level, price, size, is_bid=is_bid)
+            orders[order_id] = (is_bid, price, size)
             return
 
         if action == _CLEAR:

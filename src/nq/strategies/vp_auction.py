@@ -28,6 +28,7 @@ from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
 from nq.research.orchestrator import (
     PipelineConfig,
+    _attach_auction_vp_signals,
     run_research_pipeline,
 )
 from nq.research.progress import ProgressLike, resolve_progress
@@ -36,6 +37,7 @@ from nq.simulation.auction import (
     VP_PROFILE_INTERVAL_NS,
     VP_SIGNAL_INTERVAL_NS,
     auction_action_states,
+    auction_signals_from_states,
 )
 from nq.simulation.deceptive_liquidity import (
     DECEPTIVE_FEATURE_COLUMNS,
@@ -177,9 +179,7 @@ def _with_gated_vp_columns(edge_frame: pl.DataFrame, features: pl.DataFrame) -> 
     """يبني إشارات VP مبوّبة بالهولد على إطار التنفيذ قبل الدمج."""
     # نحتاج vp_* من features asof على edge buckets
     vp_cols = [
-        c
-        for c in ("vp_flip_to_imbalance", "vp_imbalance", "vp_expansion")
-        if c in features.columns
+        c for c in ("vp_flip_to_imbalance", "vp_imbalance", "vp_expansion") if c in features.columns
     ]
     work = edge_frame
     if vp_cols and AVAILABILITY_TS in features.columns:
@@ -245,9 +245,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     deco_cfg = deceptive if deceptive is not None else DeceptiveLiquidityConfig()
     sig_iv = int(interval_ns) if interval_ns is not None else VP_SIGNAL_INTERVAL_NS
     prof_iv = (
-        int(profile_interval_ns)
-        if profile_interval_ns is not None
-        else VP_PROFILE_INTERVAL_NS
+        int(profile_interval_ns) if profile_interval_ns is not None else VP_PROFILE_INTERVAL_NS
     )
 
     log.step("VP: تحميل MBO")
@@ -261,9 +259,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         scored_raw = score_deceptive_events(raw, config=deco_cfg, progress=log)
     if drop_deceptive:
         log.step("VP: فلتر التضليل العلمي", "إسقاط دورة الأمر الكاملة · reuse scored")
-        cleaned = filter_deceptive_liquidity(
-            raw, config=deco_cfg, progress=log, scored=scored_raw
-        )
+        cleaned = filter_deceptive_liquidity(raw, config=deco_cfg, progress=log, scored=scored_raw)
     else:
         cleaned = raw
     cleaned_n = cleaned.height
@@ -291,7 +287,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         partner = mnq.head(max_rows) if max_rows is not None else mnq
 
     cfg = PipelineConfig(
-        include_auction_vp=True,
+        include_auction_vp=False,
         include_failed_fvg=False,
         include_failed_breakout=False,
         cross_market_mode="nq_only" if mnq is None else "dual",
@@ -323,7 +319,18 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     )
 
     iv = int(cfg.interval_ns)
-    features = result.features
+    log.step(
+        "VP: حالات المزاد مرة واحدة",
+        f"رينج={prof_iv // 1_000_000_000}s · فعل={iv // 1_000_000_000}s",
+    )
+    auction_day = auction_action_states(
+        cleaned,
+        profile_interval_ns=prof_iv,
+        signal_interval_ns=iv,
+        progress=log,
+    )
+    auction_signals = auction_signals_from_states(auction_day)
+    features = _attach_auction_vp_signals(result.features, auction_signals)
 
     policy = TemporalPolicy.for_run(interval_ns=iv, window=ssl_window, horizon=horizon)
     embargo = policy.embargo_time_units(interval_ns=iv)
@@ -362,12 +369,6 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
             f"بعد WF · رينج={prof_iv // 1_000_000_000}s · فعل={iv // 1_000_000_000}s",
         )
         specs = edge_grid if edge_grid is not None else default_edge_search_grid()
-        auction_day = auction_action_states(
-            cleaned,
-            profile_interval_ns=prof_iv,
-            signal_interval_ns=iv,
-            progress=log,
-        )
         edge_table, best_edge, best_edge_row = search_best_edge_spec(
             cleaned,
             interval_ns=iv,

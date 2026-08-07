@@ -312,10 +312,7 @@ class CausalRegimeTracker:
         # احتفظ بنافذة ماضية فقط — يكفي للـ fit السببي ويحدّ الذاكرة/الزمن
         if len(self._history) > self.fit_window:
             del self._history[: len(self._history) - self.fit_window]
-        if (
-            self._n_seen >= self.min_samples
-            and self._n_seen % self.refit_interval == 0
-        ):
+        if self._n_seen >= self.min_samples and self._n_seen % self.refit_interval == 0:
             mat = np.stack(self._history)
             self._model = KMeansRegimes(self.n_regimes, seed=self.seed).fit(mat)
             if self._model.centroids_ is not None:

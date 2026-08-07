@@ -105,6 +105,8 @@ def run_coverage_on_features(
     rng: np.random.Generator | None = None,
     assistant: ResearchAssistant | None = None,
     progress: ProgressLike | None = None,
+    nq_top_of_book: pl.DataFrame | None = None,
+    mnq_top_of_book: pl.DataFrame | None = None,
 ) -> CoverageReport:
     """يشغّل مراقب التغطية على ميزات مُسبَقة البناء (بدون إعادة حساب المحاكيات)."""
     log = progress
@@ -135,7 +137,11 @@ def run_coverage_on_features(
             f"features={features.height:,}"
         )
     nq_desc = mbo_window_descriptors(
-        nq, interval_ns=interval_ns, progress=log, progress_label="M9-NQ-desc"
+        nq,
+        interval_ns=interval_ns,
+        top_of_book=nq_top_of_book,
+        progress=log,
+        progress_label="M9-NQ-desc",
     )
     _time_cols = {AVAILABILITY_TS, "bucket_start", "bucket_end"}
     if nq is mnq:
@@ -146,7 +152,11 @@ def run_coverage_on_features(
         )
     else:
         mnq_desc = mbo_window_descriptors(
-            mnq, interval_ns=interval_ns, progress=log, progress_label="M9-MNQ-desc"
+            mnq,
+            interval_ns=interval_ns,
+            top_of_book=mnq_top_of_book,
+            progress=log,
+            progress_label="M9-MNQ-desc",
         )
         mnq_renamed = mnq_desc.rename(
             {c: f"mnq_{c}" for c in mnq_desc.columns if c not in _time_cols}

@@ -43,9 +43,7 @@ def test_causal_regime_tracker_is_causal() -> None:
 
 
 def test_causal_regime_tracker_fit_window_bounds_history() -> None:
-    tracker = CausalRegimeTracker(
-        min_samples=4, refit_interval=5, seed=0, fit_window=10
-    )
+    tracker = CausalRegimeTracker(min_samples=4, refit_interval=5, seed=0, fit_window=10)
     for i in range(50):
         tracker.update([float(i % 3), 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.1])
     assert len(tracker._history) <= 10

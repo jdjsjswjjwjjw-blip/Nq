@@ -263,9 +263,7 @@ def build_streaming_research_features(
     ``return_tick=True`` يعيد ``TickStream`` لإعادة استخدامه في SSL-tick.
     """
     if progress is not None:
-        progress.op(
-            f"streaming: استدعاء build_tick_stream (snapshots كل {interval_ns:,}ns)"
-        )
+        progress.op(f"streaming: استدعاء build_tick_stream (snapshots كل {interval_ns:,}ns)")
     tick = build_tick_stream(
         nq,
         mnq,

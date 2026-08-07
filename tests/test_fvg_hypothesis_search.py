@@ -132,7 +132,7 @@ def test_materialize_fvg_reuses_scan_for_identical_keys() -> None:
     """فرضيتان بنفس مفتاح المسح → مسح فريد واحد + إعادة استخدام."""
     nq, mnq = _paired_streams(2500, seed=61)
     clock = cross_market_features(nq, mnq, interval_ns=10_000, lead_lag_window=2)
-    base_kwargs = dict(
+    base_kwargs: dict[str, int | float] = dict(
         h1_interval_ns=10_000 * 200,
         signal_interval_ns=10_000 * 100,
         fvg_window_ns=10_000 * 50,
@@ -140,8 +140,22 @@ def test_materialize_fvg_reuses_scan_for_identical_keys() -> None:
         vol_volume_mult=1.3,
     )
     specs = (
-        FvgHypothesisSpec(name="a", **base_kwargs),
-        FvgHypothesisSpec(name="b", **base_kwargs),
+        FvgHypothesisSpec(
+            name="a",
+            h1_interval_ns=int(base_kwargs["h1_interval_ns"]),
+            signal_interval_ns=int(base_kwargs["signal_interval_ns"]),
+            fvg_window_ns=int(base_kwargs["fvg_window_ns"]),
+            vol_price_mult=float(base_kwargs["vol_price_mult"]),
+            vol_volume_mult=float(base_kwargs["vol_volume_mult"]),
+        ),
+        FvgHypothesisSpec(
+            name="b",
+            h1_interval_ns=int(base_kwargs["h1_interval_ns"]),
+            signal_interval_ns=int(base_kwargs["signal_interval_ns"]),
+            fvg_window_ns=int(base_kwargs["fvg_window_ns"]),
+            vol_price_mult=float(base_kwargs["vol_price_mult"]),
+            vol_volume_mult=float(base_kwargs["vol_volume_mult"]),
+        ),
     )
     buf = io.StringIO()
     progress = PipelineProgress(enabled=True, stream=buf)

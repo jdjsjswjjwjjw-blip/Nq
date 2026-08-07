@@ -37,6 +37,7 @@ def mbo_window_descriptors(
     frame: pl.DataFrame,
     *,
     interval_ns: int,
+    top_of_book: pl.DataFrame | None = None,
     progress: ProgressLike | None = None,
     progress_label: str = "mbo_desc",
 ) -> pl.DataFrame:
@@ -75,9 +76,13 @@ def mbo_window_descriptors(
         progress.op(
             f"{progress_label}: واصفات نوافذ · أحداث={frame.height:,} · interval_ns={interval_ns}"
         )
-    tob = reconstruct(
-        frame, progress=progress, progress_label=f"{progress_label}:reconstruct"
-    ).top_of_book
+    tob = (
+        top_of_book
+        if top_of_book is not None
+        else reconstruct(
+            frame, progress=progress, progress_label=f"{progress_label}:reconstruct"
+        ).top_of_book
+    )
     tob_bucketed = add_time_bucket(tob, interval_ns=interval_ns)
     both = pl.col("best_bid").is_not_null() & pl.col("best_ask").is_not_null()
     tob_bucketed = tob_bucketed.with_columns(
