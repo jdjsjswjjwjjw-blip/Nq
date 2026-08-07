@@ -38,7 +38,8 @@ _TOB_SCHEMA: dict[str, pl.DataType] = {
 # شريحة صغيرة بما يكفي لإبقاء قوائم action/side في حدود معقولة تحت التوازي.
 _RECONSTRUCT_CHUNK = 250_000
 # لا يُستخدم كسعر حقيقي في MBO (الأسعار بنقطة ثابتة موجبة كبيرة).
-_MISSING = np.int64(np.iinfo(np.int64).min)
+_MISSING_INT = int(np.iinfo(np.int64).min)
+_MISSING = np.int64(_MISSING_INT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,10 +66,10 @@ def _top_of_book_frame(
         {
             EVENT_TS: frame[EVENT_TS],
             SEQUENCE: frame[SEQUENCE],
-            "best_bid": pl.Series("best_bid", bb_price).replace(_MISSING, None),
-            "bid_size": pl.Series("bid_size", bb_size).replace(_MISSING, None),
-            "best_ask": pl.Series("best_ask", ba_price).replace(_MISSING, None),
-            "ask_size": pl.Series("ask_size", ba_size).replace(_MISSING, None),
+            "best_bid": pl.Series("best_bid", bb_price).replace(_MISSING_INT, None),
+            "bid_size": pl.Series("bid_size", bb_size).replace(_MISSING_INT, None),
+            "best_ask": pl.Series("best_ask", ba_price).replace(_MISSING_INT, None),
+            "ask_size": pl.Series("ask_size", ba_size).replace(_MISSING_INT, None),
         }
     )
 

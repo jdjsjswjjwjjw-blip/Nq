@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Any, Final, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -101,7 +101,7 @@ def default_edge_search_grid() -> tuple[EdgeSearchSpec, ...]:
                             hold_buckets=hold,
                             min_rr=min_rr,
                             stop_buffer_ticks=buf,
-                            target_mode=mode,  # type: ignore[arg-type]
+                            target_mode=mode,
                             rr_multiple=max(min_rr, 3.0),
                         )
                     )
@@ -280,7 +280,7 @@ def summarize_edge_trades(trades: pl.DataFrame) -> dict[str, float]:
     return {
         "n_trades": float(n),
         "win_rate": float((pnl > 0).mean()) if len(pnl) else 0.0,
-        "avg_rr_planned": float(active["edge_rr"].mean()),
+        "avg_rr_planned": float(cast(Any, active["edge_rr"].mean()) or 0.0),
         "expectancy": float(np.nanmean(pnl)) if len(pnl) else 0.0,
         "avg_pnl": float(np.nanmean(pnl)) if len(pnl) else 0.0,
         "profit_factor": float(pf) if np.isfinite(pf) else 99.0,
@@ -334,7 +334,7 @@ def score_edge_spec_oos(
         raise ValueError(
             f"train_frac must be in ({_TRAIN_FRAC_MIN}, {_TRAIN_FRAC_MAX}), got {train_frac}"
         )
-    empty = {
+    empty: dict[str, float | str] = {
         "name": spec.name,
         "train_expectancy": 0.0,
         "oos_expectancy": 0.0,

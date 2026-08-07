@@ -169,10 +169,11 @@ def _max_dep_cached(cache: _AxisDcorCache, target_sub: FloatArray) -> float:
         return 0.0
     if not cache.raw_columns:
         return 0.0
-    centered_b = _centered_abs_distance(y)
+    centered_b64 = _centered_abs_distance(y)
     best = 0.0
     for col in cache.raw_columns:
-        best = max(best, _dcor_from_centered(_centered_abs_distance(col), centered_b))
+        col64 = np.asarray(col, dtype=np.float64)
+        best = max(best, _dcor_from_centered(_centered_abs_distance(col64), centered_b64))
     return best
 
 

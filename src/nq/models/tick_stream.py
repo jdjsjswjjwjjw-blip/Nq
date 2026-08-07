@@ -235,6 +235,7 @@ def _mid_from_book(book: OrderBook, *, ref_price: float) -> float:
     if bb is None and ba is None:
         return 0.0
     if bb is None:
+        assert ba is not None
         return float(ba[0])
     if ba is None:
         return float(bb[0])

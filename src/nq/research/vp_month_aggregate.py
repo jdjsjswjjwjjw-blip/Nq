@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import polars as pl
@@ -85,8 +86,8 @@ def write_vp_month_aggregate(output_root: Path | str) -> Path:  # noqa: PLR0912,
     n_days = day_df.height
     n_sig = int(day_df["signal_significant"].sum())
     n_edge_pos = int(day_df["edge_positive"].sum())
-    mean_ic = float(day_df["oos_ic"].mean()) if n_days else 0.0
-    mean_edge_exp = float(day_df["edge_oos_expectancy"].mean()) if n_days else 0.0
+    mean_ic = float(cast(Any, day_df["oos_ic"].mean()) or 0.0) if n_days else 0.0
+    mean_edge_exp = float(cast(Any, day_df["edge_oos_expectancy"].mean()) or 0.0) if n_days else 0.0
     total_day_trades = float(day_df["edge_n_trades"].sum()) if n_days else 0.0
 
     signal_counts = Counter(

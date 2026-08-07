@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import patch
 
 import polars as pl
 
 from nq.core.session import SESSION_DATE
+from nq.research.progress import ProgressLike
 from nq.simulation.cross_market import cross_market_features
 from tests.mbo_factory import Event, make_stream
 
@@ -85,10 +87,19 @@ def test_nq_only_builds_windows_once() -> None:
         "nq.simulation.cross_market", fromlist=["_market_windows"]
     )._market_windows
 
-    def _counting_windows(frame, *, interval_ns, progress=None, progress_label="market_windows"):
+    def _counting_windows(
+        frame: pl.DataFrame,
+        *,
+        interval_ns: int,
+        progress: ProgressLike | None = None,
+        progress_label: str = "market_windows",
+    ) -> pl.DataFrame:
         calls.append(progress_label)
-        return real_windows(
-            frame, interval_ns=interval_ns, progress=progress, progress_label=progress_label
+        return cast(
+            pl.DataFrame,
+            real_windows(
+                frame, interval_ns=interval_ns, progress=progress, progress_label=progress_label
+            ),
         )
 
     with patch("nq.simulation.cross_market._market_windows", side_effect=_counting_windows):
