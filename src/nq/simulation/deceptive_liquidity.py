@@ -112,8 +112,10 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
     cfg = config if config is not None else DeceptiveLiquidityConfig()
     if frame.height == 0:
         empty = {c: pl.Series(c, [], dtype=pl.Float64) for c in DECEPTIVE_FEATURE_COLUMNS}
-        return frame.hstack(list(empty.values())) if frame.width else pl.DataFrame(
-            schema={**{c: pl.Float64() for c in DECEPTIVE_FEATURE_COLUMNS}}
+        return (
+            frame.hstack(list(empty.values()))
+            if frame.width
+            else pl.DataFrame(schema={**{c: pl.Float64() for c in DECEPTIVE_FEATURE_COLUMNS}})
         )
 
     w = _normalize_weights(cfg)
@@ -317,13 +319,7 @@ def score_deceptive_events(  # noqa: PLR0912, PLR0915
                 live.pop(oid, None)
                 _level_remove(add_side, add_px)
             storm_f[i] = storm
-            score = (
-                w[0] * short_life
-                + w[1] * spoof
-                + w[2] * bait
-                + w[3] * nonpart
-                + w[4] * storm
-            )
+            score = w[0] * short_life + w[1] * spoof + w[2] * bait + w[3] * nonpart + w[4] * storm
             scores[i] = float(min(1.0, score))
             if scores[i] >= cfg.drop_score:
                 drop_mask[i] = True
@@ -482,8 +478,7 @@ def deceptive_features_by_bucket(
         )
         .with_columns(
             (
-                pl.col("noise_instant").cum_sum()
-                / pl.int_range(1, pl.len() + 1).cast(pl.Float64)
+                pl.col("noise_instant").cum_sum() / pl.int_range(1, pl.len() + 1).cast(pl.Float64)
             ).alias("noise_cum"),
         )
         .drop(["_dec_sz", "_all_sz"])

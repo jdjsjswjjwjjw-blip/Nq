@@ -346,9 +346,7 @@ def scan_book_tob_and_depth(  # noqa: PLR0912, PLR0915
     for interval_ns in intervals:
         rows = rows_by_interval[interval_ns]
         depth_by_interval[interval_ns] = (
-            pl.DataFrame(rows).sort(AVAILABILITY_TS)
-            if rows
-            else pl.DataFrame(schema=empty_schema)
+            pl.DataFrame(rows).sort(AVAILABILITY_TS) if rows else pl.DataFrame(schema=empty_schema)
         )
     if progress is not None:
         progress.op(f"{progress_label}: انتهى · tob={tob.height:,}")

@@ -155,8 +155,7 @@ def simulate_edge_trades(  # noqa: PLR0915
     cfg = exec_cfg if exec_cfg is not None else EdgeExecConfig()
     n = truth.height
     empty_cols = {
-        c: pl.Series(c, [np.nan] * n if n else [], dtype=pl.Float64)
-        for c in EDGE_TRADE_COLUMNS
+        c: pl.Series(c, [np.nan] * n if n else [], dtype=pl.Float64) for c in EDGE_TRADE_COLUMNS
     }
     if n == 0:
         return truth.hstack(list(empty_cols.values()))
@@ -362,12 +361,8 @@ def score_edge_spec_oos(
     train_truth = truth.head(cut)
     test_start = min(truth.height, cut + purge)
     test_truth = truth.slice(test_start)
-    train = summarize_edge_trades(
-        simulate_edge_trades(train_truth, exec_cfg=spec.exec_config())
-    )
-    test = summarize_edge_trades(
-        simulate_edge_trades(test_truth, exec_cfg=spec.exec_config())
-    )
+    train = summarize_edge_trades(simulate_edge_trades(train_truth, exec_cfg=spec.exec_config()))
+    test = summarize_edge_trades(simulate_edge_trades(test_truth, exec_cfg=spec.exec_config()))
     return {
         "name": spec.name,
         "train_expectancy": train["expectancy"],
@@ -405,9 +400,7 @@ def search_best_edge_spec(  # noqa: PLR0912
     if progress is not None:
         progress.op(f"edge search: {len(specs)} مواصفات")
         if deceptive_frame is not None:
-            progress.op(
-                f"edge search: reuse deceptive_frame · buckets={deceptive_frame.height:,}"
-            )
+            progress.op(f"edge search: reuse deceptive_frame · buckets={deceptive_frame.height:,}")
         elif scored is not None:
             progress.op(f"edge search: reuse scored · rows={scored.height:,}")
         else:
@@ -463,8 +456,7 @@ def search_best_edge_spec(  # noqa: PLR0912
     if table.height == 0:
         return table, None, {}
     eligible = table.filter(
-        (pl.col("oos_n") >= float(min_oos_trades))
-        & (pl.col("oos_avg_rr") >= float(min_oos_rr))
+        (pl.col("oos_n") >= float(min_oos_trades)) & (pl.col("oos_avg_rr") >= float(min_oos_rr))
     )
     if eligible.height == 0:
         return table, None, {}

@@ -122,11 +122,15 @@ def auction_states(
 
     trades = extract_trades(add_time_bucket(sort_causal(frame), interval_ns=interval_ns))
 
-    stats = trades.sort(EVENT_TS).group_by(BUCKET_START, maintain_order=True).agg(
-        pl.col("price").max().alias("high"),
-        pl.col("price").min().alias("low"),
-        pl.col("price").last().alias("close"),
-        pl.col("size").cast(pl.Int64).sum().alias("bucket_volume"),
+    stats = (
+        trades.sort(EVENT_TS)
+        .group_by(BUCKET_START, maintain_order=True)
+        .agg(
+            pl.col("price").max().alias("high"),
+            pl.col("price").min().alias("low"),
+            pl.col("price").last().alias("close"),
+            pl.col("size").cast(pl.Int64).sum().alias("bucket_volume"),
+        )
     )
 
     # حجم صفقات النافذة الحالية داخل منطقة القيمة الجلسية المتطوّرة
@@ -313,24 +317,18 @@ def auction_action_states(
     )
     touch = float(bound_touch_frac)
     near_lower = (
-        (pl.col("low").cast(pl.Float64) - pl.col("val").cast(pl.Float64)).abs()
-        <= touch * va_w
-    )
+        pl.col("low").cast(pl.Float64) - pl.col("val").cast(pl.Float64)
+    ).abs() <= touch * va_w
     near_upper = (
-        (pl.col("high").cast(pl.Float64) - pl.col("vah").cast(pl.Float64)).abs()
-        <= touch * va_w
-    )
+        pl.col("high").cast(pl.Float64) - pl.col("vah").cast(pl.Float64)
+    ).abs() <= touch * va_w
     # امتصاص شرائي عند VAL: بيع عدواني كثيف بلا كسر الإغلاق تحت القيمة.
     absorb_buy = near_lower & (pl.col("sell_volume") > pl.col("buy_volume")) & closed_in_value
     # امتصاص بيعي عند VAH: شراء عدواني كثيف بلا إغلاق فوق القيمة.
     absorb_sell = near_upper & (pl.col("buy_volume") > pl.col("sell_volume")) & closed_in_value
     # Look above/below and fail (ورقة VP): اختراق المدى ثم إغلاق داخل + ضغط معاكس.
-    look_fail_up = (
-        (pl.col("high") > pl.col("vah")) & closed_in_value & (pl.col("delta") < 0)
-    )
-    look_fail_dn = (
-        (pl.col("low") < pl.col("val")) & closed_in_value & (pl.col("delta") > 0)
-    )
+    look_fail_up = (pl.col("high") > pl.col("vah")) & closed_in_value & (pl.col("delta") < 0)
+    look_fail_dn = (pl.col("low") < pl.col("val")) & closed_in_value & (pl.col("delta") > 0)
 
     return (
         merged.sort(BUCKET_START)
@@ -486,9 +484,7 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
             saw_retest = True
 
         if saw_retest and (bool(expansion[i]) or age >= 1):
-            delta_ok = (pending_dir > 0 and delta[i] >= 0) or (
-                pending_dir < 0 and delta[i] <= 0
-            )
+            delta_ok = (pending_dir > 0 and delta[i] >= 0) or (pending_dir < 0 and delta[i] <= 0)
             long_ok = pending_dir > 0 and close[i] >= vah[i] and delta_ok
             short_ok = pending_dir < 0 and close[i] <= val[i] and delta_ok
             if long_ok or short_ok:
@@ -552,12 +548,8 @@ def auction_signals_from_states(
             ((pl.col("_close") - pl.col("vah")) / pl.col("_va_w")).alias("vp_rel_upper"),
             ((pl.col("_close") - pl.col("poc")) / pl.col("_va_w")).alias("vp_rel_mid"),
             ((pl.col("_close") - pl.col("val")) / pl.col("_va_w")).alias("vp_rel_lower"),
-            (pl.col("excess_upper").cast(pl.Float64) / pl.col("_va_w")).alias(
-                "vp_excess_upper"
-            ),
-            (pl.col("excess_lower").cast(pl.Float64) / pl.col("_va_w")).alias(
-                "vp_excess_lower"
-            ),
+            (pl.col("excess_upper").cast(pl.Float64) / pl.col("_va_w")).alias("vp_excess_upper"),
+            (pl.col("excess_lower").cast(pl.Float64) / pl.col("_va_w")).alias("vp_excess_lower"),
             pl.when(pl.col("_bvol") > 0)
             .then(pl.col("delta").cast(pl.Float64) / pl.col("_bvol"))
             .otherwise(0.0)
@@ -567,10 +559,7 @@ def auction_signals_from_states(
             pl.when(pl.col("is_balanced")).then(1.0).otherwise(-1.0).alias("vp_balance"),
             pl.when(~pl.col("is_balanced")).then(1.0).otherwise(0.0).alias("vp_imbalance"),
             pl.when(pl.col("is_expansion")).then(1.0).otherwise(0.0).alias("vp_expansion"),
-            pl.when(pl.col("close_in_value"))
-            .then(1.0)
-            .otherwise(0.0)
-            .alias("vp_close_in_value"),
+            pl.when(pl.col("close_in_value")).then(1.0).otherwise(0.0).alias("vp_close_in_value"),
             pl.col("in_value_fraction").cast(pl.Float64).alias("vp_in_value_frac"),
             pl.when(pl.col("pullback_defended"))
             .then(1.0)
@@ -616,15 +605,14 @@ def auction_signal_frame(
 
     ``interval_ns`` مرادف قديم لـ ``signal_interval_ns`` (ساعة البحث/الفعل).
     """
-    sig_iv = int(signal_interval_ns if signal_interval_ns is not None else (
-        interval_ns if interval_ns is not None else VP_SIGNAL_INTERVAL_NS
-    ))
+    sig_iv = int(
+        signal_interval_ns
+        if signal_interval_ns is not None
+        else (interval_ns if interval_ns is not None else VP_SIGNAL_INTERVAL_NS)
+    )
     prof_iv = int(profile_interval_ns)
     if progress is not None:
-        progress.op(
-            "auction_signal_frame: "
-            f"رينج={prof_iv // _NS}s · فعل={sig_iv // _NS}s"
-        )
+        progress.op(f"auction_signal_frame: رينج={prof_iv // _NS}s · فعل={sig_iv // _NS}s")
     states = auction_action_states(
         frame,
         profile_interval_ns=prof_iv,

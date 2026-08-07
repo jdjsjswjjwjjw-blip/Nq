@@ -616,9 +616,7 @@ def _build_research_features(  # noqa: PLR0915
     elif cfg.research_interval_ns is not None:
         log.note(f"ساعة البحث من [streaming].research_interval_ns={cfg.research_interval_ns}")
     market_pair = (
-        f"NQ={nq.height:,} (nq_only)"
-        if nq is mnq
-        else f"NQ={nq.height:,} · MNQ={mnq.height:,}"
+        f"NQ={nq.height:,} (nq_only)" if nq is mnq else f"NQ={nq.height:,} · MNQ={mnq.height:,}"
     )
     interval_30m = 30 * 60 * 1_000_000_000
     depth_intervals: list[int] = [cfg.interval_ns]

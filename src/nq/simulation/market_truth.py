@@ -64,11 +64,7 @@ def _thesis_direction(states: pl.DataFrame) -> pl.Series:
     above = close > poc
     below = close < poc
     dir_expr = (
-        pl.when(imbalanced & above)
-        .then(1.0)
-        .when(imbalanced & below)
-        .then(-1.0)
-        .otherwise(0.0)
+        pl.when(imbalanced & above).then(1.0).when(imbalanced & below).then(-1.0).otherwise(0.0)
     )
     return states.select(dir_expr.alias("thesis_dir"))["thesis_dir"]
 

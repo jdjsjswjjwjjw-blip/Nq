@@ -156,9 +156,7 @@ def measure_mfig(
     if not folds:
         return MetricResult("mfig", 0.0, 1.0, 0, "insufficient data for walk-forward", False)
 
-    test_indices = [
-        fold.test_idx for fold in folds if fold.test_idx.shape[0] >= _MIN_FOLD_SAMPLES
-    ]
+    test_indices = [fold.test_idx for fold in folds if fold.test_idx.shape[0] >= _MIN_FOLD_SAMPLES]
     if not test_indices:
         return MetricResult("mfig", 0.0, 1.0, 0, "no valid folds", False)
 
