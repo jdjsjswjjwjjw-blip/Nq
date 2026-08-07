@@ -128,6 +128,7 @@ def test_auction_signal_frame_exports_vp_columns() -> None:
         "vp_poc_migration",
         "vp_flip_to_imbalance",
         "vp_fsm_break",
+        "vp_fsm_build",
         "vp_fsm_accel",
         "vp_fsm_retest",
         "vp_fsm_expand",
@@ -185,6 +186,7 @@ def test_auction_fsm_columns_empty_states() -> None:
     assert fsm.height == 0
     for col in (
         "vp_fsm_break",
+        "vp_fsm_build",
         "vp_fsm_accel",
         "vp_fsm_retest",
         "vp_fsm_expand",
@@ -293,8 +295,211 @@ def test_auction_fsm_setup_completes_balance_break_retest_expand() -> None:
     )
     fsm = auction_fsm_columns(states, retest_window=8, accel_lookback=3, accel_mult=1.5)
     assert float(fsm["vp_fsm_break"][2]) == 1.0
+    # أول كسر = مراقبة فقط — ليس توسّعًا
+    assert float(fsm["vp_fsm_expand"][2]) == 0.0
     assert (fsm["vp_fsm_accel"] != 0.0).any()
-    assert (fsm["vp_fsm_retest"] != 0.0).any()
+    assert (fsm["vp_fsm_retest"] != 0.0).any() or (fsm["vp_fsm_build"] != 0.0).any()
+    assert (fsm["vp_auction_setup"] == 1.0).any()
+
+
+def _fsm_base_frame(n: int = 16, **overrides: object) -> pl.DataFrame:
+    data: dict[str, object] = {
+        "bucket_start": list(range(n)),
+        "is_balanced": [True, True] + [False] * (n - 2),
+        "close": [100.0, 100.0] + [103.0] * (n - 2),
+        "vah": [101.0] * n,
+        "poc": [100.0] * n,
+        "val": [99.0] * n,
+        "bucket_volume": [10.0] * n,
+        "is_expansion": [False] * n,
+        "pullback_defended": [False] * n,
+        "close_in_value": [True, True] + [False] * (n - 2),
+        "delta": [0.0, 0.0] + [5.0] * (n - 2),
+        "absorb": [0.0] * n,
+        "look_fail": [0.0] * n,
+    }
+    data.update(overrides)
+    return pl.DataFrame(data)
+
+
+def test_auction_fsm_first_break_is_not_expansion() -> None:
+    """أول كسر خارج الفوليوم لا يعلن expand/setup."""
+    states = _fsm_base_frame(
+        n=6,
+        close=[100.0, 100.0, 103.0, 103.5, 104.0, 104.5],
+        is_expansion=[False] * 6,
+    )
+    fsm = auction_fsm_columns(states, rebalance_confirm=3, build_max_age=20)
+    assert float(fsm["vp_fsm_break"][2]) == 1.0
+    assert float(fsm["vp_fsm_expand"].sum()) == 0.0
+    assert float(fsm["vp_auction_setup"].sum()) == 0.0
+
+
+def test_auction_fsm_return_inside_volume_keeps_pending_then_expands() -> None:
+    """رجوع داخل الفوليوم بعد الكسر = بناء، ثم انطلاق لاحق — لا قتل للرحلة."""
+    n = 14
+    states = _fsm_base_frame(
+        n=n,
+        is_balanced=[True, True] + [False] * (n - 2),
+        close=[
+            100.0,
+            100.0,
+            103.0,  # break
+            100.5,  # back inside — build
+            100.2,
+            100.8,
+            99.5,
+            100.1,
+            100.4,
+            102.0,  # poke again — still not expand (no is_expansion)
+            100.3,
+            106.0,  # clean expand
+            108.0,
+            110.0,
+        ],
+        close_in_value=[
+            True,
+            True,
+            False,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            False,
+            True,
+            False,
+            False,
+            False,
+        ],
+        is_expansion=[False] * 11 + [True, True, True],
+        delta=[0.0, 0.0] + [4.0] * (n - 2),
+        pullback_defended=[False] * 3 + [True, True, True, True, True, True] + [False] * 5,
+    )
+    fsm = auction_fsm_columns(states, retest_window=10, rebalance_confirm=5, build_max_age=30)
+    assert float(fsm["vp_fsm_break"][2]) == 1.0
+    # أثناء الرجوع داخل القيمة يظهر build وليس expand
+    assert float(fsm["vp_fsm_build"][3]) == 1.0
+    assert float(fsm["vp_fsm_expand"][3]) == 0.0
+    assert float(fsm["vp_fsm_expand"][9]) == 0.0  # poke بلا is_expansion
+    assert (fsm["vp_fsm_expand"] == 1.0).any()
+    assert (fsm["vp_auction_setup"] == 1.0).any()
+    setup_i = int(fsm["vp_auction_setup"].to_list().index(1.0))
+    assert setup_i >= 11
+
+
+def test_auction_fsm_brief_balance_flicker_does_not_kill_context() -> None:
+    """وميض توازن لبرميل أو اثنين لا يقفل القصة؛ التوسّع اللاحق يبقى متاحًا."""
+    n = 12
+    states = _fsm_base_frame(
+        n=n,
+        is_balanced=[
+            True,
+            True,
+            False,  # break
+            False,
+            True,  # flicker 1
+            True,  # flicker 2 (< rebalance_confirm=3)
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+        ],
+        close=[
+            100.0,
+            100.0,
+            103.0,
+            102.5,
+            100.2,
+            100.1,
+            100.5,
+            102.0,
+            106.0,
+            108.0,
+            110.0,
+            112.0,
+        ],
+        close_in_value=[
+            True,
+            True,
+            False,
+            False,
+            True,
+            True,
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+        ],
+        is_expansion=[False] * 8 + [True, True, True, True],
+        delta=[0.0, 0.0] + [3.0] * (n - 2),
+    )
+    fsm = auction_fsm_columns(states, rebalance_confirm=3, build_max_age=30)
+    assert (fsm["vp_fsm_build"] != 0.0).any()
+    assert (fsm["vp_auction_setup"] == 1.0).any()
+
+
+def test_auction_fsm_true_rebalance_kills_pending() -> None:
+    """إعادة توازن حقيقية (3 براميل متتالية) تقتل السياق — لا توسّع لاحق من نفس الكسر."""
+    n = 12
+    states = _fsm_base_frame(
+        n=n,
+        is_balanced=[
+            True,
+            True,
+            False,  # break
+            True,
+            True,
+            True,  # confirm rebalance → kill
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+        ],
+        close=[
+            100.0,
+            100.0,
+            103.0,
+            100.0,
+            100.1,
+            100.0,
+            106.0,
+            108.0,
+            110.0,
+            112.0,
+            114.0,
+            116.0,
+        ],
+        close_in_value=[True, True, False] + [True] * 3 + [False] * 6,
+        is_expansion=[False] * 6 + [True] * 6,
+        delta=[0.0, 0.0, 5.0] + [0.0] * 3 + [6.0] * 6,
+    )
+    fsm = auction_fsm_columns(states, rebalance_confirm=3, build_max_age=30)
+    assert float(fsm["vp_fsm_break"][2]) == 1.0
+    assert float(fsm["vp_fsm_build"][3]) == 1.0
+    # بعد قتل السياق: لا setup من نفس الرحلة (قد يحدث break جديد لاحقًا فقط إن سبقه توازن)
+    assert float(fsm["vp_auction_setup"].sum()) == 0.0
+
+
+def test_auction_fsm_build_around_single_mid_anchor() -> None:
+    """بناء حول خط واحد (POC في منتصف التذبذب) بدون اشتراط خطّين."""
+    n = 10
+    states = _fsm_base_frame(
+        n=n,
+        close=[100.0, 100.0, 103.0, 100.4, 99.7, 100.3, 99.8, 100.2, 106.0, 108.0],
+        close_in_value=[True, True, False, True, True, True, True, True, False, False],
+        is_expansion=[False] * 8 + [True, True],
+        delta=[0.0, 0.0] + [2.0] * (n - 2),
+    )
+    fsm = auction_fsm_columns(states, rebalance_confirm=4, build_max_age=20)
+    assert (fsm["vp_fsm_build"] == 1.0).any()
     assert (fsm["vp_auction_setup"] == 1.0).any()
 
 
@@ -312,6 +517,7 @@ def test_auction_signal_frame_empty() -> None:
     assert "vp_lower" in signals.columns
     assert "vp_auction_setup" in signals.columns
     assert "vp_fsm_break" in signals.columns
+    assert "vp_fsm_build" in signals.columns
 
 
 def test_auction_signal_frame_rejects_profile_shorter_than_signal() -> None:

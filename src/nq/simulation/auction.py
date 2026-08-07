@@ -4,12 +4,17 @@
 
 **إطاران زمنيان (افتراضي):**
 * رينج / Volume Profile: ``5`` دقائق — حدود VP الثلاثة + نظام توازن/اختلال.
-* فعل / دخول: ``30`` ثانية — ارتدادات من سوق متوازن، وكسر+دخول من سوق مختلّ.
+* فعل / دخول: ``30`` ثانية — ارتدادات من سوق متوازن، وكسر+بناء+انطلاق من سوق مختلّ.
 
 Volume Profile يُعرَّف دائمًا بـ **ثلاث حدود**:
 * ``upper`` = VAH (حد علوي لمنطقة القيمة)
 * ``mid`` = POC (حد متوسط / مركز القبول)
 * ``lower`` = VAL (حد سفلي لمنطقة القيمة)
+
+بعد كسر التوازن لا يُعلَن التوسّع من أول وخزة: يُراقَب طور بناء حول مرجع
+الفوليوم (خط أو خطين أو حول المنتصف). الرجوع داخل القيمة لا يقتل السياق.
+الانطلاق عند اتساع صريح خارج الحد؛ وإعادة التوازن الحقيقية تقتل السياق فقط
+بعد عدة براميل متتالية متوازنة.
 
 كل الحالات سببية: كل صف يعتمد على نوافذه المكتملة فقط، ومتاح عند
 ``bucket_end`` (join_asof خلفي من 5د → 30ث).
@@ -36,18 +41,25 @@ VP_SIGNAL_INTERVAL_NS: int = 30 * _NS
 
 _DEFAULT_BALANCE_THRESHOLD = 0.6
 _DEFAULT_EXPANSION_THRESHOLD = 1.5
-#: نافذة ريتست بعد الكسر بعدد براميل الإشارة (30ث → برميل واحد ≈ 30ث).
-_DEFAULT_RETEST_WINDOW = 2
+#: نافذة ريتست الكلاسيكي بعد الكسر (براميل إشارة 30ث) — لا تُستخدم لقتل البناء.
+_DEFAULT_RETEST_WINDOW = 8
+#: أقصى عمر لسياق ما بعد الكسر قبل إعادة الضبط (≈ 30ث×48 ≈ 24د).
+_DEFAULT_BUILD_MAX_AGE = 48
+#: عدد براميل ``is_balanced`` المتتالية لاعتبار إعادة توازن حقيقية (قتل السياق).
+_DEFAULT_REBALANCE_CONFIRM = 3
 #: نافذة حجم للتسارع السببي على ساعة الإشارة.
 _DEFAULT_ACCEL_LOOKBACK = 3
 _DEFAULT_ACCEL_MULT = 1.5
 #: قرب الريتست/الارتداد من المركز (mid/POC) كنسبة من عرض منطقة القيمة.
 _DEFAULT_RETEST_MID_FRAC = 0.25
+#: قرب أي مرجع فوليوم (VAL/POC/VAH) لاعتبار «لعب حول الهيكل» — بلا افتراض عدد خطوط.
+_DEFAULT_BUILD_ANCHOR_FRAC = 0.35
 #: قرب الحد للكشف عن امتصاص / Look-above-and-fail.
 _DEFAULT_BOUND_TOUCH_FRAC = 0.2
 
 _FSM_SIGNAL_COLUMNS = (
     "vp_fsm_break",
+    "vp_fsm_build",
     "vp_fsm_accel",
     "vp_fsm_retest",
     "vp_fsm_expand",
@@ -370,19 +382,48 @@ def auction_action_states(
     )
 
 
+def _near_volume_anchor(
+    close: float,
+    vah: float,
+    poc: float,
+    val: float,
+    *,
+    anchor_frac: float,
+) -> bool:
+    """قرب مرن لأي مرجع فوليوم (خط واحد أو بين خطين) — بلا فرع على عدد الخطوط."""
+    va_w = max(vah - val, 1.0)
+    if val <= close <= vah:
+        return True
+    dist = min(abs(close - poc), abs(close - vah), abs(close - val))
+    return dist <= anchor_frac * va_w
+
+
 def auction_fsm_columns(  # noqa: PLR0912, PLR0915
     states: pl.DataFrame,
     *,
     retest_window: int = _DEFAULT_RETEST_WINDOW,
+    build_max_age: int = _DEFAULT_BUILD_MAX_AGE,
+    rebalance_confirm: int = _DEFAULT_REBALANCE_CONFIRM,
     accel_lookback: int = _DEFAULT_ACCEL_LOOKBACK,
     accel_mult: float = _DEFAULT_ACCEL_MULT,
     retest_mid_frac: float = _DEFAULT_RETEST_MID_FRAC,
+    build_anchor_frac: float = _DEFAULT_BUILD_ANCHOR_FRAC,
 ) -> pl.DataFrame:
     """آلة حالات على براميل الفعل (30ث) بحدود الرينج (5د) + تأكيد تدفق.
 
-    * متوازن: ارتداد/امتصاص/Look-fail نحو mid أو الحدود → ``vp_fsm_retest``.
-    * مختلّ: كسر مؤكَّد بالدلتا → تسارع → ريتست mid → دخول مع الدلتا.
+    الأطوار بعد كسر التوازن:
+
+    1. ``break`` — أول خروج مؤكَّد بالدلتا (مراقبة فقط، ليس توسّعًا).
+    2. ``build`` — لعب/تراكم حول مرجع فوليوم (POC أو حدود أو بينهما)؛
+       الرجوع داخل القيمة **لا** يقتل السياق ولا يعني فشل التوسّع.
+    3. ``expand`` / ``setup`` — انطلاق صريح: اتساع + قبول خارج الحد باتجاه الكسر.
+    4. إعادة توازن حقيقية = ``rebalance_confirm`` براميل متتالية ``is_balanced``.
     """
+    if rebalance_confirm < 1:
+        raise ValueError(f"rebalance_confirm must be >= 1, got {rebalance_confirm}")
+    if build_max_age < 1:
+        raise ValueError(f"build_max_age must be >= 1, got {build_max_age}")
+
     n = states.height
     empty = {c: pl.Series(c, [0.0] * n if n else [], dtype=pl.Float64) for c in _FSM_SIGNAL_COLUMNS}
     if n == 0:
@@ -414,6 +455,7 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
     )
 
     brk = np.zeros(n, dtype=np.float64)
+    build = np.zeros(n, dtype=np.float64)
     accel = np.zeros(n, dtype=np.float64)
     retest = np.zeros(n, dtype=np.float64)
     expand = np.zeros(n, dtype=np.float64)
@@ -423,51 +465,79 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
     pending_i = -1
     saw_accel = False
     saw_retest = False
+    saw_build = False
+    balance_streak = 0
+
+    def _reset_pending() -> None:
+        nonlocal pending_dir, pending_i, saw_accel, saw_retest, saw_build, balance_streak
+        pending_dir = 0.0
+        pending_i = -1
+        saw_accel = False
+        saw_retest = False
+        saw_build = False
+        balance_streak = 0
 
     for i in range(n):
         va_w = max(float(vah[i] - val[i]), 1.0)
         near_mid = abs(float(close[i] - poc[i])) <= retest_mid_frac * va_w
+        near_anchor = _near_volume_anchor(
+            float(close[i]),
+            float(vah[i]),
+            float(poc[i]),
+            float(val[i]),
+            anchor_frac=build_anchor_frac,
+        )
 
-        # --- متوازن: ارتدادات 30ث (دفاع هيكل + امتصاص تدفق) ---
-        if bool(balanced[i]):
-            pending_dir = 0.0
-            pending_i = -1
-            saw_accel = False
-            saw_retest = False
-            if absorb[i] != 0.0:
-                retest[i] = float(absorb[i])
-            elif look_fail[i] != 0.0:
-                retest[i] = float(look_fail[i])
-            elif bool(pullback[i]) and near_mid:
-                retest[i] = 1.0 if close[i] >= poc[i] else -1.0
+        # --- بلا سياق كسر: ارتدادات سوق متوازن فقط ---
+        if pending_dir == 0.0:
+            balance_streak = 0
+            if bool(balanced[i]):
+                if absorb[i] != 0.0:
+                    retest[i] = float(absorb[i])
+                elif look_fail[i] != 0.0:
+                    retest[i] = float(look_fail[i])
+                elif bool(pullback[i]) and near_mid:
+                    retest[i] = 1.0 if close[i] >= poc[i] else -1.0
+            else:
+                # مختلّ بلا سياق حيّ: أول كسر مؤكَّد بالدلتا يبدأ المراقبة فقط.
+                if close[i] > vah[i] and delta[i] >= 0:
+                    brk[i] = 1.0
+                elif close[i] < val[i] and delta[i] <= 0:
+                    brk[i] = -1.0
+                if brk[i] != 0.0:
+                    pending_dir = float(brk[i])
+                    pending_i = i
+                    saw_accel = False
+                    saw_retest = False
+                    saw_build = False
+                    balance_streak = 0
             continue
 
-        # --- مختلّ: كسر + دخول على 30ث (تأكيد دلتا عدوانية) ---
-        prev_bal = bool(balanced[i - 1]) if i > 0 else False
-        if prev_bal or pending_dir == 0.0:
-            if close[i] > vah[i] and delta[i] >= 0:
-                brk[i] = 1.0
-            elif close[i] < val[i] and delta[i] <= 0:
-                brk[i] = -1.0
-            if brk[i] != 0.0:
-                pending_dir = float(brk[i])
-                pending_i = i
-                saw_accel = False
-                saw_retest = False
-
-        if pending_dir == 0.0 or pending_i < 0:
-            continue
+        # --- سياق كسر حيّ: بناء → (تسارع/ريتست اختياري) → توسّع صريح ---
         age = i - pending_i
-        if age > retest_window and not saw_retest:
-            pending_dir = 0.0
-            pending_i = -1
+        if age > build_max_age:
+            _reset_pending()
             continue
+
+        if bool(balanced[i]):
+            balance_streak += 1
+            # رجوع للتوازن اللحظي = استمرار بناء، ليس فشل توسّع.
+            build[i] = pending_dir
+            saw_build = True
+            if balance_streak >= rebalance_confirm:
+                _reset_pending()
+            continue
+        balance_streak = 0
+
+        # لعب حول مرجع الفوليوم (خط/خطين/حول المنتصف) قبل الانطلاق.
+        if near_anchor or bool(in_value[i]):
+            build[i] = pending_dir
+            saw_build = True
 
         if age >= 1 and not saw_accel:
             start = max(0, i - accel_lookback)
             hist = vol[start:i]
             base = float(np.mean(hist)) if hist.size else 0.0
-            # تسارع حجم أو دلتا موافقة للاتجاه
             delta_ok = (pending_dir > 0 and delta[i] > 0) or (pending_dir < 0 and delta[i] < 0)
             if (base > 0 and vol[i] >= accel_mult * base) or delta_ok:
                 accel[i] = pending_dir
@@ -475,6 +545,7 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
 
         if (
             age >= 1
+            and age <= retest_window
             and saw_accel
             and not saw_retest
             and near_mid
@@ -483,21 +554,20 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
             retest[i] = pending_dir
             saw_retest = True
 
-        if saw_retest and (bool(expansion[i]) or age >= 1):
-            delta_ok = (pending_dir > 0 and delta[i] >= 0) or (pending_dir < 0 and delta[i] <= 0)
-            long_ok = pending_dir > 0 and close[i] >= vah[i] and delta_ok
-            short_ok = pending_dir < 0 and close[i] <= val[i] and delta_ok
-            if long_ok or short_ok:
-                expand[i] = pending_dir
-                setup[i] = pending_dir
-                pending_dir = 0.0
-                pending_i = -1
-                saw_accel = False
-                saw_retest = False
+        # توسّع فقط عند اتساع حقيقي + قبول خارج الحد — ليس أول وخزة ولا age وحدها.
+        delta_ok = (pending_dir > 0 and delta[i] >= 0) or (pending_dir < 0 and delta[i] <= 0)
+        long_ok = pending_dir > 0 and close[i] > vah[i] and delta_ok
+        short_ok = pending_dir < 0 and close[i] < val[i] and delta_ok
+        ready = (saw_retest or saw_build) and age >= 1 and bool(expansion[i])
+        if ready and (long_ok or short_ok):
+            expand[i] = pending_dir
+            setup[i] = pending_dir
+            _reset_pending()
 
     return pl.DataFrame(
         {
             "vp_fsm_break": brk,
+            "vp_fsm_build": build,
             "vp_fsm_accel": accel,
             "vp_fsm_retest": retest,
             "vp_fsm_expand": expand,
@@ -510,6 +580,8 @@ def auction_signals_from_states(
     states: pl.DataFrame,
     *,
     retest_window: int = _DEFAULT_RETEST_WINDOW,
+    build_max_age: int = _DEFAULT_BUILD_MAX_AGE,
+    rebalance_confirm: int = _DEFAULT_REBALANCE_CONFIRM,
 ) -> pl.DataFrame:
     """يحوّل حالات المزاد المحسوبة مسبقًا إلى أعمدة VP/FSM دون إعادة مسح MBO."""
     base_schema = {
@@ -585,7 +657,12 @@ def auction_signals_from_states(
             "vp_flip_to_imbalance",
         )
     )
-    fsm = auction_fsm_columns(ordered, retest_window=retest_window)
+    fsm = auction_fsm_columns(
+        ordered,
+        retest_window=retest_window,
+        build_max_age=build_max_age,
+        rebalance_confirm=rebalance_confirm,
+    )
     return classic.hstack(fsm)
 
 
@@ -599,9 +676,11 @@ def auction_signal_frame(
     balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
     expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
     retest_window: int = _DEFAULT_RETEST_WINDOW,
+    build_max_age: int = _DEFAULT_BUILD_MAX_AGE,
+    rebalance_confirm: int = _DEFAULT_REBALANCE_CONFIRM,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """إشارات بحثية: رينج 5د + فعل 30ث (ارتداد متوازن / كسر+دخول مختلّ).
+    """إشارات بحثية: رينج 5د + فعل 30ث (ارتداد متوازن / كسر+بناء+انطلاق).
 
     ``interval_ns`` مرادف قديم لـ ``signal_interval_ns`` (ساعة البحث/الفعل).
     """
@@ -622,7 +701,12 @@ def auction_signal_frame(
         expansion_threshold=expansion_threshold,
         progress=progress,
     )
-    return auction_signals_from_states(states, retest_window=retest_window)
+    return auction_signals_from_states(
+        states,
+        retest_window=retest_window,
+        build_max_age=build_max_age,
+        rebalance_confirm=rebalance_confirm,
+    )
 
 
 __all__ = [
