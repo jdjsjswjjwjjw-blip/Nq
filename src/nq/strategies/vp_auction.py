@@ -73,6 +73,7 @@ _VP_AUCTION_FOCUS = (
     "vp_pullback_defense",
     "vp_auction_setup",
     "vp_fsm_break",
+    "vp_fsm_build",
     "vp_fsm_retest",
     "nq_delta",
 )
