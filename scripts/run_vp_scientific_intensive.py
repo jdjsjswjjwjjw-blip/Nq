@@ -27,7 +27,10 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
     suites = [
+        "tests/test_project_scientific_audit.py",
         "tests/test_vp_scientific_intensive.py",
+        "tests/test_vp_fixed_range.py",
+        "tests/test_vp_session_reset.py",
         "tests/test_auction.py",
         "tests/test_vp_auction_strategy.py",
         "tests/test_liquidity_edge.py",
