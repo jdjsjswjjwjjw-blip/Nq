@@ -22,6 +22,7 @@ import polars as pl
 
 from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.core.session import VP_LIQUIDITY_SESSION, vp_liquidity_session_from_ns
 from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 
@@ -136,6 +137,12 @@ class DevelopingVolumeProfile:
         self._levels[price] = self._levels.get(price, 0) + size
         self._va_dirty = True
 
+    def clear(self) -> None:
+        """يصفّر الملف بالكامل (بداية جلسة سيولة جديدة)."""
+        self._levels.clear()
+        self._cached_va = None
+        self._va_dirty = True
+
     def to_frame(self) -> pl.DataFrame:
         """يُعيد ملف الحجم الحالي كإطار polars مرتّب بالسعر."""
         if not self._levels:
@@ -195,22 +202,24 @@ def classify_nodes(profile: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def developing_value_area(
+def developing_value_area(  # noqa: PLR0912
     frame: pl.DataFrame,
     *,
     interval_ns: int,
     fraction: float = _DEFAULT_VALUE_AREA_FRACTION,
     cumulative: bool = False,
+    reset_by_liquidity_session: bool = False,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يحسب منطقة القيمة لكل نافذة زمنية ويقيس هجرة القيمة عبرها (سببي).
 
     * ``cumulative=False``: ملف مستقل لكل نافذة (micro-profile).
-    * ``cumulative=True``: ملف متطوّر تراكمي عبر النوافذ (قبول/رفض القيمة الجلسي)
-      — الوضع الصحيح لمحاكي المزاد.
+    * ``cumulative=True``: ملف متطوّر تراكمي عبر النوافذ.
+    * ``reset_by_liquidity_session=True`` (مع cumulative): تصفير عند انتقال
+      آسيا↔لندن↔نيويورك (ET) حتى لا يختلط قبول جلسة بأخرى.
 
     الأعمدة: ``bucket_start``, ``poc``, ``vah``, ``val``, ``total_volume``,
-    ``poc_migration``, ``bucket_end``, ``availability_ts``.
+    ``poc_migration``, ``vp_liquidity_session``, ``bucket_end``, ``availability_ts``.
     """
     trades = extract_trades(add_time_bucket(frame, interval_ns=interval_ns))
     empty = pl.DataFrame(
@@ -221,6 +230,7 @@ def developing_value_area(
             "val": pl.Int64(),
             "total_volume": pl.Int64(),
             "poc_migration": pl.Int64(),
+            VP_LIQUIDITY_SESSION: pl.Int8(),
             BUCKET_END: pl.Int64(),
             AVAILABILITY_TS: pl.Int64(),
         }
@@ -244,6 +254,8 @@ def developing_value_area(
     n_buckets = len(groups)
     if progress is not None:
         mode = "تراكمي" if cumulative else "لكل-نافذة"
+        if cumulative and reset_by_liquidity_session:
+            mode = "تراكمي·تصفير-جلسة"
         progress.op(
             f"developing_value_area: {n_buckets:,} نافذة · interval_ns={interval_ns} · {mode}"
         )
@@ -251,18 +263,27 @@ def developing_value_area(
     running: DevelopingVolumeProfile | None = (
         DevelopingVolumeProfile(fraction=fraction) if cumulative else None
     )
+    prev_session: int | None = None
     for i, ((bucket_start,), group) in enumerate(groups, start=1):
         if progress is not None:
             progress.heartbeat(i, n_buckets, label="value_area")
         sorted_group = group.sort("price")
         prices = sorted_group["price"].to_list()
         volumes = sorted_group["volume"].to_list()
+        session_id = vp_liquidity_session_from_ns(int(bucket_start))
         if cumulative and running is not None:
+            if (
+                reset_by_liquidity_session
+                and prev_session is not None
+                and session_id != prev_session
+            ):
+                running.clear()
             for px, vol in zip(prices, volumes, strict=True):
                 running.add_trade(int(px), int(vol))
             va = running.value_area()
         else:
             va = value_area_from_levels(prices, volumes, fraction=fraction)
+        prev_session = session_id
         if va is None:  # pragma: no cover
             continue
         rows.append(
@@ -272,6 +293,7 @@ def developing_value_area(
                 "vah": va.vah,
                 "val": va.val,
                 "total_volume": va.total_volume,
+                VP_LIQUIDITY_SESSION: int(session_id),
                 BUCKET_END: int(group[BUCKET_END][0]),
             }
         )
@@ -279,8 +301,17 @@ def developing_value_area(
     if not rows:
         return empty
     result = pl.DataFrame(rows).sort(BUCKET_START)
+    # هجرة POC داخل نفس جلسة السيولة فقط — عند التصفير تُصفَّر الهجرة.
+    poc = result["poc"].to_list()
+    sessions = result[VP_LIQUIDITY_SESSION].to_list()
+    migration: list[int] = [0]
+    for i in range(1, len(poc)):
+        if sessions[i] == sessions[i - 1]:
+            migration.append(int(poc[i]) - int(poc[i - 1]))
+        else:
+            migration.append(0)
     return result.with_columns(
-        pl.col("poc").diff().fill_null(0).alias("poc_migration"),
+        pl.Series("poc_migration", migration, dtype=pl.Int64()),
         pl.col(BUCKET_END).alias(AVAILABILITY_TS),
     ).select(
         BUCKET_START,
@@ -289,6 +320,7 @@ def developing_value_area(
         "val",
         "total_volume",
         "poc_migration",
+        VP_LIQUIDITY_SESSION,
         BUCKET_END,
         AVAILABILITY_TS,
     )

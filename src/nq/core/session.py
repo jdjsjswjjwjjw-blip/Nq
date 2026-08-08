@@ -1,8 +1,10 @@
-"""مراحل جلسة التداول intraday (Session Phases).
+"""مراحل جلسة التداول + جلسات سيولة Volume Profile.
 
-يُصنّف كل ``bucket_end`` / ``availability_ts`` إلى مرحلة جلسة سببية
-(متاحة عند إغلاق النافذة فقط). الأوقات الافتراضية: RTH بتوقيت America/New_York
-لعقود NQ (09:30–16:00 ET).
+* ``SessionPhase``: مراحل RTH التفصيلية (فتح/صباح/…) بتوقيت America/New_York.
+* ``VpLiquiditySession``: تقسيم غير متداخل لرسم/تصفير الفوليوم:
+  آسيا / لندن / نيويورك.
+
+كل التصنيفات سببية من الطابع الزمني فقط (point-in-time).
 """
 
 from __future__ import annotations
@@ -26,6 +28,15 @@ SESSION_PHASE: Final = "session_phase"
 MINUTES_SINCE_RTH_OPEN: Final = "minutes_since_rth_open"
 SESSION_DATE: Final = "session_date"  # تاريخ الجلسة بتوقيت ET (YYYY-MM-DD) — سببي من ts
 
+#: جلسة سيولة لملف الحجم (آسيا / لندن / نيويورك).
+VP_LIQUIDITY_SESSION: Final = "vp_liquidity_session"
+
+# حدود تصفير الفوليوم (America/New_York) — فترات نصف-مفتوحة تغطي 24 ساعة:
+# آسيا [18:00, 03:00) · لندن [03:00, 09:30) · نيويورك [09:30, 18:00)
+_ASIA_START: Final = dt.time(18, 0)
+_LONDON_START: Final = dt.time(3, 0)
+_NY_START: Final = dt.time(9, 30)
+
 
 class SessionPhase(IntEnum):
     """مراحل الجلسة intraday (قيم صحيحة للتعلّم الآلي)."""
@@ -36,6 +47,33 @@ class SessionPhase(IntEnum):
     LUNCH = 3
     AFTERNOON = 4
     CLOSE = 5
+
+
+class VpLiquiditySession(IntEnum):
+    """جلسات سيولة لرسم/تصفير Volume Profile (غير متداخلة، ET)."""
+
+    ASIA = 0
+    LONDON = 1
+    NEW_YORK = 2
+
+
+def vp_liquidity_session_from_ns(ts_ns: int) -> int:
+    """يصنّف الطابع إلى آسيا/لندن/نيويورك بتوقيت America/New_York (سببي)."""
+    local = dt.datetime.fromtimestamp(ts_ns / 1e9, tz=_ET).time()
+    if local >= _ASIA_START or local < _LONDON_START:
+        return int(VpLiquiditySession.ASIA)
+    if local < _NY_START:
+        return int(VpLiquiditySession.LONDON)
+    return int(VpLiquiditySession.NEW_YORK)
+
+
+def vp_liquidity_session_label(session_id: int) -> str:
+    """اسم نصّي ثابت لجلسة السيولة."""
+    return {
+        int(VpLiquiditySession.ASIA): "asia",
+        int(VpLiquiditySession.LONDON): "london",
+        int(VpLiquiditySession.NEW_YORK): "new_york",
+    }.get(int(session_id), "unknown")
 
 
 def _phase_for_time(local_time: dt.time) -> SessionPhase:
@@ -97,9 +135,13 @@ __all__ = [
     "MINUTES_SINCE_RTH_OPEN",
     "SESSION_DATE",
     "SESSION_PHASE",
+    "VP_LIQUIDITY_SESSION",
     "SessionPhase",
+    "VpLiquiditySession",
     "add_session_columns",
     "minutes_since_rth_open_from_ns",
     "session_date_from_ns",
     "session_phase_from_ns",
+    "vp_liquidity_session_from_ns",
+    "vp_liquidity_session_label",
 ]
