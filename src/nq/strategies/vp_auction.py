@@ -70,6 +70,7 @@ _VP_AUCTION_FOCUS = (
     "vp_expansion",
     "vp_close_in_value",
     "vp_flip_to_imbalance",
+    "vp_liquidity_session",
     "vp_pullback_defense",
     "vp_auction_setup",
     "vp_fsm_break",

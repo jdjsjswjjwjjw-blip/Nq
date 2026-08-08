@@ -16,6 +16,9 @@ Volume Profile يُعرَّف دائمًا بـ **ثلاث حدود**:
 الانطلاق عند اتساع صريح خارج الحد؛ وإعادة التوازن الحقيقية تقتل السياق فقط
 بعد عدة براميل متتالية متوازنة.
 
+ملف الحجم تراكمي **داخل جلسة السيولة** (آسيا / لندن / نيويورك بتوقيت ET)
+ويُصفَّر عند انتقال الجلسة حتى لا يُخلط قبول جلسة بأخرى.
+
 كل الحالات سببية: كل صف يعتمد على نوافذه المكتملة فقط، ومتاح عند
 ``bucket_end`` (join_asof خلفي من 5د → 30ث).
 """
@@ -27,6 +30,7 @@ import polars as pl
 
 from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
+from nq.core.session import VP_LIQUIDITY_SESSION
 from nq.core.time import sort_causal
 from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
@@ -97,6 +101,7 @@ _PROFILE_JOIN_COLS = (
     "in_value_fraction",
     "excess_upper",
     "excess_lower",
+    VP_LIQUIDITY_SESSION,
 )
 
 
@@ -107,20 +112,26 @@ def auction_states(
     fraction: float = 0.7,
     balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
     expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
+    reset_by_liquidity_session: bool = True,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يصنّف حالة المزاد لكل نافذة زمنية (متاح عند ``bucket_end``).
 
-    يستخدم منطقة قيمة **تراكمية** عبر النوافذ (قبول/رفض القيمة الجلسي).
+    يستخدم منطقة قيمة **تراكمية داخل جلسة السيولة** (آسيا/لندن/نيويورك)
+    مع تصفير عند انتقال الجلسة — حتى لا يُخلط قبول جلسة بأخرى.
     لرينج الاستراتيجية استدعِ بـ ``VP_PROFILE_INTERVAL_NS`` (5د).
     """
     if progress is not None:
-        progress.op(f"auction_states: developing_value_area · interval_ns={interval_ns}")
+        progress.op(
+            "auction_states: developing_value_area · "
+            f"interval_ns={interval_ns} · reset_session={reset_by_liquidity_session}"
+        )
     dva = developing_value_area(
         frame,
         interval_ns=interval_ns,
         fraction=fraction,
         cumulative=True,
+        reset_by_liquidity_session=reset_by_liquidity_session,
         progress=progress,
     )
     if dva.height == 0:
@@ -212,12 +223,14 @@ def auction_action_states(
     balance_threshold: float = _DEFAULT_BALANCE_THRESHOLD,
     expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
     bound_touch_frac: float = _DEFAULT_BOUND_TOUCH_FRAC,
+    reset_by_liquidity_session: bool = True,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """براميل فعل ``30ث`` مع حدود/نظام رينج ``5د`` + تأكيد تدفق أوامر.
 
     * الرينج (VAH/POC/VAL + Excess + توازن) من ``profile_interval_ns``.
     * الإغلاق/الدلتا/امتصاص/Look-fail من ``signal_interval_ns``.
+    * افتراضيًا: تصفير الفوليوم عند انتقال آسيا/لندن/نيويورك.
     """
     if signal_interval_ns < 1 or profile_interval_ns < 1:
         raise ValueError("profile_interval_ns and signal_interval_ns must be >= 1")
@@ -230,7 +243,8 @@ def auction_action_states(
     if progress is not None:
         progress.op(
             "auction_action_states: "
-            f"profile={profile_interval_ns // _NS}s · signal={signal_interval_ns // _NS}s"
+            f"profile={profile_interval_ns // _NS}s · signal={signal_interval_ns // _NS}s · "
+            f"reset_session={reset_by_liquidity_session}"
         )
 
     profile = auction_states(
@@ -239,6 +253,7 @@ def auction_action_states(
         fraction=fraction,
         balance_threshold=balance_threshold,
         expansion_threshold=expansion_threshold,
+        reset_by_liquidity_session=reset_by_liquidity_session,
         progress=progress,
     )
     empty = pl.DataFrame(
@@ -270,6 +285,7 @@ def auction_action_states(
             "look_fail": pl.Float64(),
             "range": pl.Int64(),
             "expansion_ratio": pl.Float64(),
+            VP_LIQUIDITY_SESSION: pl.Int8(),
         }
     )
     if profile.height == 0:
@@ -356,6 +372,7 @@ def auction_action_states(
             pl.col("poc_migration").fill_null(0),
             pl.col("excess_upper").fill_null(0),
             pl.col("excess_lower").fill_null(0),
+            pl.col(VP_LIQUIDITY_SESSION).fill_null(0).cast(pl.Int8),
             pl.when(absorb_buy)
             .then(1.0)
             .when(absorb_sell)
@@ -453,6 +470,11 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
         if "look_fail" in states.columns
         else np.zeros(n, dtype=np.float64)
     )
+    sessions = (
+        states[VP_LIQUIDITY_SESSION].to_numpy().astype(np.int64)
+        if VP_LIQUIDITY_SESSION in states.columns
+        else np.zeros(n, dtype=np.int64)
+    )
 
     brk = np.zeros(n, dtype=np.float64)
     build = np.zeros(n, dtype=np.float64)
@@ -478,6 +500,10 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
         balance_streak = 0
 
     for i in range(n):
+        # انتقال جلسة السيولة يقتل أي سياق كسر/بناء سابق (حدود جديدة).
+        if i > 0 and int(sessions[i]) != int(sessions[i - 1]) and pending_dir != 0.0:
+            _reset_pending()
+
         va_w = max(float(vah[i] - val[i]), 1.0)
         near_mid = abs(float(close[i] - poc[i])) <= retest_mid_frac * va_w
         near_anchor = _near_volume_anchor(
@@ -597,6 +623,7 @@ def auction_signals_from_states(
         "vp_pullback_defense": pl.Float64(),
         "vp_poc_migration": pl.Float64(),
         "vp_flip_to_imbalance": pl.Float64(),
+        "vp_liquidity_session": pl.Float64(),
         **{c: pl.Float64() for c in _FSM_SIGNAL_COLUMNS},
     }
     if states.height == 0:
@@ -641,6 +668,7 @@ def auction_signals_from_states(
             (pl.col("is_balanced").shift(1).fill_null(value=False) & ~pl.col("is_balanced"))
             .cast(pl.Float64)
             .alias("vp_flip_to_imbalance"),
+            pl.col(VP_LIQUIDITY_SESSION).cast(pl.Float64).alias("vp_liquidity_session"),
         )
         .select(
             AVAILABILITY_TS,
@@ -655,6 +683,7 @@ def auction_signals_from_states(
             "vp_pullback_defense",
             "vp_poc_migration",
             "vp_flip_to_imbalance",
+            "vp_liquidity_session",
         )
     )
     fsm = auction_fsm_columns(
