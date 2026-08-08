@@ -333,9 +333,13 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         cleaned,
         profile_interval_ns=prof_iv,
         signal_interval_ns=iv,
+        fixed_range=True,
         progress=log,
     )
-    auction_signals = auction_signals_from_states(auction_day)
+    auction_signals = auction_signals_from_states(
+        auction_day,
+        fixed_range_decisions=True,
+    )
     features = _attach_auction_vp_signals(result.features, auction_signals)
 
     policy = TemporalPolicy.for_run(interval_ns=iv, window=ssl_window, horizon=horizon)

@@ -131,14 +131,13 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
     end_i = -1
     pending_exp_i = -1
     fr_vah = fr_poc = fr_val = None
-    prev_range_width = 0.0
 
     def _add_bucket(i: int) -> None:
         for px, sz in by_bucket.get(int(bucket_starts[i]), []):
             running.add_trade(px, sz)
 
     def _publish_va(i: int) -> None:
-        nonlocal fr_vah, fr_poc, fr_val, prev_range_width
+        nonlocal fr_vah, fr_poc, fr_val
         va = running.value_area()
         if va is None:
             return
@@ -146,7 +145,6 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
         upper[i] = fr_vah
         mid[i] = fr_poc
         lower[i] = fr_val
-        prev_range_width = max(fr_vah - fr_val, 1.0)
 
     def _close_range(*, keep_pending: bool = False) -> None:
         nonlocal range_open, start_i, end_i, pending_exp_i, fr_vah, fr_poc, fr_val
@@ -201,10 +199,8 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
             continue
 
         close_in_fr = fr_val <= float(closes[i]) <= fr_vah
-        # توازن عرضي: متوازن صراحة، أو إغلاق داخل FR بمدى ضيّق بلا توسّع
-        lateral = bool(is_bal[i]) or (
-            close_in_fr and not bool(is_exp[i]) and float(ranges[i]) <= max(prev_range_width, 1.0)
-        )
+        # مدّ النهاية فقط داخل التوازن (is_balanced) — ليس بمجرد الإغلاق داخل FR
+        lateral = bool(is_bal[i])
         outside = float(closes[i]) > fr_vah or float(closes[i]) < fr_val
         exp_now = bool(is_exp[i])
         prev_r = float(ranges[i - 1]) if i > 0 and ranges[i - 1] > 0 else 0.0
@@ -232,18 +228,25 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
         upper[i], mid[i], lower[i] = fr_vah, fr_poc, fr_val
 
         if lateral:
-            # مدّ النهاية داخل التوازن فقط (لا بمجرد close_in_fr العريض)
+            # مدّ النهاية داخل التوازن فقط؛ عند اللحاق تخطَّ حجم الوخزات خارج FR
             if i > end_i:
                 for j in range(end_i + 1, i + 1):
-                    _add_bucket(j)
+                    j_close = float(closes[j])
+                    j_in = fr_val <= j_close <= fr_vah
+                    if bool(is_bal[j]) or j_in:
+                        _add_bucket(j)
                 end_i = i
                 _publish_va(i)
             in_balance[i] = 1.0
             end_ts[i] = int(bucket_ends[end_i])
             if fr_vah is not None:
                 upper[i], mid[i], lower[i] = fr_vah, fr_poc, fr_val
+        elif close_in_fr and not bool(is_exp[i]):
+            # إغلاق داخل FR بلا توازن معلن = بناء؛ لا تمدّ النهاية
+            in_balance[i] = 0.0
+            end_ts[i] = int(bucket_ends[end_i])
         else:
-            # وخزة/تلاعب خارجي أو شمعة اختلال داخل الحدود — لا تمدّ النهاية
+            # وخزة/تلاعب خارجي بدون قبول خروج — أبقِ الرينج، لا تمدّ النهاية
             in_balance[i] = 0.0
             end_ts[i] = int(bucket_ends[end_i])
 

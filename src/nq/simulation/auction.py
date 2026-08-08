@@ -453,6 +453,23 @@ def auction_action_states(
                 )
             ).alias("pullback_defended"),
         )
+        .with_columns(
+            # نبضات بعد join_asof: لا تلتصق إشارة 5د على كل براميل 30ث اللاحقة
+            pl.when(
+                (pl.col("vp_fr_exit") != 0.0)
+                & (pl.col("vp_fr_exit").shift(1).fill_null(0.0) == 0.0)
+            )
+            .then(pl.col("vp_fr_exit"))
+            .otherwise(0.0)
+            .alias("vp_fr_exit"),
+            pl.when(
+                (pl.col("vp_fr_accepted_expansion") != 0.0)
+                & (pl.col("vp_fr_accepted_expansion").shift(1).fill_null(0.0) == 0.0)
+            )
+            .then(pl.col("vp_fr_accepted_expansion"))
+            .otherwise(0.0)
+            .alias("vp_fr_accepted_expansion"),
+        )
     )
 
 

@@ -272,3 +272,127 @@ def test_auction_action_states_exposes_fr_and_signals() -> None:
         "vp_fr_end_ts",
     ):
         assert c in sigs.columns
+
+
+# ---------------------------------------------------------------------------
+# قفل الجدول: المشاكل الخمس من مراجعة Fixed-Range
+# ---------------------------------------------------------------------------
+
+
+def test_table1_accepted_flag_causal_on_accept_bar_only() -> None:
+    """1) لا تسرّب سببي: العلم على برميل القبول لا الاندفاع."""
+    profile, mbo = _synthetic_profile_and_mbo()
+    out = attach_vp_fixed_range(profile, mbo, interval_ns=_IV)
+    accepted = out["vp_fr_accepted_expansion"].to_list()
+    assert accepted[1] == 0.0
+    assert accepted[2] == 1.0
+    assert sum(accepted) == 1.0
+
+
+def test_table2_exit_active_zero_and_asof_exit_is_pulse() -> None:
+    """2) بعد الخروج active=0؛ وvp_fr_exit نبضة بعد asof على براميل الفعل."""
+    profile, mbo = _synthetic_profile_and_mbo()
+    out = attach_vp_fixed_range(profile, mbo, interval_ns=_IV)
+    assert out["vp_fr_exit"].to_list()[6] == 1.0
+    assert out["vp_fr_active"].to_list()[6] == 0.0
+
+    # كرّر قيم الخروج كما يفعل asof على 30ث ثم طبّق نبضة الحالة
+    sticky = pl.DataFrame(
+        {
+            "vp_fr_exit": [0.0, 1.0, 1.0, 1.0, 0.0],
+            "vp_fr_accepted_expansion": [0.0, 0.0, 1.0, 1.0, 0.0],
+        }
+    ).with_columns(
+        pl.when(
+            (pl.col("vp_fr_exit") != 0.0) & (pl.col("vp_fr_exit").shift(1).fill_null(0.0) == 0.0)
+        )
+        .then(pl.col("vp_fr_exit"))
+        .otherwise(0.0)
+        .alias("vp_fr_exit"),
+        pl.when(
+            (pl.col("vp_fr_accepted_expansion") != 0.0)
+            & (pl.col("vp_fr_accepted_expansion").shift(1).fill_null(0.0) == 0.0)
+        )
+        .then(pl.col("vp_fr_accepted_expansion"))
+        .otherwise(0.0)
+        .alias("vp_fr_accepted_expansion"),
+    )
+    assert sticky["vp_fr_exit"].to_list() == [0.0, 1.0, 0.0, 0.0, 0.0]
+    assert sticky["vp_fr_accepted_expansion"].to_list() == [0.0, 0.0, 1.0, 0.0, 0.0]
+
+
+def test_table3_fixed_range_decisions_block_classic_setup() -> None:
+    """3) مع fixed_range_decisions: لا setup كلاسيكي بين الدورات."""
+    n = 8
+    states = pl.DataFrame(
+        {
+            BUCKET_START: list(range(n)),
+            "close": [100.0, 100.0, 110.0, 111.0, 112.0, 108.0, 115.0, 116.0],
+            "vah": [105.0] * n,
+            "poc": [100.0] * n,
+            "val": [95.0] * n,
+            "bucket_volume": [10.0] * n,
+            "is_balanced": [True, True, False, False, False, False, False, False],
+            "is_expansion": [False, False, True, False, True, False, True, True],
+            "pullback_defended": [False] * n,
+            "close_in_value": [True, True, False, False, False, True, False, False],
+            "delta": [0.0, 0.0, 5.0, 5.0, 5.0, 1.0, 5.0, 5.0],
+            "absorb": [0.0] * n,
+            "look_fail": [0.0] * n,
+            VP_LIQUIDITY_SESSION: [2] * n,
+            "vp_fr_active": [0.0] * n,
+            "vp_fr_upper": [None] * n,
+            "vp_fr_mid": [None] * n,
+            "vp_fr_lower": [None] * n,
+            "vp_fr_exit": [0.0] * n,
+            "vp_fr_in_balance": [0.0] * n,
+        }
+    )
+    fr_setup = auction_fsm_columns(states, fixed_range_decisions=True)["vp_auction_setup"]
+    classic_setup = auction_fsm_columns(states, fixed_range_decisions=False)["vp_auction_setup"]
+    assert float(fr_setup.sum()) == 0.0
+    assert float(classic_setup.abs().sum()) > 0.0
+
+
+def test_table4_last_expansion_is_range_start() -> None:
+    """4) البداية = آخر expansion قبل القبول."""
+    specs = [
+        (100, 2, False, True, True, 0.9, 2),
+        (108, 12, True, False, False, 0.2, 2),
+        (114, 16, True, False, False, 0.1, 2),
+        (106, 3, False, True, True, 0.85, 2),
+    ]
+    price_sets = [
+        [99, 100, 101, 100],
+        [100, 105, 110, 108],
+        [110, 112, 116, 114],
+        [105, 106, 107, 106],
+    ]
+    profile, mbo = _profile_from_specs(specs, price_sets)
+    out = attach_vp_fixed_range(profile, mbo, interval_ns=_IV)
+    assert out["vp_fr_start_ts"].to_list()[3] == 2 * _IV
+
+
+def test_table5_end_extends_only_on_is_balanced_not_bare_close_in_fr() -> None:
+    """5) النهاية تتقدم فقط مع is_balanced — إغلاق داخل FR وحده لا يكفي."""
+    specs = [
+        (100, 2, False, True, True, 0.9, 2),
+        (108, 12, True, False, False, 0.2, 2),
+        (104, 3, False, True, True, 0.85, 2),  # accept + balance
+        (104, 8, False, False, True, 0.5, 2),  # داخل FR تقريبًا بلا is_balanced
+        (103, 2, False, True, True, 0.9, 2),  # balance → extend
+    ]
+    price_sets = [
+        [99, 100, 101, 100],
+        [100, 105, 110, 108],
+        [103, 104, 105, 104],
+        [102, 104, 106, 104],
+        [102, 103, 104, 103],
+    ]
+    profile, mbo = _profile_from_specs(specs, price_sets)
+    out = attach_vp_fixed_range(profile, mbo, interval_ns=_IV)
+    end_ts = out["vp_fr_end_ts"].to_list()
+    # بعد القبول (2) النهاية عند 3*_IV؛ برميل 3 بلا توازن لا يمدّ؛ برميل 4 يمدّ
+    assert end_ts[2] == 3 * _IV
+    assert end_ts[3] == 3 * _IV
+    assert end_ts[4] == 5 * _IV
