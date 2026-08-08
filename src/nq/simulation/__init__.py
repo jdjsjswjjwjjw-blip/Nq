@@ -18,8 +18,11 @@
 from __future__ import annotations
 
 from nq.simulation.auction import (
+    VP_FIXED_RANGE_COLUMNS,
     VP_PROFILE_INTERVAL_NS,
     VP_SIGNAL_INTERVAL_NS,
+    VpFixedRangeConfig,
+    attach_vp_fixed_range,
     auction_action_states,
     auction_fsm_columns,
     auction_signal_frame,
@@ -85,6 +88,7 @@ __all__ = [
     "DECEPTIVE_FEATURE_COLUMNS",
     "EDGE_TRADE_COLUMNS",
     "MARKET_TRUTH_COLUMNS",
+    "VP_FIXED_RANGE_COLUMNS",
     "VP_PROFILE_INTERVAL_NS",
     "VP_SIGNAL_INTERVAL_NS",
     "DeceptiveLiquidityConfig",
@@ -94,8 +98,10 @@ __all__ = [
     "EdgeSearchSpec",
     "MarketTruthConfig",
     "ValueArea",
+    "VpFixedRangeConfig",
     "add_time_bucket",
     "attach_bottom_book_asof",
+    "attach_vp_fixed_range",
     "auction_action_states",
     "auction_fsm_columns",
     "auction_signal_frame",

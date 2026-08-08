@@ -36,6 +36,11 @@ from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 from nq.simulation.order_flow import order_flow_summary
 from nq.simulation.volume_profile import developing_value_area
+from nq.simulation.vp_fixed_range import (
+    VP_FIXED_RANGE_COLUMNS,
+    VpFixedRangeConfig,
+    attach_vp_fixed_range,
+)
 
 _NS: int = 1_000_000_000
 #: رينج VP / قبول القيمة — 5 دقائق.
@@ -102,6 +107,7 @@ _PROFILE_JOIN_COLS = (
     "excess_upper",
     "excess_lower",
     VP_LIQUIDITY_SESSION,
+    *VP_FIXED_RANGE_COLUMNS,
 )
 
 
@@ -224,6 +230,8 @@ def auction_action_states(
     expansion_threshold: float = _DEFAULT_EXPANSION_THRESHOLD,
     bound_touch_frac: float = _DEFAULT_BOUND_TOUCH_FRAC,
     reset_by_liquidity_session: bool = True,
+    fixed_range: bool = True,
+    fixed_range_config: VpFixedRangeConfig | None = None,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """براميل فعل ``30ث`` مع حدود/نظام رينج ``5د`` + تأكيد تدفق أوامر.
@@ -231,6 +239,7 @@ def auction_action_states(
     * الرينج (VAH/POC/VAL + Excess + توازن) من ``profile_interval_ns``.
     * الإغلاق/الدلتا/امتصاص/Look-fail من ``signal_interval_ns``.
     * افتراضيًا: تصفير الفوليوم عند انتقال آسيا/لندن/نيويورك.
+    * افتراضيًا: رينج ثابت من expansion مقبول + عرضي (قرار عند الخروج فقط).
     """
     if signal_interval_ns < 1 or profile_interval_ns < 1:
         raise ValueError("profile_interval_ns and signal_interval_ns must be >= 1")
@@ -244,7 +253,7 @@ def auction_action_states(
         progress.op(
             "auction_action_states: "
             f"profile={profile_interval_ns // _NS}s · signal={signal_interval_ns // _NS}s · "
-            f"reset_session={reset_by_liquidity_session}"
+            f"reset_session={reset_by_liquidity_session} · fixed_range={fixed_range}"
         )
 
     profile = auction_states(
@@ -256,6 +265,39 @@ def auction_action_states(
         reset_by_liquidity_session=reset_by_liquidity_session,
         progress=progress,
     )
+    if profile.height and fixed_range:
+        profile = attach_vp_fixed_range(
+            profile,
+            frame,
+            interval_ns=profile_interval_ns,
+            config=fixed_range_config,
+            progress=progress,
+        )
+    elif profile.height:
+        # أعمدة فارغة للحفاظ على مخطط الانضمام
+        zeros = pl.DataFrame(
+            {
+                BUCKET_START: profile[BUCKET_START],
+                **{
+                    c: pl.Series(c, [0.0] * profile.height, dtype=pl.Float64)
+                    for c in VP_FIXED_RANGE_COLUMNS
+                    if c
+                    not in (
+                        "vp_fr_start_ts",
+                        "vp_fr_end_ts",
+                        "vp_fr_upper",
+                        "vp_fr_mid",
+                        "vp_fr_lower",
+                    )
+                },
+                "vp_fr_upper": pl.Series("vp_fr_upper", [None] * profile.height, dtype=pl.Float64),
+                "vp_fr_mid": pl.Series("vp_fr_mid", [None] * profile.height, dtype=pl.Float64),
+                "vp_fr_lower": pl.Series("vp_fr_lower", [None] * profile.height, dtype=pl.Float64),
+                "vp_fr_start_ts": pl.Series("vp_fr_start_ts", [0] * profile.height, dtype=pl.Int64),
+                "vp_fr_end_ts": pl.Series("vp_fr_end_ts", [0] * profile.height, dtype=pl.Int64),
+            }
+        )
+        profile = profile.join(zeros, on=BUCKET_START, how="left")
     empty = pl.DataFrame(
         schema={
             AVAILABILITY_TS: pl.Int64(),
@@ -286,6 +328,15 @@ def auction_action_states(
             "range": pl.Int64(),
             "expansion_ratio": pl.Float64(),
             VP_LIQUIDITY_SESSION: pl.Int8(),
+            "vp_fr_active": pl.Float64(),
+            "vp_fr_accepted_expansion": pl.Float64(),
+            "vp_fr_in_balance": pl.Float64(),
+            "vp_fr_exit": pl.Float64(),
+            "vp_fr_upper": pl.Float64(),
+            "vp_fr_mid": pl.Float64(),
+            "vp_fr_lower": pl.Float64(),
+            "vp_fr_start_ts": pl.Int64(),
+            "vp_fr_end_ts": pl.Int64(),
         }
     )
     if profile.height == 0:
@@ -373,6 +424,12 @@ def auction_action_states(
             pl.col("excess_upper").fill_null(0),
             pl.col("excess_lower").fill_null(0),
             pl.col(VP_LIQUIDITY_SESSION).fill_null(0).cast(pl.Int8),
+            pl.col("vp_fr_active").fill_null(0.0),
+            pl.col("vp_fr_accepted_expansion").fill_null(0.0),
+            pl.col("vp_fr_in_balance").fill_null(0.0),
+            pl.col("vp_fr_exit").fill_null(0.0),
+            pl.col("vp_fr_start_ts").fill_null(0),
+            pl.col("vp_fr_end_ts").fill_null(0),
             pl.when(absorb_buy)
             .then(1.0)
             .when(absorb_sell)
@@ -475,6 +532,36 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
         if VP_LIQUIDITY_SESSION in states.columns
         else np.zeros(n, dtype=np.int64)
     )
+    fr_active = (
+        states["vp_fr_active"].to_numpy().astype(np.float64)
+        if "vp_fr_active" in states.columns
+        else np.zeros(n, dtype=np.float64)
+    )
+    fr_upper = (
+        states["vp_fr_upper"].to_numpy().astype(np.float64)
+        if "vp_fr_upper" in states.columns
+        else np.full(n, np.nan)
+    )
+    fr_mid = (
+        states["vp_fr_mid"].to_numpy().astype(np.float64)
+        if "vp_fr_mid" in states.columns
+        else np.full(n, np.nan)
+    )
+    fr_lower = (
+        states["vp_fr_lower"].to_numpy().astype(np.float64)
+        if "vp_fr_lower" in states.columns
+        else np.full(n, np.nan)
+    )
+    fr_exit = (
+        states["vp_fr_exit"].to_numpy().astype(np.float64)
+        if "vp_fr_exit" in states.columns
+        else np.zeros(n, dtype=np.float64)
+    )
+    fr_in_bal = (
+        states["vp_fr_in_balance"].to_numpy().astype(np.float64)
+        if "vp_fr_in_balance" in states.columns
+        else np.zeros(n, dtype=np.float64)
+    )
 
     brk = np.zeros(n, dtype=np.float64)
     build = np.zeros(n, dtype=np.float64)
@@ -504,15 +591,45 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
         if i > 0 and int(sessions[i]) != int(sessions[i - 1]) and pending_dir != 0.0:
             _reset_pending()
 
-        va_w = max(float(vah[i] - val[i]), 1.0)
-        near_mid = abs(float(close[i] - poc[i])) <= retest_mid_frac * va_w
+        # حدود القرار: الرينج الثابت النشط إن وُجد، وإلا حدود الجلسة التراكمية.
+        use_fr = float(fr_active[i]) > 0.0 and np.isfinite(fr_upper[i]) and np.isfinite(fr_lower[i])
+        bound_hi = float(fr_upper[i]) if use_fr else float(vah[i])
+        bound_mid = float(fr_mid[i]) if use_fr and np.isfinite(fr_mid[i]) else float(poc[i])
+        bound_lo = float(fr_lower[i]) if use_fr else float(val[i])
+
+        va_w = max(bound_hi - bound_lo, 1.0)
+        near_mid = abs(float(close[i] - bound_mid)) <= retest_mid_frac * va_w
         near_anchor = _near_volume_anchor(
             float(close[i]),
-            float(vah[i]),
-            float(poc[i]),
-            float(val[i]),
+            bound_hi,
+            bound_mid,
+            bound_lo,
             anchor_frac=build_anchor_frac,
         )
+
+        # خروج صريح من الرينج الثابت = setup مرة واحدة (حافة صاعدة؛ قرار نادر)
+        fr_exit_now = float(fr_exit[i])
+        fr_exit_prev = float(fr_exit[i - 1]) if i > 0 else 0.0
+        if fr_exit_now != 0.0 and fr_exit_prev == 0.0:
+            expand[i] = fr_exit_now
+            setup[i] = fr_exit_now
+            brk[i] = fr_exit_now
+            _reset_pending()
+            continue
+
+        # أثناء الرينج الثابت: لا مسار كسر→توسّع كلاسيكي — بناء داخل التوازن فقط.
+        if use_fr:
+            if float(fr_in_bal[i]) > 0.0 or near_anchor or bool(in_value[i]):
+                build[i] = 1.0
+            if bool(balanced[i]):
+                if absorb[i] != 0.0:
+                    retest[i] = float(absorb[i])
+                elif look_fail[i] != 0.0:
+                    retest[i] = float(look_fail[i])
+                elif bool(pullback[i]) and near_mid:
+                    retest[i] = 1.0 if close[i] >= bound_mid else -1.0
+            _reset_pending()
+            continue
 
         # --- بلا سياق كسر: ارتدادات سوق متوازن فقط ---
         if pending_dir == 0.0:
@@ -523,12 +640,12 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
                 elif look_fail[i] != 0.0:
                     retest[i] = float(look_fail[i])
                 elif bool(pullback[i]) and near_mid:
-                    retest[i] = 1.0 if close[i] >= poc[i] else -1.0
+                    retest[i] = 1.0 if close[i] >= bound_mid else -1.0
             else:
                 # مختلّ بلا سياق حيّ: أول كسر مؤكَّد بالدلتا يبدأ المراقبة فقط.
-                if close[i] > vah[i] and delta[i] >= 0:
+                if close[i] > bound_hi and delta[i] >= 0:
                     brk[i] = 1.0
-                elif close[i] < val[i] and delta[i] <= 0:
+                elif close[i] < bound_lo and delta[i] <= 0:
                     brk[i] = -1.0
                 if brk[i] != 0.0:
                     pending_dir = float(brk[i])
@@ -582,8 +699,8 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
 
         # توسّع فقط عند اتساع حقيقي + قبول خارج الحد — ليس أول وخزة ولا age وحدها.
         delta_ok = (pending_dir > 0 and delta[i] >= 0) or (pending_dir < 0 and delta[i] <= 0)
-        long_ok = pending_dir > 0 and close[i] > vah[i] and delta_ok
-        short_ok = pending_dir < 0 and close[i] < val[i] and delta_ok
+        long_ok = pending_dir > 0 and close[i] > bound_hi and delta_ok
+        short_ok = pending_dir < 0 and close[i] < bound_lo and delta_ok
         ready = (saw_retest or saw_build) and age >= 1 and bool(expansion[i])
         if ready and (long_ok or short_ok):
             expand[i] = pending_dir
@@ -610,6 +727,17 @@ def auction_signals_from_states(
     rebalance_confirm: int = _DEFAULT_REBALANCE_CONFIRM,
 ) -> pl.DataFrame:
     """يحوّل حالات المزاد المحسوبة مسبقًا إلى أعمدة VP/FSM دون إعادة مسح MBO."""
+    fr_signal_cols = (
+        "vp_fr_active",
+        "vp_fr_accepted_expansion",
+        "vp_fr_in_balance",
+        "vp_fr_exit",
+        "vp_fr_upper",
+        "vp_fr_mid",
+        "vp_fr_lower",
+        "vp_fr_start_ts",
+        "vp_fr_end_ts",
+    )
     base_schema = {
         AVAILABILITY_TS: pl.Int64(),
         **{c: pl.Float64() for c in _VP_BOUND_COLUMNS},
@@ -624,6 +752,7 @@ def auction_signals_from_states(
         "vp_poc_migration": pl.Float64(),
         "vp_flip_to_imbalance": pl.Float64(),
         "vp_liquidity_session": pl.Float64(),
+        **{c: pl.Float64() for c in fr_signal_cols},
         **{c: pl.Float64() for c in _FSM_SIGNAL_COLUMNS},
     }
     if states.height == 0:
@@ -631,6 +760,25 @@ def auction_signals_from_states(
 
     ordered = states.sort(BUCKET_START)
     scale = float(PRICE_SCALE)
+    has_fr = "vp_fr_active" in ordered.columns
+    fr_exprs = (
+        [
+            pl.col("vp_fr_active").fill_null(0.0).cast(pl.Float64).alias("vp_fr_active"),
+            pl.col("vp_fr_accepted_expansion")
+            .fill_null(0.0)
+            .cast(pl.Float64)
+            .alias("vp_fr_accepted_expansion"),
+            pl.col("vp_fr_in_balance").fill_null(0.0).cast(pl.Float64).alias("vp_fr_in_balance"),
+            pl.col("vp_fr_exit").fill_null(0.0).cast(pl.Float64).alias("vp_fr_exit"),
+            (pl.col("vp_fr_upper").cast(pl.Float64) * scale).alias("vp_fr_upper"),
+            (pl.col("vp_fr_mid").cast(pl.Float64) * scale).alias("vp_fr_mid"),
+            (pl.col("vp_fr_lower").cast(pl.Float64) * scale).alias("vp_fr_lower"),
+            pl.col("vp_fr_start_ts").fill_null(0).cast(pl.Float64).alias("vp_fr_start_ts"),
+            pl.col("vp_fr_end_ts").fill_null(0).cast(pl.Float64).alias("vp_fr_end_ts"),
+        ]
+        if has_fr
+        else [pl.lit(0.0).alias(c) for c in fr_signal_cols]
+    )
     classic = (
         ordered.with_columns(
             (pl.col("vah").cast(pl.Float64) * scale).alias("vp_upper"),
@@ -669,6 +817,7 @@ def auction_signals_from_states(
             .cast(pl.Float64)
             .alias("vp_flip_to_imbalance"),
             pl.col(VP_LIQUIDITY_SESSION).cast(pl.Float64).alias("vp_liquidity_session"),
+            *fr_exprs,
         )
         .select(
             AVAILABILITY_TS,
@@ -684,6 +833,7 @@ def auction_signals_from_states(
             "vp_poc_migration",
             "vp_flip_to_imbalance",
             "vp_liquidity_session",
+            *fr_signal_cols,
         )
     )
     fsm = auction_fsm_columns(
@@ -739,8 +889,11 @@ def auction_signal_frame(
 
 
 __all__ = [
+    "VP_FIXED_RANGE_COLUMNS",
     "VP_PROFILE_INTERVAL_NS",
     "VP_SIGNAL_INTERVAL_NS",
+    "VpFixedRangeConfig",
+    "attach_vp_fixed_range",
     "auction_action_states",
     "auction_fsm_columns",
     "auction_signal_frame",
