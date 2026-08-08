@@ -482,6 +482,7 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
     accel_mult: float = _DEFAULT_ACCEL_MULT,
     retest_mid_frac: float = _DEFAULT_RETEST_MID_FRAC,
     build_anchor_frac: float = _DEFAULT_BUILD_ANCHOR_FRAC,
+    fixed_range_decisions: bool = False,
 ) -> pl.DataFrame:
     """آلة حالات على براميل الفعل (30ث) بحدود الرينج (5د) + تأكيد تدفق.
 
@@ -492,6 +493,9 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
        الرجوع داخل القيمة **لا** يقتل السياق ولا يعني فشل التوسّع.
     3. ``expand`` / ``setup`` — انطلاق صريح: اتساع + قبول خارج الحد باتجاه الكسر.
     4. إعادة توازن حقيقية = ``rebalance_confirm`` براميل متتالية ``is_balanced``.
+
+    مع ``fixed_range_decisions=True`` (مسار الإنتاج مع Fixed-Range): القرار الوحيد
+    للـsetup هو حافة ``vp_fr_exit``؛ بين الدورات تبقى ارتدادات التوازن فقط.
     """
     if rebalance_confirm < 1:
         raise ValueError(f"rebalance_confirm must be >= 1, got {rebalance_confirm}")
@@ -617,10 +621,23 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
             _reset_pending()
             continue
 
-        # أثناء الرينج الثابت: لا مسار كسر→توسّع كلاسيكي — بناء داخل التوازن فقط.
+        # أثناء الرينج الثابت النشط: بناء/ارتداد فقط — بلا setup كلاسيكي.
         if use_fr:
             if float(fr_in_bal[i]) > 0.0 or near_anchor or bool(in_value[i]):
                 build[i] = 1.0
+            if bool(balanced[i]):
+                if absorb[i] != 0.0:
+                    retest[i] = float(absorb[i])
+                elif look_fail[i] != 0.0:
+                    retest[i] = float(look_fail[i])
+                elif bool(pullback[i]) and near_mid:
+                    retest[i] = 1.0 if close[i] >= bound_mid else -1.0
+            _reset_pending()
+            continue
+
+        # Fixed-Range بين الدورات: لا كسر→توسّع كلاسيكي؛ ارتدادات فقط حتى قبول رينج جديد.
+        if fixed_range_decisions:
+            balance_streak = 0
             if bool(balanced[i]):
                 if absorb[i] != 0.0:
                     retest[i] = float(absorb[i])
@@ -725,6 +742,7 @@ def auction_signals_from_states(
     retest_window: int = _DEFAULT_RETEST_WINDOW,
     build_max_age: int = _DEFAULT_BUILD_MAX_AGE,
     rebalance_confirm: int = _DEFAULT_REBALANCE_CONFIRM,
+    fixed_range_decisions: bool = True,
 ) -> pl.DataFrame:
     """يحوّل حالات المزاد المحسوبة مسبقًا إلى أعمدة VP/FSM دون إعادة مسح MBO."""
     fr_signal_cols = (
@@ -841,6 +859,7 @@ def auction_signals_from_states(
         retest_window=retest_window,
         build_max_age=build_max_age,
         rebalance_confirm=rebalance_confirm,
+        fixed_range_decisions=fixed_range_decisions,
     )
     return classic.hstack(fsm)
 
@@ -857,6 +876,7 @@ def auction_signal_frame(
     retest_window: int = _DEFAULT_RETEST_WINDOW,
     build_max_age: int = _DEFAULT_BUILD_MAX_AGE,
     rebalance_confirm: int = _DEFAULT_REBALANCE_CONFIRM,
+    fixed_range: bool = True,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """إشارات بحثية: رينج 5د + فعل 30ث (ارتداد متوازن / كسر+بناء+انطلاق).
@@ -878,6 +898,7 @@ def auction_signal_frame(
         fraction=fraction,
         balance_threshold=balance_threshold,
         expansion_threshold=expansion_threshold,
+        fixed_range=fixed_range,
         progress=progress,
     )
     return auction_signals_from_states(
@@ -885,6 +906,7 @@ def auction_signal_frame(
         retest_window=retest_window,
         build_max_age=build_max_age,
         rebalance_confirm=rebalance_confirm,
+        fixed_range_decisions=fixed_range,
     )
 
 

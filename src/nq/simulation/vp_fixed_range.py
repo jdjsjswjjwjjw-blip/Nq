@@ -71,7 +71,6 @@ def _bucket_trade_lists(
     """يجمّع صفقات كل برميل: bucket_start -> [(price, size), ...]."""
     if trades.height == 0 or not bucket_starts:
         return {}
-    # اربط كل صفقة بأقرب برميل عبر add_time_bucket مسبقًا على trades
     out: dict[int, list[tuple[int, int]]] = {int(b): [] for b in bucket_starts}
     if BUCKET_START not in trades.columns:
         return out
@@ -149,12 +148,13 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
         lower[i] = fr_val
         prev_range_width = max(fr_vah - fr_val, 1.0)
 
-    def _close_range() -> None:
+    def _close_range(*, keep_pending: bool = False) -> None:
         nonlocal range_open, start_i, end_i, pending_exp_i, fr_vah, fr_poc, fr_val
         range_open = False
         start_i = -1
         end_i = -1
-        pending_exp_i = -1
+        if not keep_pending:
+            pending_exp_i = -1
         fr_vah = fr_poc = fr_val = None
         running.clear()
 
@@ -168,11 +168,11 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
         if pending_exp_i >= 0 and int(sessions[i]) != int(sessions[pending_exp_i]):
             pending_exp_i = -1
 
-        # مرشّح expansion بانتظار قبول عرضي
-        if not range_open and pending_exp_i < 0 and bool(is_exp[i]) and not bool(is_bal[i]):
+        # آخر expansion مرشّح (ليس الأول فقط) بانتظار قبول عرضي
+        if not range_open and bool(is_exp[i]) and not bool(is_bal[i]):
             pending_exp_i = i
 
-        # قبول expansion: عرضي/توازن خلال النافذة
+        # قبول expansion: عرضي/توازن خلال النافذة — العلم على برميل القبول (سببي)
         if not range_open and pending_exp_i >= 0 and i > pending_exp_i:
             age = i - pending_exp_i
             if age > cfg.accept_window:
@@ -182,33 +182,29 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
                     bool(close_in_val[i]) and float(in_val_frac[i]) >= cfg.balance_frac
                 )
                 if accepted_here:
-                    # ابدأ الرينج من برميل الـexpansion المقبول
                     running.clear()
                     start_i = pending_exp_i
                     for j in range(pending_exp_i, i + 1):
                         _add_bucket(j)
                     end_i = i
                     range_open = True
-                    accepted[pending_exp_i] = 1.0
+                    accepted[i] = 1.0  # نقطة المعرفة = برميل القبول لا برميل الاندفاع
                     pending_exp_i = -1
                     _publish_va(i)
 
         if not range_open:
             continue
 
-        active[i] = 1.0
-        start_ts[i] = int(bucket_starts[start_i])
-        end_ts[i] = int(bucket_ends[end_i])
-        if fr_vah is not None:
-            upper[i], mid[i], lower[i] = fr_vah, fr_poc, fr_val
+        if fr_vah is None or fr_val is None or fr_poc is None:
+            # لا منطقة قيمة بعد — أبقِ الرينج مغلقًا منطقيًا
+            _close_range()
+            continue
 
-        assert fr_vah is not None and fr_val is not None and fr_poc is not None
         close_in_fr = fr_val <= float(closes[i]) <= fr_vah
-        # توازن عرضي نسبيًا لعرض الرينج الحالي
+        # توازن عرضي: متوازن صراحة، أو إغلاق داخل FR بمدى ضيّق بلا توسّع
         lateral = bool(is_bal[i]) or (
-            close_in_fr and float(ranges[i]) <= max(prev_range_width, 1.0)
+            close_in_fr and not bool(is_exp[i]) and float(ranges[i]) <= max(prev_range_width, 1.0)
         )
-        # اختلال: اتساع أو إغلاق خارج الرينج
         outside = float(closes[i]) > fr_vah or float(closes[i]) < fr_val
         exp_now = bool(is_exp[i])
         prev_r = float(ranges[i - 1]) if i > 0 and ranges[i - 1] > 0 else 0.0
@@ -218,13 +214,25 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
         if clear_exit:
             direction = 1.0 if float(closes[i]) > fr_vah else -1.0
             exit_sig[i] = direction
-            # لا نمدّ النهاية داخل برميل الاختلال
+            # حدود الرينج للسياق على برميل الخروج؛ active=0 حتى لا يلصق use_fr عبر asof
+            upper[i], mid[i], lower[i] = fr_vah, fr_poc, fr_val
+            start_ts[i] = int(bucket_starts[start_i])
             end_ts[i] = int(bucket_ends[end_i])
-            _close_range()
+            # برميل الخروج نفسه قد يصبح مرشّح expansion للدورة التالية
+            seed_pending = exp_now
+            _close_range(keep_pending=False)
+            if seed_pending:
+                pending_exp_i = i
             continue
 
-        if lateral or close_in_fr:
-            # مدّ النهاية داخل التوازن فقط
+        # رينج حيّ فقط هنا
+        active[i] = 1.0
+        start_ts[i] = int(bucket_starts[start_i])
+        end_ts[i] = int(bucket_ends[end_i])
+        upper[i], mid[i], lower[i] = fr_vah, fr_poc, fr_val
+
+        if lateral:
+            # مدّ النهاية داخل التوازن فقط (لا بمجرد close_in_fr العريض)
             if i > end_i:
                 for j in range(end_i + 1, i + 1):
                     _add_bucket(j)
@@ -235,7 +243,7 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
             if fr_vah is not None:
                 upper[i], mid[i], lower[i] = fr_vah, fr_poc, fr_val
         else:
-            # وخزة/تلاعب خارجي بدون قبول خروج — أبقِ الرينج، لا تمدّ النهاية
+            # وخزة/تلاعب خارجي أو شمعة اختلال داخل الحدود — لا تمدّ النهاية
             in_balance[i] = 0.0
             end_ts[i] = int(bucket_ends[end_i])
 
@@ -250,7 +258,6 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
         "vp_fr_start_ts": pl.Series("vp_fr_start_ts", start_ts),
         "vp_fr_end_ts": pl.Series("vp_fr_end_ts", end_ts),
     }
-    # استبدل NaN بـ null في الحدود
     out = ordered.hstack(list(cols.values()))
     return out.with_columns(
         [
