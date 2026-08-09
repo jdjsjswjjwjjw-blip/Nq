@@ -63,6 +63,8 @@ DEFAULT_FEATURE_BLOCKS: dict[str, tuple[str, ...]] = {
         "vp_of_delta",
         "vp_absorb",
         "vp_look_fail",
+        "vp_order_accel",
+        "vp_early_imbalance",
         "vp_balance",
         "vp_imbalance",
         "vp_expansion",
