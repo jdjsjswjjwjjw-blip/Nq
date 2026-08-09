@@ -41,6 +41,21 @@ def test_pca_requires_fit_and_2d() -> None:
         PCAEncoder(2).fit(np.zeros((2, 2, 2)))
 
 
+def test_pca_fit_falls_back_when_svd_does_not_converge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """فشل gesdd لا يوقف المسار — سقوط إلى gesvd/eigen."""
+    rng = make_generator(1)
+    x = _low_rank_data(80, 6, rank=2, rng=rng)
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise np.linalg.LinAlgError("SVD did not converge")
+
+    monkeypatch.setattr(np.linalg, "svd", _boom)
+    enc = PCAEncoder(n_components=2).fit(x)
+    z = enc.transform(x)
+    assert z.shape == (80, 2)
+    assert np.isfinite(z).all()
+
+
 def test_masked_modeling_beats_zero_fill_baseline() -> None:
     rng = make_generator(1)
     x = _low_rank_data(300, 10, rank=3, rng=rng)
