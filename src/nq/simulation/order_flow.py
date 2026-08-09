@@ -139,9 +139,9 @@ def order_acceleration_columns(
     if consumption_col not in work.columns:
         if "buy_volume" in work.columns and "sell_volume" in work.columns:
             work = work.with_columns(
-                (pl.col("buy_volume").cast(pl.Float64) + pl.col("sell_volume").cast(pl.Float64)).alias(
-                    consumption_col
-                )
+                (
+                    pl.col("buy_volume").cast(pl.Float64) + pl.col("sell_volume").cast(pl.Float64)
+                ).alias(consumption_col)
             )
         else:
             raise ValueError(
@@ -160,14 +160,9 @@ def order_acceleration_columns(
             session_col
         )
 
-    direction = (
-        pl.when(delta > 0).then(1.0).when(delta < 0).then(-1.0).otherwise(0.0).alias("_dir")
-    )
+    direction = pl.when(delta > 0).then(1.0).when(delta < 0).then(-1.0).otherwise(0.0).alias("_dir")
     rate_raw = (
-        pl.when(same_session & (past_mean > 0))
-        .then(cons / past_mean)
-        .otherwise(0.0)
-        .alias("_rate")
+        pl.when(same_session & (past_mean > 0)).then(cons / past_mean).otherwise(0.0).alias("_rate")
     )
 
     out = work.with_columns(direction, rate_raw).with_columns(

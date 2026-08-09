@@ -5,7 +5,12 @@ from __future__ import annotations
 import polars as pl
 
 from nq.orderbook import reconstruct
-from nq.simulation.order_flow import ofi_by_bucket, order_flow_imbalance, order_flow_summary
+from nq.simulation.order_flow import (
+    ofi_by_bucket,
+    order_acceleration_columns,
+    order_flow_imbalance,
+    order_flow_summary,
+)
 from tests.mbo_factory import make_stream
 
 _TRADES = make_stream(
@@ -58,8 +63,6 @@ def test_ofi_by_bucket_causal_availability() -> None:
 
 def test_order_acceleration_rate_and_early_imbalance() -> None:
     """تسارع استهلاك عدواني داخل التوازن = اختلال مبكر موقّع بالدلتا."""
-    from nq.simulation.order_flow import order_acceleration_columns
-
     frame = pl.DataFrame(
         {
             "consumption": [10.0, 10.0, 10.0, 40.0, 10.0],
@@ -78,8 +81,6 @@ def test_order_acceleration_rate_and_early_imbalance() -> None:
 
 def test_order_acceleration_onset_when_flip_to_imbalance() -> None:
     """أول برميل قلب للتوازن→اختلال مع تسارع يُشعل early_imbalance."""
-    from nq.simulation.order_flow import order_acceleration_columns
-
     frame = pl.DataFrame(
         {
             "consumption": [5.0, 5.0, 5.0, 20.0],
@@ -93,8 +94,6 @@ def test_order_acceleration_onset_when_flip_to_imbalance() -> None:
 
 def test_order_acceleration_no_lookahead_past_only() -> None:
     """الأساس يستخدم نوافذ سابقة فقط — تسارع لاحق لا يلوّث معدّل سابق."""
-    from nq.simulation.order_flow import order_acceleration_columns
-
     frame = pl.DataFrame(
         {
             "buy_volume": [2.0, 2.0, 2.0, 30.0],
