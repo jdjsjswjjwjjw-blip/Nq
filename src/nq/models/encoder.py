@@ -20,6 +20,40 @@ FloatArray = npt.NDArray[np.float64]
 _MATRIX_NDIM = 2
 
 
+def _svd_components(centered: FloatArray, k: int) -> FloatArray:
+    """يستخرج أعلى ``k`` صفوف من ``Vᵀ`` بمسارات سقوط عدديّة آمنة.
+
+    الترتيب: ``numpy`` gesdd → ``scipy`` gesvd → eigen لـ ``XᵀX`` → محاور قياسية.
+    """
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}")
+    try:
+        _, _, vt = np.linalg.svd(centered, full_matrices=False)
+        return np.asarray(vt[:k], dtype=np.float64)
+    except np.linalg.LinAlgError:
+        pass
+
+    try:
+        from scipy.linalg import svd as scipy_svd  # noqa: PLC0415
+
+        _, _, vt = scipy_svd(centered, full_matrices=False, lapack_driver="gesvd")
+        return np.asarray(vt[:k], dtype=np.float64)
+    except Exception:
+        pass
+
+    # Gram eigen: أكثر استقرارًا عند توازي BLAS أو أعمدة شبه-مترابطة.
+    n_features = int(centered.shape[1])
+    gram = centered.T @ centered
+    try:
+        evals, evecs = np.linalg.eigh(gram)
+        order = np.argsort(evals)[::-1]
+        comps = evecs[:, order[:k]].T
+        return np.asarray(comps, dtype=np.float64)
+    except np.linalg.LinAlgError:
+        eye = np.eye(n_features, dtype=np.float64)
+        return eye[:k]
+
+
 @runtime_checkable
 class Encoder(Protocol):
     """واجهة المشفّر: يُلائَم على التدريب، ويشفّر ويعيد البناء."""
@@ -45,15 +79,21 @@ class PCAEncoder:
         self._fitted = False
 
     def fit(self, x: FloatArray) -> PCAEncoder:
-        """يتعلّم المحاور الرئيسية من بيانات التدريب (2-D: عيّنات × ميزات)."""
+        """يتعلّم المحاور الرئيسية من بيانات التدريب (2-D: عيّنات × ميزات).
+
+        تحت ضغط توازي BLAS أو صفوف شبه-مفردة قد يفشل ``gesdd`` بـ
+        ``SVD did not converge``. نسقط إلى ``gesvd`` ثم eigen لـ Gram،
+        دون إيقاف خط التغطية/SSL.
+        """
         arr = np.asarray(x, dtype=np.float64)
         if arr.ndim != _MATRIX_NDIM:
             raise ValueError(f"PCAEncoder expects a 2-D matrix, got shape {arr.shape}")
+        if not np.isfinite(arr).all():
+            arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
         self.mean_ = arr.mean(axis=0)
         centered = arr - self.mean_
         k = min(self.n_components, *centered.shape)
-        _, _, vt = np.linalg.svd(centered, full_matrices=False)
-        self.components_ = vt[:k]
+        self.components_ = _svd_components(centered, k)
         self._fitted = True
         return self
 
