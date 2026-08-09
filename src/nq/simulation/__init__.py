@@ -8,7 +8,7 @@
 
 * ``footprint``       — البصمة السعرية (Bid/Ask volume، Delta، Imbalance، Absorption).
 * ``volume_profile``  — ملف الحجم (POC، VAH/VAL، HVN/LVN، Value Migration).
-* ``order_flow``      — تدفّق الأوامر (عدوانية الشراء/البيع، OFI، استهلاك السيولة).
+* ``order_flow``      — تدفّق الأوامر (عدوانية، OFI، استهلاك، تسارع→اختلال مبكر).
 * ``liquidity``       — السيولة (إضافة/سحب، أوامر قائمة، كشف الآيسبرغ).
 * ``auction``         — نظرية المزاد (توازن/اختلال، تمدّد، دفاع الارتداد).
 * ``cross_market``    — عبر السوقين (NQ↔MNQ، Lead/Lag، تباعد، مصيدة المتداولين).
@@ -70,7 +70,13 @@ from nq.simulation.market_truth import (
     MarketTruthConfig,
     build_market_truth_frame,
 )
-from nq.simulation.order_flow import ofi_by_bucket, order_flow_imbalance, order_flow_summary
+from nq.simulation.order_flow import (
+    ORDER_ACCEL_COLUMNS,
+    ofi_by_bucket,
+    order_acceleration_columns,
+    order_flow_imbalance,
+    order_flow_summary,
+)
 from nq.simulation.volume_profile import (
     DevelopingVolumeProfile,
     ValueArea,
@@ -131,6 +137,8 @@ __all__ = [
     "footprint_summary",
     "liquidity_summary",
     "ofi_by_bucket",
+    "ORDER_ACCEL_COLUMNS",
+    "order_acceleration_columns",
     "order_flow_imbalance",
     "order_flow_summary",
     "run_edge_plan",

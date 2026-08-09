@@ -237,6 +237,8 @@ def test_audit_fr_focus_and_signal_export() -> None:
         "vp_auction_setup",
         "vp_fsm_build",
         "vp_liquidity_session",
+        "vp_order_accel",
+        "vp_early_imbalance",
     }
     assert need <= set(_VP_AUCTION_FOCUS)
     frame = make_stream(

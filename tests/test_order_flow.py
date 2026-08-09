@@ -54,3 +54,57 @@ def test_ofi_first_event_zero_and_increases_on_bid_improvement() -> None:
 def test_ofi_by_bucket_causal_availability() -> None:
     bucketed = ofi_by_bucket(_tob(), interval_ns=10)
     assert bucketed["availability_ts"].to_list() == bucketed["bucket_end"].to_list()
+
+
+def test_order_acceleration_rate_and_early_imbalance() -> None:
+    """تسارع استهلاك عدواني داخل التوازن = اختلال مبكر موقّع بالدلتا."""
+    from nq.simulation.order_flow import order_acceleration_columns
+
+    frame = pl.DataFrame(
+        {
+            "consumption": [10.0, 10.0, 10.0, 40.0, 10.0],
+            "delta": [1.0, -1.0, 1.0, 8.0, -2.0],
+            "is_balanced": [True, True, True, True, False],
+        }
+    )
+    out = order_acceleration_columns(frame, lookback=3, accel_mult=1.5)
+    # البرميل 3: استهلاك 40 / متوسط(10,10,10)=10 → rate=4 ≥ 1.5، متوازن → early=+1
+    assert out["order_accel_rate"].to_list()[3] == 4.0
+    assert out["early_imbalance"].to_list()[3] == 1.0
+    # بلا تسارع لا اختلال مبكر
+    assert out["early_imbalance"].to_list()[0] == 0.0
+    assert out["early_imbalance"].to_list()[1] == 0.0
+
+
+def test_order_acceleration_onset_when_flip_to_imbalance() -> None:
+    """أول برميل قلب للتوازن→اختلال مع تسارع يُشعل early_imbalance."""
+    from nq.simulation.order_flow import order_acceleration_columns
+
+    frame = pl.DataFrame(
+        {
+            "consumption": [5.0, 5.0, 5.0, 20.0],
+            "delta": [0.0, 1.0, -1.0, -9.0],
+            "is_balanced": [True, True, True, False],
+        }
+    )
+    out = order_acceleration_columns(frame, lookback=3, accel_mult=1.5)
+    assert out["early_imbalance"].to_list()[3] == -1.0
+
+
+def test_order_acceleration_no_lookahead_past_only() -> None:
+    """الأساس يستخدم نوافذ سابقة فقط — تسارع لاحق لا يلوّث معدّل سابق."""
+    from nq.simulation.order_flow import order_acceleration_columns
+
+    frame = pl.DataFrame(
+        {
+            "buy_volume": [2.0, 2.0, 2.0, 30.0],
+            "sell_volume": [0.0, 0.0, 0.0, 0.0],
+            "delta": [2.0, 2.0, 2.0, 30.0],
+            "is_balanced": [True, True, True, True],
+        }
+    )
+    out = order_acceleration_columns(frame, lookback=2, accel_mult=1.5)
+    # البرميل 2: استهلاك 2 / متوسط(2,2)=2 → rate=1 < 1.5
+    assert abs(out["order_accel_rate"].to_list()[2]) <= 1.0 + 1e-9
+    assert out["early_imbalance"].to_list()[2] == 0.0
+    assert out["early_imbalance"].to_list()[3] == 1.0

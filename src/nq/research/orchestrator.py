@@ -107,6 +107,8 @@ _VP_AUCTION_SIGNAL_COLUMNS = (
     "vp_of_delta",
     "vp_absorb",
     "vp_look_fail",
+    "vp_order_accel",
+    "vp_early_imbalance",
     "vp_balance",
     "vp_imbalance",
     "vp_expansion",

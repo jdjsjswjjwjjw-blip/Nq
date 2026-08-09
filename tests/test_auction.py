@@ -119,6 +119,8 @@ def test_auction_signal_frame_exports_vp_columns() -> None:
         "vp_of_delta",
         "vp_absorb",
         "vp_look_fail",
+        "vp_order_accel",
+        "vp_early_imbalance",
         "vp_balance",
         "vp_imbalance",
         "vp_expansion",
@@ -515,9 +517,39 @@ def test_auction_signal_frame_empty() -> None:
     assert "vp_upper" in signals.columns
     assert "vp_mid" in signals.columns
     assert "vp_lower" in signals.columns
-    assert "vp_auction_setup" in signals.columns
-    assert "vp_fsm_break" in signals.columns
-    assert "vp_fsm_build" in signals.columns
+    assert "vp_order_accel" in signals.columns
+    assert "vp_early_imbalance" in signals.columns
+
+
+def test_auction_wires_order_accel_early_imbalance() -> None:
+    """مسار المزاد يصدّر vp_order_accel / vp_early_imbalance من أداة order_flow."""
+    # عدة براميل فعل هادئة ثم برميل فعل بضغطة شراء كبيرة (تسارع واضح).
+    events: list[tuple[str, str, int, int, int]] = []
+    ts: list[int] = []
+    seq = 1
+    for b in range(8):
+        for j in range(4):
+            size = 40 if b == 7 else 2
+            events.append(("T", "B", 100 + (j % 2), size, 0))
+            ts.append(b * 50 + j)
+            seq += 1
+    frame = make_stream(events, event_ts=ts, sequence=list(range(1, len(events) + 1)))
+    states = auction_action_states(
+        frame,
+        profile_interval_ns=100,
+        signal_interval_ns=50,
+        fixed_range=False,
+    )
+    assert states.height >= 4
+    assert "order_accel_rate" in states.columns
+    assert "early_imbalance" in states.columns
+    # آخر برميل فعل: استهلاك أعلى بكثير من الأساس السابق.
+    assert float(states["order_accel_rate"][-1]) > 1.0
+    sigs = auction_signals_from_states(states, fixed_range_decisions=False)
+    assert "vp_order_accel" in sigs.columns
+    assert "vp_early_imbalance" in sigs.columns
+    assert (sigs["vp_order_accel"].abs() > 0.0).any()
+    assert (sigs["vp_early_imbalance"].abs() > 0.0).any()
 
 
 def test_auction_signal_frame_rejects_profile_shorter_than_signal() -> None:

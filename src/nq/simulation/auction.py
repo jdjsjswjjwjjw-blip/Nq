@@ -34,7 +34,7 @@ from nq.core.session import VP_LIQUIDITY_SESSION
 from nq.core.time import sort_causal
 from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
-from nq.simulation.order_flow import order_flow_summary
+from nq.simulation.order_flow import order_acceleration_columns, order_flow_summary
 from nq.simulation.volume_profile import developing_value_area
 from nq.simulation.vp_fixed_range import (
     VP_FIXED_RANGE_COLUMNS,
@@ -94,6 +94,11 @@ _VP_STRUCTURE_OF_COLUMNS = (
     "vp_of_delta",
     "vp_absorb",
     "vp_look_fail",
+)
+#: تسارع أوامر عدوانية → اختلال مبكر (أداة order_flow؛ ليست vp_fsm_accel).
+_VP_ORDER_ACCEL_COLUMNS = (
+    "vp_order_accel",
+    "vp_early_imbalance",
 )
 
 _PROFILE_JOIN_COLS = (
@@ -325,6 +330,9 @@ def auction_action_states(
             "pullback_defended": pl.Boolean(),
             "absorb": pl.Float64(),
             "look_fail": pl.Float64(),
+            "consumption": pl.Float64(),
+            "order_accel_rate": pl.Float64(),
+            "early_imbalance": pl.Float64(),
             "range": pl.Int64(),
             "expansion_ratio": pl.Float64(),
             VP_LIQUIDITY_SESSION: pl.Int8(),
@@ -409,7 +417,7 @@ def auction_action_states(
     look_fail_up = (pl.col("high") > pl.col("vah")) & closed_in_value & (pl.col("delta") < 0)
     look_fail_dn = (pl.col("low") < pl.col("val")) & closed_in_value & (pl.col("delta") > 0)
 
-    return (
+    base = (
         merged.sort(BUCKET_START)
         .with_columns(
             price_range.alias("range"),
@@ -442,6 +450,9 @@ def auction_action_states(
             .then(1.0)
             .otherwise(0.0)
             .alias("look_fail"),
+            (pl.col("buy_volume").cast(pl.Float64) + pl.col("sell_volume").cast(pl.Float64)).alias(
+                "consumption"
+            ),
         )
         .with_columns(
             (
@@ -471,6 +482,12 @@ def auction_action_states(
             .alias("vp_fr_accepted_expansion"),
         )
     )
+    # أداة تسارع الأوامر → اختلال مبكر (سببي على براميل الفعل).
+    accel = order_acceleration_columns(
+        base,
+        session_col=VP_LIQUIDITY_SESSION if VP_LIQUIDITY_SESSION in base.columns else None,
+    )
+    return base.hstack(accel)
 
 
 def _near_volume_anchor(
@@ -778,6 +795,7 @@ def auction_signals_from_states(
         **{c: pl.Float64() for c in _VP_BOUND_COLUMNS},
         **{c: pl.Float64() for c in _VP_REL_BOUND_COLUMNS},
         **{c: pl.Float64() for c in _VP_STRUCTURE_OF_COLUMNS},
+        **{c: pl.Float64() for c in _VP_ORDER_ACCEL_COLUMNS},
         "vp_balance": pl.Float64(),
         "vp_imbalance": pl.Float64(),
         "vp_expansion": pl.Float64(),
@@ -794,6 +812,12 @@ def auction_signals_from_states(
         return pl.DataFrame(schema=base_schema)
 
     ordered = states.sort(BUCKET_START)
+    if "order_accel_rate" not in ordered.columns or "early_imbalance" not in ordered.columns:
+        # حالات مركّبة يدويًا (اختبارات FSM): صفّر الأداة دون كسر المخطط.
+        ordered = ordered.with_columns(
+            pl.lit(0.0).alias("order_accel_rate"),
+            pl.lit(0.0).alias("early_imbalance"),
+        )
     scale = float(PRICE_SCALE)
     has_fr = "vp_fr_active" in ordered.columns
     fr_exprs = (
@@ -838,6 +862,8 @@ def auction_signals_from_states(
             .alias("vp_of_delta"),
             pl.col("absorb").cast(pl.Float64).alias("vp_absorb"),
             pl.col("look_fail").cast(pl.Float64).alias("vp_look_fail"),
+            pl.col("order_accel_rate").fill_null(0.0).cast(pl.Float64).alias("vp_order_accel"),
+            pl.col("early_imbalance").fill_null(0.0).cast(pl.Float64).alias("vp_early_imbalance"),
             pl.when(pl.col("is_balanced")).then(1.0).otherwise(-1.0).alias("vp_balance"),
             pl.when(~pl.col("is_balanced")).then(1.0).otherwise(0.0).alias("vp_imbalance"),
             pl.when(pl.col("is_expansion")).then(1.0).otherwise(0.0).alias("vp_expansion"),
@@ -859,6 +885,7 @@ def auction_signals_from_states(
             *_VP_BOUND_COLUMNS,
             *_VP_REL_BOUND_COLUMNS,
             *_VP_STRUCTURE_OF_COLUMNS,
+            *_VP_ORDER_ACCEL_COLUMNS,
             "vp_balance",
             "vp_imbalance",
             "vp_expansion",
