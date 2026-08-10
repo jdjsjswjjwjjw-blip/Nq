@@ -602,9 +602,9 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
 
 
 __all__ = [
-    "VpAuctionResearchResult",
     "_VP_AUCTION_FOCUS",
     "_VP_LEVEL_DISTANCE_FEATURES",
     "_VP_REGIME_STATE_FEATURES",
+    "VpAuctionResearchResult",
     "run_vp_auction_research",
 ]
