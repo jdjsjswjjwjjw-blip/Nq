@@ -25,20 +25,24 @@ def test_vp_ic_focus_excludes_level_and_regime_features() -> None:
 
 def test_wf_abs_ic_employs_sign_of_train_ic() -> None:
     """أفضل |IC| سالب على التدريب → OOS يُوظَّف بمقلوب الإشارة فيصير IC موجبًا."""
-    n = 160
+    n = 180
     rng = np.random.default_rng(7)
-    # إشارة ترتبط عكسيًا بالعائد الأمامي (mean-revert / inverted label)
-    noise = rng.normal(scale=0.05, size=n)
-    inv = np.cumsum(rng.normal(size=n))
-    # أسعار تتحرك عكس الإشارة → Spearman(signal, fwd) سالب وقوي
-    prices = 100.0 + np.cumsum(-0.15 * np.diff(inv, prepend=inv[0])) + noise
-    weak = rng.normal(size=n)
+    # ابنِ عوائدًا أمامية صريحة ثم ادمجها في الأسعار حتى Spearman(signal, fwd) ≈ −1
+    signal = rng.normal(size=n)
+    noise = rng.normal(scale=0.02, size=n)
+    # r[t] ≈ −signal[t] → IC سالب قوي
+    fwd = -signal + noise
+    prices = np.empty(n, dtype=np.float64)
+    prices[0] = 100.0
+    for t in range(n - 1):
+        prices[t + 1] = prices[t] * (1.0 + fwd[t])
+    weak = rng.normal(scale=0.01, size=n)
     features = pl.DataFrame(
         {
             "availability_ts": np.arange(n, dtype=np.int64) * 1_000_000_000,
             "nq_close": prices,
             "weak_noise": weak,
-            "strong_inverse": inv,
+            "strong_inverse": signal,
         }
     )
     folds, oos_ic, _p, oos_n, best = walk_forward_select_hypotheses(
@@ -54,7 +58,7 @@ def test_wf_abs_ic_employs_sign_of_train_ic() -> None:
     assert best == "strong_inverse"
     assert folds.height >= 1
     assert "employed_sign" in folds.columns
-    # اختيار بـ |IC| يعني train_ic غالبًا سالب؛ التوظيف يقلب الإشارة
+    # اختيار بـ |IC| يعني train_ic سالب؛ التوظيف يقلب الإشارة
     assert float(folds["employed_sign"].mean()) < 0.0
     assert float(folds["train_ic"].mean()) < 0.0
     # IC الموظَّف خارج العينة يجب أن يكون موجبًا (بعد المحاذاة)
