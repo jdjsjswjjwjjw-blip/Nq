@@ -50,6 +50,9 @@ VP_SIGNAL_INTERVAL_NS: int = 30 * _NS
 
 _DEFAULT_BALANCE_THRESHOLD = 0.6
 _DEFAULT_EXPANSION_THRESHOLD = 1.5
+_DEFAULT_RANGE_BASELINE_WINDOW = 6
+_DEFAULT_BALANCE_CONFIRM_WINDOW = 3
+_DEFAULT_BALANCE_CONFIRM_FRACTION = 2.0 / 3.0
 #: نافذة ريتست الكلاسيكي بعد الكسر (براميل إشارة 30ث) — لا تُستخدم لقتل البناء.
 _DEFAULT_RETEST_WINDOW = 8
 #: أقصى عمر لسياق ما بعد الكسر قبل إعادة الضبط (≈ 30ث×48 ≈ 24د).
@@ -183,8 +186,22 @@ def auction_states(
         .sort(BUCKET_START)
     )
 
-    price_range = pl.col("high") - pl.col("low")
-    prev_range = price_range.shift(1)
+    # run متصل لجلسة السيولة؛ يمنع rolling من عبور حد آسيا/لندن/نيويورك.
+    merged = merged.with_columns(
+        (pl.col(VP_LIQUIDITY_SESSION) != pl.col(VP_LIQUIDITY_SESSION).shift(1).fill_null(-1))
+        .cast(pl.Int64)
+        .cum_sum()
+        .alias("_liq_run"),
+        (pl.col("high") - pl.col("low")).alias("range"),
+    )
+    price_range = pl.col("range")
+    # خط أساس سببي متين بدل قسمة المدى على شمعة سابقة واحدة قد تكون شاذة الصغر.
+    prev_range = (
+        pl.col("range")
+        .shift(1)
+        .rolling_median(window_size=_DEFAULT_RANGE_BASELINE_WINDOW, min_samples=1)
+        .over("_liq_run")
+    )
     prev_high = pl.col("high").shift(1)
     prev_low = pl.col("low").shift(1)
     in_value_fraction = (
@@ -200,10 +217,13 @@ def auction_states(
     made_new_high = (prev_high.is_not_null()) & (pl.col("high") > prev_high)
     made_new_low = (prev_low.is_not_null()) & (pl.col("low") < prev_low)
     closed_in_value = (pl.col("close") >= pl.col("val")) & (pl.col("close") <= pl.col("vah"))
-    is_expansion = expansion_ratio.is_not_null() & (expansion_ratio >= expansion_threshold)
+    is_expansion = (
+        expansion_ratio.is_not_null()
+        & (expansion_ratio >= expansion_threshold)
+        & (made_new_high | made_new_low)
+    )
 
-    return merged.with_columns(
-        price_range.alias("range"),
+    classified = merged.with_columns(
         in_value_fraction.alias("in_value_fraction"),
         expansion_ratio.alias("expansion_ratio"),
         made_new_high.alias("made_new_high"),
@@ -218,11 +238,23 @@ def auction_states(
             pl.col("close_in_value")
             & ~pl.col("is_expansion")
             & (pl.col("in_value_fraction") >= balance_threshold)
-        ).alias("is_balanced"),
+        ).alias("_balance_raw"),
         ((pl.col("made_new_high") | pl.col("made_new_low")) & pl.col("close_in_value")).alias(
             "pullback_defended"
         ),
     )
+    balance_confidence = (
+        pl.col("_balance_raw")
+        .cast(pl.Float64)
+        .rolling_mean(window_size=_DEFAULT_BALANCE_CONFIRM_WINDOW, min_samples=1)
+        .over("_liq_run")
+    )
+    return classified.with_columns(
+        (pl.col("_balance_raw") & (balance_confidence >= _DEFAULT_BALANCE_CONFIRM_FRACTION)).alias(
+            "is_balanced"
+        ),
+        balance_confidence.alias("balance_confidence"),
+    ).drop("_balance_raw", "_liq_run")
 
 
 def auction_action_states(

@@ -56,6 +56,25 @@ def test_expansion_and_new_high_detected() -> None:
     assert states["is_expansion"].to_list()[1] is True
 
 
+def test_expansion_uses_past_range_median_not_single_tiny_bar() -> None:
+    frame = make_stream(
+        [
+            ("T", "B", 100, 1, 0),
+            ("T", "A", 110, 1, 0),
+            ("T", "B", 109, 1, 0),
+            ("T", "A", 110, 1, 0),
+            ("T", "B", 109, 1, 0),
+            ("T", "A", 111, 1, 0),
+        ],
+        event_ts=[0, 1, 100, 101, 200, 201],
+        sequence=[1, 2, 3, 4, 5, 6],
+    )
+    states = auction_states(frame, interval_ns=100).sort("bucket_start")
+    assert states["range"].to_list() == [10, 1, 2]
+    assert states["made_new_high"].to_list()[2] is True
+    assert states["is_expansion"].to_list()[2] is False
+
+
 def test_availability_is_bucket_end() -> None:
     frame = make_stream(
         [("T", "B", 100, 5, 0), ("T", "A", 100, 5, 0)],

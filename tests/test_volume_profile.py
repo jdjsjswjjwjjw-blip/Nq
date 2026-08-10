@@ -11,6 +11,7 @@ from nq.simulation.volume_profile import (
     classify_nodes,
     developing_value_area,
     value_area,
+    value_area_from_levels,
 )
 from tests.mbo_factory import make_stream
 
@@ -50,6 +51,12 @@ def test_value_area_poc_and_bounds() -> None:
 def test_value_area_empty_returns_none() -> None:
     empty = make_stream([])
     assert value_area(build_volume_profile(empty)) is None
+
+
+def test_poc_tie_uses_volume_center_not_always_lowest_price() -> None:
+    va = value_area_from_levels([100, 101, 102, 103], [10, 9, 10, 9])
+    assert va is not None
+    assert va.poc == 102
 
 
 def test_classify_nodes_hvn_lvn() -> None:
