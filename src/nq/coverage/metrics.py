@@ -26,7 +26,7 @@ from nq.research.evidence import Evidence
 from nq.research.progress import ProgressLike
 from nq.states.regimes import KMeansRegimes, transition_matrix
 from nq.statistics.regime_tests import regime_difference_test
-from nq.statistics.resampling import TestResult, permutation_test
+from nq.statistics.resampling import TestResult, permutation_test, temporal_block_permutation
 
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.intp]
@@ -248,7 +248,7 @@ def measure_cer(
         # عدم: خلط استجابة الكتلة مع تحركات السعر داخل نفس الطيّات.
         null = np.empty(n_permutations, dtype=np.float64)
         for i in range(n_permutations):
-            perm_feat = generator.permutation(feat_delta)
+            perm_feat = temporal_block_permutation(feat_delta, rng=generator)
             perm_cer = price_delta / (perm_feat + 1e-9)
             perm_test: list[float] = []
             for fold in folds:
@@ -569,7 +569,7 @@ def measure_lori(  # noqa: PLR0912, PLR0915
             n_novel = len(novel)
             null_counts = np.empty(_LORI_PERMUTATIONS, dtype=np.float64)
             for pi in range(_LORI_PERMUTATIONS):
-                shuffled = generator.permutation(test_labels)
+                shuffled = temporal_block_permutation(test_labels, rng=generator)
                 count = 0
                 for i in range(shuffled.shape[0] - 1):
                     src = int(shuffled[i])
@@ -639,7 +639,7 @@ def measure_qduf(
     observed = float(np.mean(qduf_values))
     null = np.empty(n_permutations, dtype=np.float64)
     for i in range(n_permutations):
-        perm = generator.permutation(returns)
+        perm = temporal_block_permutation(returns, rng=generator)
         perm_vals: list[float] = []
         for fold in folds:
             train_idx = fold.train_idx

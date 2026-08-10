@@ -13,6 +13,7 @@ import numpy as np
 import numpy.typing as npt
 
 from nq.research.progress import ProgressLike
+from nq.statistics.resampling import temporal_block_permutation
 
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.intp]
@@ -201,7 +202,7 @@ def information_gap_perm_null(
     observed = _max_dep_cached(desc_cache, y) - _max_dep_cached(feat_cache, y)
     null = np.empty(n_permutations, dtype=np.float64)
     for i in range(n_permutations):
-        perm = rng.permutation(y)
+        perm = temporal_block_permutation(y, rng=rng)
         null[i] = _max_dep_cached(desc_cache, perm) - _max_dep_cached(feat_cache, perm)
         if progress is not None:
             progress.heartbeat(i + 1, n_permutations, label=progress_label)
@@ -243,7 +244,7 @@ def fold_information_gap_perm_null(
     for i in range(n_permutations):
         perm_gaps: list[float] = []
         for desc_cache, feat_cache, y in caches:
-            perm = rng.permutation(y)
+            perm = temporal_block_permutation(y, rng=rng)
             perm_gaps.append(_max_dep_cached(desc_cache, perm) - _max_dep_cached(feat_cache, perm))
         null[i] = float(np.mean(perm_gaps))
         if progress is not None:

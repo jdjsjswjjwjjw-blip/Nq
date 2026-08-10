@@ -17,6 +17,7 @@ from nq.statistics import (
     regime_difference_test,
     sharpe_ratio,
     t_statistic,
+    temporal_block_permutation,
     verify_hypotheses,
 )
 
@@ -58,6 +59,15 @@ def test_block_bootstrap_ci() -> None:
 def test_block_size_validation() -> None:
     with pytest.raises(ValueError, match="exceeds series length"):
         moving_block_bootstrap_ci([1.0, 2.0], block_size=5)
+
+
+def test_temporal_block_permutation_preserves_local_order() -> None:
+    series = np.arange(12, dtype=np.float64)
+    permuted = temporal_block_permutation(series, rng=make_generator(9), block_size=3)
+    original_blocks = {tuple(series[i : i + 3]) for i in range(0, 12, 3)}
+    permuted_blocks = {tuple(permuted[i : i + 3]) for i in range(0, 12, 3)}
+    assert permuted_blocks == original_blocks
+    assert not np.array_equal(permuted, series)
 
 
 # --- multiple testing -------------------------------------------------------
