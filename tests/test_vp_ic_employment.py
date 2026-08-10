@@ -65,3 +65,11 @@ def test_wf_abs_ic_employs_sign_of_train_ic() -> None:
     assert oos_ic > 0.0
     assert float(folds["test_ic"].mean()) > 0.0
     assert oos_n > 0
+
+
+def test_vp_level_features_are_not_directional_ic_candidates() -> None:
+    """vp_rel_upper مسافة لـ VAH — لا يجوز أن تدخل بركة IC الاتجاهية."""
+    assert "vp_rel_upper" in _VP_LEVEL_DISTANCE_FEATURES
+    assert "vp_balance" in _VP_REGIME_STATE_FEATURES
+    for col in ("vp_rel_upper", "vp_rel_mid", "vp_rel_lower", "vp_balance", "vp_imbalance"):
+        assert col not in _VP_AUCTION_FOCUS

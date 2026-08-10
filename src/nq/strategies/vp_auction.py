@@ -146,6 +146,8 @@ class VpAuctionResearchResult:
     oos_pvalue: float
     oos_n: int
     best_signal: str | None
+    #: علامة التوظيف الإجماع لـ ``best_signal`` (``+1``/``-1`` من طيّات الفوز).
+    employed_sign: float
     exploratory_only: bool
     # طبقة التنفيذ (متصلة — ليست مسارًا بديلًا)
     with_execution: bool
@@ -388,6 +390,21 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         rng=generator,
         progress=log,
     )
+    # إجماع علامة التوظيف لأشيع إشارة فائزة — أي استخدام لاحق يجب أن يضرب بها.
+    employed_sign = 1.0
+    if best is not None and fold_df.height > 0 and "employed_sign" in fold_df.columns:
+        win = fold_df.filter(pl.col("selected") == best)
+        if win.height > 0:
+            signs = win["employed_sign"].to_numpy()
+            employed_sign = 1.0 if float(np.mean(signs)) >= 0.0 else -1.0
+        if best in features.columns:
+            features = features.with_columns(
+                (pl.col(best).cast(pl.Float64) * employed_sign).alias("vp_ic_employed")
+            )
+            log.note(
+                f"IC employment: best={best!r} · sign={employed_sign:+.0f} · "
+                "عمود vp_ic_employed = sign·signal"
+            )
 
     edge_table = pl.DataFrame()
     best_edge: EdgeSearchSpec | None = None
@@ -463,8 +480,9 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     findings = [
         assistant.generate_hypothesis(
             (
-                f"فرضية Volume Profile المختارة بـ walk-forward (best={best!r}) "
-                f"تحقق IC خارج العينة = {oos_ic:.4g} (p={oos_p:.4g})."
+                f"فرضية Volume Profile المختارة بـ walk-forward (best={best!r}, "
+                f"employed_sign={employed_sign:+.0f}) "
+                f"تحقق IC موظَّف خارج العينة = {oos_ic:.4g} (p={oos_p:.4g})."
             ),
             Evidence(
                 id="vp_search:oos_ic",
@@ -474,9 +492,11 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 pvalue=oos_p,
                 sample_size=oos_n,
                 detail=(
-                    f"best_oos={best!r}; oos_ic={oos_ic:.4g}; oos_p={oos_p:.4g}; "
+                    f"best_oos={best!r}; employed_sign={employed_sign:+.0f}; "
+                    f"oos_ic={oos_ic:.4g}; oos_p={oos_p:.4g}; "
                     f"n={oos_n}; with_execution={with_execution}; "
-                    f"mbo={raw_n}→{cleaned_n}; wf_before_execution=True"
+                    f"mbo={raw_n}→{cleaned_n}; wf_before_execution=True; "
+                    "OOS=sign(train_ic)·signal; level/regime excluded from IC pool"
                 ),
             ),
             requires_significance=True,
@@ -555,6 +575,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         summary = pl.DataFrame(
             {
                 "best_signal": [best],
+                "employed_sign": [employed_sign],
                 "oos_ic": [oos_ic],
                 "oos_pvalue": [oos_p],
                 "oos_n": [oos_n],
@@ -567,6 +588,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 "edge_oos_rr": [float(best_edge_row.get("oos_avg_rr", 0.0) or 0.0)],
                 "edge_n_trades": [edge_summary["n_trades"]],
                 "wf_before_execution": [True],
+                "ic_pool_directional_only": [True],
             }
         )
         summary.write_parquet(out / "vp_oos_summary.parquet")
@@ -589,6 +611,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         oos_pvalue=oos_p,
         oos_n=oos_n,
         best_signal=best,
+        employed_sign=employed_sign,
         exploratory_only=exploratory_full_sample,
         with_execution=with_execution,
         raw_mbo_rows=raw_n,

@@ -39,7 +39,11 @@ from nq.simulation.vp_fixed_range import (
     VpFixedRangeConfig,
     attach_vp_fixed_range,
 )
-from nq.strategies.vp_auction import _VP_AUCTION_FOCUS
+from nq.strategies.vp_auction import (
+    _VP_AUCTION_FOCUS,
+    _VP_LEVEL_DISTANCE_FEATURES,
+    _VP_REGIME_STATE_FEATURES,
+)
 from nq.validation import assert_availability_not_before_event, assert_causal_order
 from tests.mbo_factory import make_stream
 from tests.test_vp_fixed_range import _profile_from_specs, _synthetic_profile_and_mbo
@@ -229,18 +233,25 @@ def test_audit_fr_decisions_only_on_exit_edge() -> None:
 
 
 def test_audit_fr_focus_and_signal_export() -> None:
-    need = {
-        "vp_fr_active",
+    """إشارات FR تُصدَّر في الإطار؛ بركة IC تقتصر على المتنبّئات الاتجاهية."""
+    ic_need = {
         "vp_fr_accepted_expansion",
-        "vp_fr_in_balance",
         "vp_fr_exit",
         "vp_auction_setup",
         "vp_fsm_build",
-        "vp_liquidity_session",
         "vp_order_accel",
         "vp_early_imbalance",
     }
-    assert need <= set(_VP_AUCTION_FOCUS)
+    regime_need = {
+        "vp_fr_active",
+        "vp_fr_in_balance",
+        "vp_liquidity_session",
+    }
+    assert ic_need <= set(_VP_AUCTION_FOCUS)
+    assert regime_need <= set(_VP_REGIME_STATE_FEATURES)
+    assert regime_need.isdisjoint(_VP_AUCTION_FOCUS)
+    assert "vp_rel_upper" in _VP_LEVEL_DISTANCE_FEATURES
+    export_need = ic_need | regime_need
     frame = make_stream(
         [("T", "B", 100 + (i % 3), 2, 0) for i in range(40)],
         event_ts=list(range(0, 4000, 100)),
@@ -250,7 +261,7 @@ def test_audit_fr_focus_and_signal_export() -> None:
         auction_action_states(frame, profile_interval_ns=1000, signal_interval_ns=200),
         fixed_range_decisions=True,
     )
-    for c in need:
+    for c in export_need:
         assert c in sigs.columns
 
 

@@ -41,7 +41,12 @@ from nq.simulation.edge_execution_plan import (
     search_best_edge_spec,
     summarize_edge_trades,
 )
-from nq.strategies.vp_auction import _VP_AUCTION_FOCUS, run_vp_auction_research
+from nq.strategies.vp_auction import (
+    _VP_AUCTION_FOCUS,
+    _VP_LEVEL_DISTANCE_FEATURES,
+    _VP_REGIME_STATE_FEATURES,
+    run_vp_auction_research,
+)
 from nq.validation import assert_availability_not_before_event, assert_causal_order
 from tests.test_coverage import _paired_streams
 from tests.test_liquidity_edge import _session_with_imbalance
@@ -289,18 +294,20 @@ def test_fsm_never_expands_without_is_expansion_flag() -> None:
 
 
 def test_focus_columns_include_build_and_setup_for_daily_ontology() -> None:
-    need = {
+    """بركة IC الاتجاهية تشمل FSM/setup؛ مسافات VP تبقى وصفيّة خارج الفرز."""
+    directional = {
         "vp_fsm_break",
         "vp_fsm_build",
         "vp_fsm_retest",
         "vp_auction_setup",
         "vp_flip_to_imbalance",
-        "vp_expansion",
-        "vp_rel_upper",
-        "vp_rel_mid",
-        "vp_rel_lower",
     }
-    assert need <= set(_VP_AUCTION_FOCUS)
+    assert directional <= set(_VP_AUCTION_FOCUS)
+    level = {"vp_rel_upper", "vp_rel_mid", "vp_rel_lower"}
+    assert level <= set(_VP_LEVEL_DISTANCE_FEATURES)
+    assert level.isdisjoint(_VP_AUCTION_FOCUS)
+    assert "vp_expansion" in _VP_REGIME_STATE_FEATURES
+    assert "vp_expansion" not in _VP_AUCTION_FOCUS
 
 
 # ---------------------------------------------------------------------------
