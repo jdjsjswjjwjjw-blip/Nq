@@ -157,6 +157,18 @@ def auction_states(
             pl.lit(0, dtype=pl.Int64).alias("excess_lower"),
         )
 
+    # حدود القرار = آخر VA مكتملة قبل الشمعة الحالية. إدخال حجم الشمعة ثم
+    # سؤال هل عادت داخل القيمة يجعل القبول/التوازن ذاتي المرجع.
+    dva = dva.with_columns(
+        (pl.col(VP_LIQUIDITY_SESSION) != pl.col(VP_LIQUIDITY_SESSION).shift(1).fill_null(-1))
+        .cast(pl.Int64)
+        .cum_sum()
+        .alias("_liq_run")
+    ).with_columns(
+        pl.col("vah").shift(1).over("_liq_run").alias("decision_vah"),
+        pl.col("val").shift(1).over("_liq_run").alias("decision_val"),
+    )
+
     trades = extract_trades(add_time_bucket(sort_causal(frame), interval_ns=interval_ns))
 
     stats = (
@@ -170,11 +182,14 @@ def auction_states(
         )
     )
 
-    # حجم صفقات النافذة الحالية داخل منطقة القيمة الجلسية المتطوّرة
-    va_bounds = dva.select(BUCKET_START, "vah", "val")
+    # حجم النافذة داخل منطقة القيمة التي كانت معروفة قبل بدايتها.
+    va_bounds = dva.select(BUCKET_START, "decision_vah", "decision_val")
     in_value = (
         trades.join(va_bounds, on=BUCKET_START, how="left")
-        .filter((pl.col("price") >= pl.col("val")) & (pl.col("price") <= pl.col("vah")))
+        .filter(
+            (pl.col("price") >= pl.col("decision_val"))
+            & (pl.col("price") <= pl.col("decision_vah"))
+        )
         .group_by(BUCKET_START)
         .agg(pl.col("size").cast(pl.Int64).sum().alias("in_value_volume"))
     )
@@ -187,13 +202,7 @@ def auction_states(
     )
 
     # run متصل لجلسة السيولة؛ يمنع rolling من عبور حد آسيا/لندن/نيويورك.
-    merged = merged.with_columns(
-        (pl.col(VP_LIQUIDITY_SESSION) != pl.col(VP_LIQUIDITY_SESSION).shift(1).fill_null(-1))
-        .cast(pl.Int64)
-        .cum_sum()
-        .alias("_liq_run"),
-        (pl.col("high") - pl.col("low")).alias("range"),
-    )
+    merged = merged.with_columns((pl.col("high") - pl.col("low")).alias("range"))
     price_range = pl.col("range")
     # خط أساس سببي متين بدل قسمة المدى على شمعة سابقة واحدة قد تكون شاذة الصغر.
     prev_range = (
@@ -202,8 +211,8 @@ def auction_states(
         .rolling_median(window_size=_DEFAULT_RANGE_BASELINE_WINDOW, min_samples=1)
         .over("_liq_run")
     )
-    prev_high = pl.col("high").shift(1)
-    prev_low = pl.col("low").shift(1)
+    prev_high = pl.col("high").shift(1).over("_liq_run")
+    prev_low = pl.col("low").shift(1).over("_liq_run")
     in_value_fraction = (
         pl.when(pl.col("bucket_volume") > 0)
         .then(pl.col("in_value_volume") / pl.col("bucket_volume"))
@@ -216,7 +225,9 @@ def auction_states(
     )
     made_new_high = (prev_high.is_not_null()) & (pl.col("high") > prev_high)
     made_new_low = (prev_low.is_not_null()) & (pl.col("low") < prev_low)
-    closed_in_value = (pl.col("close") >= pl.col("val")) & (pl.col("close") <= pl.col("vah"))
+    closed_in_value = (pl.col("close") >= pl.col("decision_val")) & (
+        pl.col("close") <= pl.col("decision_vah")
+    )
     is_expansion = (
         expansion_ratio.is_not_null()
         & (expansion_ratio >= expansion_threshold)
@@ -231,8 +242,14 @@ def auction_states(
         closed_in_value.alias("close_in_value"),
         is_expansion.alias("is_expansion"),
         # Excess: تطرف فوق VAH / تحت VAL (ورقة VP)
-        (pl.col("high") - pl.col("vah")).clip(lower_bound=0).alias("excess_upper"),
-        (pl.col("val") - pl.col("low")).clip(lower_bound=0).alias("excess_lower"),
+        (pl.col("high") - pl.col("decision_vah"))
+        .clip(lower_bound=0)
+        .fill_null(0)
+        .alias("excess_upper"),
+        (pl.col("decision_val") - pl.col("low"))
+        .clip(lower_bound=0)
+        .fill_null(0)
+        .alias("excess_lower"),
     ).with_columns(
         (
             pl.col("close_in_value")
