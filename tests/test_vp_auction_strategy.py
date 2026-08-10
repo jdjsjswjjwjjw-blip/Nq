@@ -35,6 +35,8 @@ def test_run_vp_auction_research_uses_unified_features() -> None:
     assert "vp_balance" not in result.signal_columns
     assert "fail_fvg" not in result.signal_columns
     assert result.unified is not None
+    assert result.unified.alpha.title.startswith("Volume Profile / Auction")
+    assert "إشارات VP مرّت داخل إطار الميزات الموحّد" in result.unified.to_markdown()
     assert result.fold_df is not None
     assert result.exploratory_only is False
     assert result.with_execution is False
