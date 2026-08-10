@@ -298,6 +298,8 @@ def run_edge_plan(
     progress: ProgressLike | None = None,
     auction: pl.DataFrame | None = None,
     deceptive_frame: pl.DataFrame | None = None,
+    thesis_frame: pl.DataFrame | None = None,
+    thesis_col: str = "vp_ic_employed",
 ) -> pl.DataFrame:
     """خط واحد: حقيقة السوق → خطة تنفيذ → محاكاة.
 
@@ -313,6 +315,8 @@ def run_edge_plan(
         progress=progress,
         auction=auction,
         deceptive_frame=deceptive_frame,
+        thesis_frame=thesis_frame,
+        thesis_col=thesis_col,
     )
     return simulate_edge_trades(truth, exec_cfg=exec_cfg)
 
@@ -328,6 +332,8 @@ def score_edge_spec_oos(
     truth_frame: pl.DataFrame | None = None,
     auction: pl.DataFrame | None = None,
     deceptive_frame: pl.DataFrame | None = None,
+    thesis_frame: pl.DataFrame | None = None,
+    thesis_col: str = "vp_ic_employed",
 ) -> dict[str, float | str]:
     """تقييم فرضية بمحاكاة مستقلة على التدريب ثم الاختبار (بلا تسرّب عبر القطع)."""
     if not _TRAIN_FRAC_MIN < train_frac < _TRAIN_FRAC_MAX:
@@ -337,6 +343,10 @@ def score_edge_spec_oos(
     empty: dict[str, float | str] = {
         "name": spec.name,
         "train_expectancy": 0.0,
+        "train_win_rate": 0.0,
+        "train_n": 0.0,
+        "train_avg_rr": 0.0,
+        "train_profit_factor": 0.0,
         "oos_expectancy": 0.0,
         "oos_win_rate": 0.0,
         "oos_n": 0.0,
@@ -353,6 +363,8 @@ def score_edge_spec_oos(
             score_mbo=score_mbo,
             auction=auction,
             deceptive_frame=deceptive_frame,
+            thesis_frame=thesis_frame,
+            thesis_col=thesis_col,
         )
     if truth.height < _MIN_TRUTH_ROWS_FOR_OOS:
         return empty
@@ -366,6 +378,10 @@ def score_edge_spec_oos(
     return {
         "name": spec.name,
         "train_expectancy": train["expectancy"],
+        "train_win_rate": train["win_rate"],
+        "train_n": train["n_trades"],
+        "train_avg_rr": train["avg_rr_planned"],
+        "train_profit_factor": train["profit_factor"],
         "oos_expectancy": test["expectancy"],
         "oos_win_rate": test["win_rate"],
         "oos_n": test["n_trades"],
@@ -388,6 +404,8 @@ def search_best_edge_spec(  # noqa: PLR0912
     auction: pl.DataFrame | None = None,
     deceptive_frame: pl.DataFrame | None = None,
     scored: pl.DataFrame | None = None,
+    thesis_frame: pl.DataFrame | None = None,
+    thesis_col: str = "vp_ic_employed",
     profile_interval_ns: int = VP_PROFILE_INTERVAL_NS,
 ) -> tuple[pl.DataFrame, EdgeSearchSpec | None, dict[str, float | str]]:
     """يبحث عن أفضل دخول/خروج؛ يعيد ``best=None`` إن لم تُحقَّق القيود.
@@ -441,6 +459,8 @@ def search_best_edge_spec(  # noqa: PLR0912
                 truth=spec.truth_config(),
                 auction=states,
                 deceptive_frame=deco,
+                thesis_frame=thesis_frame,
+                thesis_col=thesis_col,
             )
         row = score_edge_spec_oos(
             mbo,
@@ -455,12 +475,18 @@ def search_best_edge_spec(  # noqa: PLR0912
     table = pl.DataFrame(rows) if rows else pl.DataFrame()
     if table.height == 0:
         return table, None, {}
+    # مهم: OOS للتقرير فقط. أهلية/اختيار المواصفة من التدريب حصراً.
+    # الاسمان min_oos_* محفوظان توافقياً للـ CLI القديم، لكنهما يطبّقان هنا
+    # على جزء الاختيار (train) كي لا تتحول OOS إلى validation مخفية.
     eligible = table.filter(
-        (pl.col("oos_n") >= float(min_oos_trades)) & (pl.col("oos_avg_rr") >= float(min_oos_rr))
+        (pl.col("train_n") >= float(min_oos_trades)) & (pl.col("train_avg_rr") >= float(min_oos_rr))
     )
     if eligible.height == 0:
         return table, None, {}
-    best_row = eligible.sort("oos_expectancy", descending=True).row(0, named=True)
+    best_row = eligible.sort(
+        ["train_expectancy", "train_n", "name"],
+        descending=[True, True, False],
+    ).row(0, named=True)
     best_spec = next((s for s in specs if s.name == best_row["name"]), None)
     return table, best_spec, dict(best_row)
 

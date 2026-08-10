@@ -79,6 +79,8 @@ def build_market_truth_frame(  # noqa: PLR0912, PLR0915
     progress: ProgressLike | None = None,
     auction: pl.DataFrame | None = None,
     deceptive_frame: pl.DataFrame | None = None,
+    thesis_frame: pl.DataFrame | None = None,
+    thesis_col: str = "vp_ic_employed",
     profile_interval_ns: int = VP_PROFILE_INTERVAL_NS,
 ) -> pl.DataFrame:
     """يبني إطار حكم السوق + بوابة دخول (بدون ملاحقة كل أمر).
@@ -148,7 +150,29 @@ def build_market_truth_frame(  # noqa: PLR0912, PLR0915
     if f"{BUCKET_END}_d" in merged.columns:
         merged = merged.drop(f"{BUCKET_END}_d")
 
-    thesis = _thesis_direction(merged).to_numpy()
+    external_thesis = thesis_frame is not None
+    if thesis_frame is not None:
+        required = {AVAILABILITY_TS, thesis_col}
+        missing = required.difference(thesis_frame.columns)
+        if missing:
+            raise ValueError(f"thesis_frame missing required columns: {sorted(missing)}")
+        signal = (
+            thesis_frame.select(AVAILABILITY_TS, thesis_col)
+            .sort(AVAILABILITY_TS)
+            .group_by(AVAILABILITY_TS, maintain_order=True)
+            .agg(pl.col(thesis_col).last())
+        )
+        if thesis_col in merged.columns:
+            merged = merged.drop(thesis_col)
+        # نبضة الإشارة ليست حالة sticky: الربط تطابقي فقط.
+        merged = merged.join(signal, on=AVAILABILITY_TS, how="left").with_columns(
+            pl.col(thesis_col).cast(pl.Float64).fill_null(0.0)
+        )
+        thesis_source = np.sign(merged[thesis_col].to_numpy().astype(np.float64))
+        thesis = np.zeros(merged.height, dtype=np.float64)
+    else:
+        thesis_source = _thesis_direction(merged).to_numpy()
+        thesis = thesis_source.copy()
     close = merged["close"].to_numpy().astype(np.float64)
     real_liq = merged["real_liquidity_ratio"].to_numpy().astype(np.float64)
     dec_score = merged["deceptive_score"].to_numpy().astype(np.float64)
@@ -173,9 +197,20 @@ def build_market_truth_frame(  # noqa: PLR0912, PLR0915
         if end >= n:
             continue
         # هولد: كل براميل النافذة سيولة حقيقية + تضليل منخفض + ثيسيس غير صفر
-        window_thesis = thesis[t : end + 1]
-        if not np.all(window_thesis == window_thesis[0]) or window_thesis[0] == 0.0:
-            continue
+        window_thesis = thesis_source[t : end + 1]
+        if external_thesis:
+            # إشارة OOS عند t تبدأ الهولد. لا نشترط تكرار النبضة، لكن نرفض
+            # ظهور إشارة معاكسة قبل اكتمال الهولد.
+            direction = float(thesis_source[t])
+            if direction == 0.0:
+                continue
+            nonzero = window_thesis[window_thesis != 0.0]
+            if np.any(nonzero != direction):
+                continue
+        else:
+            if not np.all(window_thesis == window_thesis[0]) or window_thesis[0] == 0.0:
+                continue
+            direction = float(window_thesis[0])
         if np.any(real_liq[t : end + 1] < cfg.min_real_liquidity):
             continue
         if np.any(dec_score[t : end + 1] > cfg.max_deceptive_score):
@@ -188,7 +223,8 @@ def build_market_truth_frame(  # noqa: PLR0912, PLR0915
         c_prev = close[end - 1] * PRICE_SCALE if end > t else c0
         delta_cum[end] = c1 - c0
         delta_instant[end] = c1 - c_prev
-        direction = float(window_thesis[0])
+        # اتجاه صف الدخول هو اتجاه الإشارة التي بدأت الهولد، لا قاعدة مستقلة.
+        thesis[end] = direction
         move = c1 - c0
         if abs(move) < min_move:
             verdict[end] = 0.0

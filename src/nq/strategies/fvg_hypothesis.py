@@ -375,6 +375,9 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
             "train_ic": pl.Float64(),
             "test_ic": pl.Float64(),
             "employed_sign": pl.Float64(),
+            "train_end_ts": pl.Int64(),
+            "test_start_ts": pl.Int64(),
+            "test_end_ts": pl.Int64(),
         }
     )
     if not cols or work.height < _MIN_ROWS_FOR_SEARCH:
@@ -437,6 +440,9 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
                 "train_ic": float(best_ic),
                 "test_ic": float(test_ic),
                 "employed_sign": float(employed_sign),
+                "train_end_ts": int(times[fold.train_idx[-1]]),
+                "test_start_ts": int(times[fold.test_idx[0]]),
+                "test_end_ts": int(times[fold.test_idx[-1]]),
             }
         )
         if log is not None:

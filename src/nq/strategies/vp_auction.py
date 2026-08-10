@@ -237,6 +237,51 @@ def _with_gated_vp_columns(edge_frame: pl.DataFrame, features: pl.DataFrame) -> 
     return work.with_columns(exprs)
 
 
+def _attach_oos_employed_signal(
+    features: pl.DataFrame,
+    fold_df: pl.DataFrame,
+) -> pl.DataFrame:
+    """يجسّد اختيار كل طيّة على صفوف اختبارها فقط مع lineage صريح.
+
+    صفوف التدريب تبقى صفراً، فلا يستطيع محرك التنفيذ استخدام اختيار مبني
+    على المستقبل أو استخدام الإشارة الإجماعية على كامل العينة.
+    """
+    work = features.sort(AVAILABILITY_TS)
+    n = work.height
+    values = np.zeros(n, dtype=np.float64)
+    fold_ids = np.full(n, -1, dtype=np.int64)
+    employed_signs = np.zeros(n, dtype=np.float64)
+    selected = np.full(n, "", dtype=object)
+    if n == 0 or fold_df.height == 0:
+        return work.with_columns(
+            pl.Series("vp_ic_employed", values),
+            pl.Series("vp_ic_fold", fold_ids),
+            pl.Series("vp_ic_employed_sign", employed_signs),
+            pl.Series("vp_ic_selected", selected, dtype=pl.Utf8),
+        )
+
+    times = work[AVAILABILITY_TS].to_numpy().astype(np.int64)
+    for row in fold_df.iter_rows(named=True):
+        signal_name = str(row["selected"])
+        if signal_name not in work.columns:
+            continue
+        start = int(row["test_start_ts"])
+        end = int(row["test_end_ts"])
+        mask = (times >= start) & (times <= end)
+        sign = float(row["employed_sign"])
+        raw = work[signal_name].cast(pl.Float64).fill_null(0.0).to_numpy()
+        values[mask] = sign * raw[mask]
+        fold_ids[mask] = int(row["fold"])
+        employed_signs[mask] = sign
+        selected[mask] = signal_name
+    return work.with_columns(
+        pl.Series("vp_ic_employed", values),
+        pl.Series("vp_ic_fold", fold_ids),
+        pl.Series("vp_ic_employed_sign", employed_signs),
+        pl.Series("vp_ic_selected", selected, dtype=pl.Utf8),
+    )
+
+
 def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     nq: pl.DataFrame | str | Path,
     mnq: pl.DataFrame | str | Path | None = None,
@@ -390,21 +435,21 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         rng=generator,
         progress=log,
     )
-    # إجماع علامة التوظيف لأشيع إشارة فائزة — أي استخدام لاحق يجب أن يضرب بها.
+    # الإشارة القابلة للتنفيذ تُجسّد اختيار كل طيّة على OOS الخاصة بها فقط.
+    features = _attach_oos_employed_signal(features, fold_df)
+    # الإجماع وصفي فقط؛ التنفيذ لا يستخدمه.
     employed_sign = 1.0
     if best is not None and fold_df.height > 0 and "employed_sign" in fold_df.columns:
         win = fold_df.filter(pl.col("selected") == best)
         if win.height > 0:
             signs = win["employed_sign"].to_numpy()
             employed_sign = 1.0 if float(np.mean(signs)) >= 0.0 else -1.0
-        if best in features.columns:
-            features = features.with_columns(
-                (pl.col(best).cast(pl.Float64) * employed_sign).alias("vp_ic_employed")
-            )
-            log.note(
-                f"IC employment: best={best!r} · sign={employed_sign:+.0f} · "
-                "عمود vp_ic_employed = sign·signal"
-            )
+        log.note(
+            f"IC employment: modal={best!r} · consensus_sign={employed_sign:+.0f} · "
+            "vp_ic_employed مجسّد per-fold على OOS فقط"
+        )
+
+    thesis_frame = features.select(AVAILABILITY_TS, "vp_ic_employed")
 
     edge_table = pl.DataFrame()
     best_edge: EdgeSearchSpec | None = None
@@ -438,6 +483,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
             auction=auction_day,
             deceptive_frame=deco_by_bucket,
             scored=scored_raw,
+            thesis_frame=thesis_frame,
         )
         if best_edge is not None:
             edge_trades = run_edge_plan(
@@ -450,6 +496,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 progress=log,
                 auction=auction_day,
                 deceptive_frame=deco_by_bucket,
+                thesis_frame=thesis_frame,
             )
         else:
             edge_trades = run_edge_plan(
@@ -460,6 +507,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 progress=log,
                 auction=auction_day,
                 deceptive_frame=deco_by_bucket,
+                thesis_frame=thesis_frame,
             )
         edge_summary = summarize_edge_trades(edge_trades)
         edge_trades = _with_gated_vp_columns(edge_trades, features)

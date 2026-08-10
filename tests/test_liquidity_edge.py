@@ -10,6 +10,7 @@ import polars as pl
 import pytest
 
 import nq.simulation.deceptive_liquidity as deceptive_module
+import nq.simulation.edge_execution_plan as edge_module
 from nq.contracts.mbo import MBO_SCHEMA, PRICE_SCALE, validate_mbo_frame
 from nq.simulation.auction import auction_action_states
 from nq.simulation.deceptive_liquidity import (
@@ -398,3 +399,62 @@ def test_search_and_strategy_smoke() -> None:
     summary = summarize_edge_trades(result.trades)
     assert "expectancy" in summary
     assert np.isfinite(summary["expectancy"]) or summary["n_trades"] == 0.0
+
+
+def test_edge_search_selects_on_train_not_oos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """المواصفة الفائزة تُختار من train حتى لو فضّلت OOS مواصفة أخرى."""
+    grid = (
+        EdgeSearchSpec(
+            name="train_winner",
+            hold_buckets=2,
+            min_rr=2.0,
+            stop_buffer_ticks=1.0,
+            target_mode="rr_multiple",
+        ),
+        EdgeSearchSpec(
+            name="oos_winner",
+            hold_buckets=2,
+            min_rr=2.0,
+            stop_buffer_ticks=1.0,
+            target_mode="rr_multiple",
+        ),
+    )
+
+    monkeypatch.setattr(
+        edge_module,
+        "build_market_truth_frame",
+        lambda *_args, **_kwargs: pl.DataFrame({"dummy": list(range(20))}),
+    )
+
+    def fake_score(_mbo: pl.DataFrame, spec: EdgeSearchSpec, **_kwargs: Any) -> dict[str, Any]:
+        train_expectancy = 0.02 if spec.name == "train_winner" else 0.01
+        oos_expectancy = -0.50 if spec.name == "train_winner" else 0.50
+        return {
+            "name": spec.name,
+            "train_expectancy": train_expectancy,
+            "train_win_rate": 0.6,
+            "train_n": 20.0,
+            "train_avg_rr": 2.5,
+            "train_profit_factor": 1.5,
+            "oos_expectancy": oos_expectancy,
+            "oos_win_rate": 0.5,
+            "oos_n": 10.0,
+            "oos_avg_rr": 2.5,
+            "oos_profit_factor": 1.0,
+        }
+
+    monkeypatch.setattr(edge_module, "score_edge_spec_oos", fake_score)
+    table, best, row = edge_module.search_best_edge_spec(
+        pl.DataFrame(),
+        interval_ns=1,
+        grid=grid,
+        min_oos_trades=1,
+        min_oos_rr=2.0,
+        auction=pl.DataFrame({"dummy": [1]}),
+        deceptive_frame=pl.DataFrame({"dummy": [1]}),
+    )
+
+    assert table.height == 2
+    assert best is not None
+    assert best.name == "train_winner"
+    assert row["oos_expectancy"] == -0.50
