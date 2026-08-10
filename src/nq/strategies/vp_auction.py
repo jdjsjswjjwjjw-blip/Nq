@@ -20,7 +20,8 @@ import numpy as np
 import polars as pl
 
 from nq.alpha.discovery import AlphaDiscovery
-from nq.contracts.temporal import AVAILABILITY_TS
+from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
+from nq.core.session import session_date_from_ns
 from nq.core.temporal_policy import TemporalPolicy
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult
@@ -153,6 +154,7 @@ class VpAuctionResearchResult:
     #: علامة التوظيف الإجماع لـ ``best_signal`` (``+1``/``-1`` من طيّات الفوز).
     employed_sign: float
     exploratory_only: bool
+    sample_complete_session: bool
     # طبقة التنفيذ (متصلة — ليست مسارًا بديلًا)
     with_execution: bool
     raw_mbo_rows: int
@@ -169,8 +171,17 @@ def _load_nq(
     *,
     max_rows: int | None,
     progress: ProgressLike | None,
-) -> pl.DataFrame:
-    return load_mbo_frame(nq, max_rows=max_rows, progress=progress)
+) -> tuple[pl.DataFrame, bool]:
+    """حمّل العينة وبيّن هل ``max_rows`` قطع جلسة CME من المنتصف."""
+    # load_mbo_frame يقرأ الملف ثم يرتبه قبل القص أصلًا؛ نحتفظ بصف واحد بعد
+    # الحد حتى نعرف إن كان الحد جلسيًا بدل افتراض أن 500k = يوم كامل.
+    full = load_mbo_frame(nq, max_rows=None, progress=progress)
+    if max_rows is None or full.height <= max_rows:
+        return full, True
+    limited = full.head(max_rows)
+    last_date = session_date_from_ns(int(full[EVENT_TS][max_rows - 1]))
+    next_date = session_date_from_ns(int(full[EVENT_TS][max_rows]))
+    return limited, last_date != next_date
 
 
 def _attach_execution_layer(
@@ -328,8 +339,14 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     )
 
     log.step("VP: تحميل MBO")
-    raw = _load_nq(nq, max_rows=max_rows, progress=log)
+    raw, sample_complete_session = _load_nq(nq, max_rows=max_rows, progress=log)
     raw_n = raw.height
+    effective_exploratory = exploratory_full_sample or not sample_complete_session
+    if not sample_complete_session:
+        log.note(
+            "تحذير كمي: max_rows قطع جلسة CME من المنتصف؛ النتائج تشغيلية/استكشافية "
+            "ولا تُعتمد كإثبات edge"
+        )
     # تسجيل التضليل مرة واحدة لليوم — يُعاد استخدامه للفلتر + براميل الإدج.
     scored_raw: pl.DataFrame | None = None
     deco_by_bucket: pl.DataFrame | None = None
@@ -361,7 +378,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     if mnq is None:
         partner = cleaned
     elif isinstance(mnq, (str, Path)):
-        partner = _load_nq(mnq, max_rows=max_rows, progress=log)
+        partner, _partner_complete = _load_nq(mnq, max_rows=max_rows, progress=log)
     else:
         partner = mnq.head(max_rows) if max_rows is not None else mnq
 
@@ -583,16 +600,24 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 category="vp_auction_execution",
             )
         )
-    if exploratory_full_sample:
+    if effective_exploratory:
         findings.append(
             assistant.generate_hypothesis(
-                "شاشة العيّنة الكاملة استكشافية فقط — ليست أساس الاختيار.",
+                (
+                    "النتائج استكشافية فقط — ليست إثبات edge."
+                    if sample_complete_session
+                    else "العينة مقطوعة داخل جلسة CME؛ كل النتائج استكشافية فقط."
+                ),
                 Evidence(
                     id="vp_search:exploratory_note",
                     source="vp_auction_walk_forward",
                     metric="note",
                     value=0.0,
-                    detail="full-sample alpha screen is exploratory",
+                    detail=(
+                        "full-sample alpha screen is exploratory"
+                        if sample_complete_session
+                        else "max_rows cut through a CME trade date"
+                    ),
                 ),
                 requires_significance=False,
                 category="vp_auction_search",
@@ -645,6 +670,8 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 "oos_pvalue": [oos_p],
                 "oos_n": [oos_n],
                 "exploratory_full_sample": [exploratory_full_sample],
+                "exploratory_only": [effective_exploratory],
+                "sample_complete_session": [sample_complete_session],
                 "with_execution": [with_execution],
                 "raw_mbo_rows": [raw_n],
                 "cleaned_mbo_rows": [cleaned_n],
@@ -677,7 +704,8 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         oos_n=oos_n,
         best_signal=best,
         employed_sign=employed_sign,
-        exploratory_only=exploratory_full_sample,
+        exploratory_only=effective_exploratory,
+        sample_complete_session=sample_complete_session,
         with_execution=with_execution,
         raw_mbo_rows=raw_n,
         cleaned_mbo_rows=cleaned_n,
