@@ -133,6 +133,10 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 | استكشاف اختياري | `--exploratory` مغلق افتراضيًا (ليس أساس `best`) |
 | فهم بعد الاختيار | `--understand` بـ 50 تبديلًا فقط — لا يغيّر الاختيار |
 
+> **حدّ الصفوف ليس جلسة:** إذا قطع `--max-rows` جلسة CME من المنتصف في مسار VP،
+> تُوسَم الجولة تلقائيًا `exploratory_only=true` ولا تُعد إثباتًا للإيدج. للتحقق
+> الرسمي استخدم ملف يوم/جلسة مكتملة أو اجعل الحد يقع على انتقال `session_date`.
+
 ```bash
 # ملف lean للخط الموحّد
 python scripts/run_week.py --config configs/lean.toml --nq /path/to/nq.parquet

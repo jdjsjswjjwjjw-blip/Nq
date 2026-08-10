@@ -2,16 +2,52 @@
 
 from __future__ import annotations
 
+import datetime as dt
+from zoneinfo import ZoneInfo
+
 from nq.core.determinism import make_generator
 from nq.simulation.deceptive_liquidity import DeceptiveLiquidityConfig
 from nq.simulation.edge_execution_plan import EdgeSearchSpec
-from nq.strategies.vp_auction import VP_DEFAULT_SELECTION_HORIZON, run_vp_auction_research
+from nq.strategies.vp_auction import (
+    VP_DEFAULT_SELECTION_HORIZON,
+    _load_nq,
+    run_vp_auction_research,
+)
+from tests.mbo_factory import make_stream
 from tests.test_coverage import _paired_streams
 from tests.test_liquidity_edge import _session_with_imbalance
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _timestamp_ns(hour: int, minute: int) -> int:
+    value = dt.datetime(2024, 6, 3, hour, minute, tzinfo=_ET)
+    return int(value.timestamp() * 1e9)
 
 
 def test_default_vp_ic_horizon_matches_execution_time_scale() -> None:
     assert VP_DEFAULT_SELECTION_HORIZON == 10  # 5m on 30s action bars; max hold is 15m
+
+
+def test_max_rows_marks_mid_session_sample_exploratory() -> None:
+    events = [("T", "B", 100 + i, 1, 0) for i in range(3)]
+    frame = make_stream(
+        events,
+        event_ts=[_timestamp_ns(18, 0), _timestamp_ns(18, 1), _timestamp_ns(18, 2)],
+    )
+    limited, complete = _load_nq(frame, max_rows=2, progress=None)
+    assert limited.height == 2
+    assert complete is False
+
+
+def test_max_rows_at_cme_boundary_is_complete() -> None:
+    frame = make_stream(
+        [("T", "B", 100, 1, 0), ("T", "B", 101, 1, 0)],
+        event_ts=[_timestamp_ns(17, 59), _timestamp_ns(18, 0)],
+    )
+    limited, complete = _load_nq(frame, max_rows=1, progress=None)
+    assert limited.height == 1
+    assert complete is True
 
 
 def test_run_vp_auction_research_uses_unified_features() -> None:
