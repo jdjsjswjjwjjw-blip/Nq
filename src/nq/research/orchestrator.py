@@ -992,9 +992,19 @@ def _load_pipeline_frames(
     if isinstance(nq, pl.DataFrame) and cfg.max_rows is not None:
         log.op(f"قص NQ DataFrame إلى max_rows={cfg.max_rows:,}")
         nq_frame = nq_frame.head(cfg.max_rows)
+    _validate_contract_input(nq_frame, expected_family="NQ", role="NQ")
     if cfg.cross_market_mode == "nq_only":
         log.op("وضع nq_only — سوق NQ فقط (بدون تحميل/إعادة بناء MNQ)")
         return nq_frame, nq_frame
+    if nq is mnq or (
+        isinstance(nq, (str, Path))
+        and isinstance(mnq, (str, Path))
+        and Path(nq).resolve() == Path(mnq).resolve()
+    ):
+        raise ValueError(
+            "dual mode requires separate NQ and MNQ sources; use cross_market_mode='nq_only' "
+            "when only NQ is available"
+        )
     log.op("تحميل MNQ")
     mnq_frame = (
         mnq
@@ -1003,7 +1013,39 @@ def _load_pipeline_frames(
     )
     if isinstance(mnq, pl.DataFrame) and cfg.max_rows is not None:
         mnq_frame = mnq_frame.head(cfg.max_rows)
+    _validate_contract_input(mnq_frame, expected_family="MNQ", role="MNQ")
     return nq_frame, mnq_frame
+
+
+def _validate_contract_input(
+    frame: pl.DataFrame,
+    *,
+    expected_family: str,
+    role: str,
+) -> None:
+    """امنع خلط عقود/أسواق مختلفة في دفتر حي واحد.
+
+    إعادة بناء MBO حالة متصلة للأداة الواحدة. دمج عقدين عند rollover أو تمرير
+    NQ مكان MNQ يخلق قفزة سعرية ودفترًا وهميًا؛ لذلك يكون الفصل شرط تشغيل لا تحذيرًا.
+    """
+    if frame.height == 0:
+        return
+    instrument_count = int(frame["instrument_id"].n_unique())
+    if instrument_count != 1:
+        raise ValueError(
+            f"{role} input contains {instrument_count} instrument_id values; "
+            "run each futures contract independently (no rollover stitching inside one book)"
+        )
+    symbols = {str(value).upper() for value in frame["symbol"].unique().to_list()}
+    if expected_family == "MNQ":
+        valid = all(symbol.startswith("MNQ") for symbol in symbols)
+    else:
+        valid = all(symbol.startswith("NQ") and not symbol.startswith("MNQ") for symbol in symbols)
+    if not valid:
+        raise ValueError(
+            f"{role} input has symbols {sorted(symbols)!r}, "
+            f"expected {expected_family} contract family"
+        )
 
 
 def run_research_pipeline(
