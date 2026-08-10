@@ -7,6 +7,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from nq.contracts.mbo import MBO_SCHEMA
 from nq.ingestion import iter_mbo_batches, load_mbo_frame
 from tests.mbo_factory import make_stream
 
@@ -102,6 +103,35 @@ def test_iter_file_batches_does_not_materialize_with_full_loader(
 
     monkeypatch.setattr("nq.ingestion.reader.load_mbo_frame", fail_full_load)
     assert [batch.height for batch in iter_mbo_batches(path, batch_size=2)] == [2, 2, 2]
+
+
+def test_iter_csv_normalizes_inferred_dtypes(tmp_path: Path) -> None:
+    path = tmp_path / "mbo.csv"
+    make_stream([("A", "B", 100, 1, i) for i in range(1, 6)]).write_csv(path)
+    batches = list(iter_mbo_batches(path, batch_size=2))
+    stitched = pl.concat(batches)
+    assert stitched.schema == MBO_SCHEMA
+    assert stitched.height == 5
+
+
+def test_streaming_databento_generated_sequence_is_global(tmp_path: Path) -> None:
+    path = tmp_path / "databento.parquet"
+    frame = pl.DataFrame(
+        {
+            "ts_event": [100] * 4,
+            "ts_recv": [100] * 4,
+            "instrument_id": [1] * 4,
+            "symbol": ["NQ"] * 4,
+            "action": ["A"] * 4,
+            "side": ["B"] * 4,
+            "price": [20_000_000_000] * 4,
+            "size": [1] * 4,
+            "order_id": [1, 2, 3, 4],
+        }
+    )
+    frame.write_parquet(path, row_group_size=2)
+    stitched = pl.concat(iter_mbo_batches(path, batch_size=2))
+    assert stitched["sequence"].to_list() == [0, 1, 2, 3]
 
 
 def test_invalid_batch_size_rejected() -> None:

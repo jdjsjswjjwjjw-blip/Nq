@@ -90,6 +90,11 @@ def _prepare_frame(frame: pl.DataFrame) -> pl.DataFrame:
         frame = normalize_databento_frame(frame)
     frame = frame.select([name for name in MBO_SCHEMA if name in frame.columns])
     frame = sanitize_mbo_frame(frame)
+    # CSV/Arrow قد يعيدان الأعداد كـInt64 والنصوص كـString؛ طبّع إلى العقد
+    # القانوني بقصّ صارم (القيم السالبة/الفئات المجهولة تظل أخطاء).
+    frame = frame.select(
+        [pl.col(name).cast(dtype) for name, dtype in MBO_SCHEMA.items() if name in frame.columns]
+    )
     validate_mbo_frame(frame)
     return sort_causal(frame)
 
@@ -214,11 +219,20 @@ def iter_mbo_batches(
         raw_batches = _iter_columnar_batches(Path(source), batch_size)
 
     emitted = 0
+    generated_sequence_offset = 0
     previous_last: tuple[int, int] | None = None
     for raw in raw_batches:
         if raw.is_empty():
             continue
+        generated_sequence = is_databento_frame(raw) and "sequence" not in raw.columns
         frame = raw if isinstance(source, pl.DataFrame) else _prepare_frame(raw)
+        if generated_sequence:
+            # normalize_databento_frame يولّد sequence داخل كل دفعة؛ أضف offset
+            # عالميًا حتى لا يعاد 0 عند حد Arrow ويبطل ترتيب أحداث ذات ts واحد.
+            frame = frame.with_columns(
+                (pl.col("sequence") + generated_sequence_offset).alias("sequence")
+            )
+            generated_sequence_offset += raw.height
         if frame.is_empty():
             continue
 
