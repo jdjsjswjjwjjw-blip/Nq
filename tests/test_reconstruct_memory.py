@@ -3,11 +3,29 @@
 from __future__ import annotations
 
 import os
+import subprocess
+from pathlib import Path
 
 import polars as pl
 
 from nq.orderbook.reconstruction import _RECONSTRUCT_CHUNK, reconstruct
 from tests.mbo_factory import make_stream, random_add_cancel_stream
+
+
+def _rss_mb() -> float:
+    """RSS حالي على Linux (/proc) وmacOS/BSD (ps)، بلا اعتماد إضافي."""
+    status = Path(f"/proc/{os.getpid()}/status")
+    if status.is_file():
+        for line in status.read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) / 1024.0
+    result = subprocess.run(
+        ["ps", "-o", "rss=", "-p", str(os.getpid())],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return int(result.stdout.strip()) / 1024.0
 
 
 def test_reconstruct_chunked_matches_small_reference() -> None:
@@ -48,24 +66,17 @@ def test_reconstruct_peak_rss_stays_bounded_vs_full_tolist() -> None:
     n = 400_000
     frame = random_add_cancel_stream(n, seed=7)
 
-    def rss_mb() -> float:
-        with open(f"/proc/{os.getpid()}/status", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("VmRSS:"):
-                    return int(line.split()[1]) / 1024.0
-        return float("nan")
-
-    before = rss_mb()
+    before = _rss_mb()
     # التكلفة القديمة التقريبية: list[str] لكل الأحداث
     actions = frame["action"].cast(pl.Utf8).to_list()
     sides = frame["side"].cast(pl.Utf8).to_list()
-    after_lists = rss_mb()
+    after_lists = _rss_mb()
     list_cost = after_lists - before
     del actions, sides
 
-    before_recon = rss_mb()
+    before_recon = _rss_mb()
     tob = reconstruct(frame).top_of_book
-    after_recon = rss_mb()
+    after_recon = _rss_mb()
     recon_cost = after_recon - before_recon
     assert tob.height == n
     # الشريحة تُبقي تكلفة النصوص أقل من مادّة العمودين كاملين
