@@ -15,7 +15,11 @@ from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.session import SESSION_DATE
 from nq.features.streaming import _bucket_signed_deltas, streaming_event_features
 from nq.models.tick_stream import build_tick_stream
-from nq.research.orchestrator import _attach_failed_breakout, _attach_failed_fvg
+from nq.research.orchestrator import (
+    _attach_auction_vp_signals,
+    _attach_failed_breakout,
+    _attach_failed_fvg,
+)
 from nq.simulation.common import BUCKET_END
 from tests.mbo_factory import Event, make_stream
 from tests.test_coverage import _paired_streams
@@ -80,6 +84,24 @@ def test_attach_failed_breakout_sparse_pulse_does_not_stick(
     assert out["fb_depth_at_break"].to_list() == [None, None, None, None]
     assert out["fb_effort_volume_ratio"].to_list()[1] == pytest.approx(1.1)
     assert out["fb_effort_volume_ratio"].to_list()[0] is None
+
+
+def test_attach_auction_vp_keeps_state_but_does_not_stick_pulses() -> None:
+    clock = pl.DataFrame({AVAILABILITY_TS: [10, 11, 12]})
+    signals = pl.DataFrame(
+        {
+            AVAILABILITY_TS: [10],
+            "vp_balance": [1.0],
+            "vp_fr_exit": [-1.0],
+            "vp_auction_setup": [-1.0],
+        }
+    )
+
+    out = _attach_auction_vp_signals(clock, signals)
+
+    assert out["vp_balance"].to_list() == [1.0, 1.0, 1.0]
+    assert out["vp_fr_exit"].to_list() == [-1.0, 0.0, 0.0]
+    assert out["vp_auction_setup"].to_list() == [-1.0, 0.0, 0.0]
 
 
 def test_fail_cli_help_mentions_exploratory_default() -> None:
