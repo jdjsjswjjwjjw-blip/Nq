@@ -32,7 +32,7 @@ from nq.research.orchestrator import (
     run_research_pipeline,
 )
 from nq.research.progress import ProgressLike, resolve_progress
-from nq.research.unified import UnifiedResearchReport
+from nq.research.unified import UnifiedResearchReport, build_unified_report
 from nq.simulation.auction import (
     VP_PROFILE_INTERVAL_NS,
     VP_SIGNAL_INTERVAL_NS,
@@ -366,7 +366,9 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         partner = mnq.head(max_rows) if max_rows is not None else mnq
 
     cfg = PipelineConfig(
-        include_auction_vp=False,
+        # يجب أن تمر إشارات VP داخل القنوات الموحّدة نفسها؛ لا تشغّل SSL/M9/Alpha
+        # على إطار يخلو منها ثم تلصقها بعد انتهاء التقرير.
+        include_auction_vp=True,
         include_failed_fvg=False,
         include_failed_breakout=False,
         cross_market_mode="nq_only" if mnq is None else "dual",
@@ -600,6 +602,16 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         findings,
         title="Volume Profile / Auction — Signal WF then Execution (Connected)",
     )
+    connected_unified = build_unified_report(
+        ssl_report=result.ssl.report,
+        coverage_report=result.coverage.report,
+        alpha_report=report,
+        title="Volume Profile / Auction — Unified Edge Report",
+        narrative=(
+            "إشارات VP مرّت داخل إطار الميزات الموحّد؛ اختيار الفرضية تم قبل "
+            "طبقة التنفيذ، والتنفيذ مُقاس على OOS معزول."
+        ),
+    )
     if with_execution:
         report_md = report.to_markdown() + "\n".join(
             [
@@ -622,6 +634,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     if output_dir is not None:
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
+        (out / "report.md").write_text(connected_unified.to_markdown(), encoding="utf-8")
         fold_df.write_parquet(out / "vp_fold_selections.parquet")
         (out / "vp_walk_forward_report.md").write_text(report_md, encoding="utf-8")
         summary = pl.DataFrame(
@@ -656,7 +669,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         alpha=result.alpha,
         ssl=result.ssl,
         report=report,
-        unified=result.report,
+        unified=connected_unified,
         signal_columns=_VP_AUCTION_FOCUS,
         fold_df=fold_df,
         oos_ic=oos_ic,
