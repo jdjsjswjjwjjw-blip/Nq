@@ -291,6 +291,58 @@ def test_simulate_edge_trades_no_chase_every_bar() -> None:
     assert float(out["edge_rr"].drop_nans()[0]) >= 2.0 - 1e-9
 
 
+def test_edge_execution_uses_mbo_first_touch_and_deducts_costs() -> None:
+    truth = pl.DataFrame(
+        {
+            "availability_ts": [10, 20, 30],
+            "entry_gate": [1.0, 0.0, 0.0],
+            "thesis_dir": [1.0, 1.0, 1.0],
+            "market_verdict": [1.0, 1.0, 1.0],
+            "close": [_px(100.0)] * 3,
+            "vah": [_px(101.0)] * 3,
+            "val": [_px(99.0)] * 3,
+        }
+    )
+    # الهدف يُلمس أولاً عند t=11 ثم الوقف عند t=12؛ ترتيب MBO يجب أن يحسم الربح.
+    tape = pl.DataFrame(
+        {
+            "event_ts": [11, 12],
+            "price": [_px(101.25), _px(98.75)],
+        }
+    )
+    free = simulate_edge_trades(
+        truth,
+        exec_cfg=EdgeExecConfig(
+            min_rr=1.0,
+            stop_buffer_ticks=0.0,
+            target_mode="rr_multiple",
+            rr_multiple=1.0,
+            max_hold_buckets=2,
+            slippage_ticks=0.0,
+            commission_bps=0.0,
+        ),
+        trade_path=tape,
+    )
+    costly = simulate_edge_trades(
+        truth,
+        exec_cfg=EdgeExecConfig(
+            min_rr=1.0,
+            stop_buffer_ticks=0.0,
+            target_mode="rr_multiple",
+            rr_multiple=1.0,
+            max_hold_buckets=2,
+            slippage_ticks=0.5,
+            commission_bps=1.0,
+        ),
+        trade_path=tape,
+    )
+
+    assert free["edge_hit"][0] == 1.0
+    assert free["edge_exit_ts"][0] == 11.0
+    assert costly["edge_cost"][0] > 0.0
+    assert costly["edge_pnl"][0] < free["edge_pnl"][0]
+
+
 def test_search_rejects_ineligible_grid() -> None:
     mbo = _session_with_imbalance(30)
     grid = (
