@@ -86,10 +86,7 @@ def test_full_pipeline_log_is_sequential_and_detailed() -> None:
     )
     assert "M9-NQ-desc:reconstruct" in text
     assert (
-        "depth_fill" in text
-        or "depth-walk" in text
-        or "طيّات غير كافية" in text
-        or "ألفا [" in text
+        "depth_fill" in text or "depth-walk" in text or "طيّات غير كافية" in text or "ألفا [" in text
     )
 
 

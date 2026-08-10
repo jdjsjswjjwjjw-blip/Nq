@@ -22,7 +22,7 @@ from nq.alpha.signals import (
     screen_signals,
 )
 from nq.contracts.temporal import AVAILABILITY_TS
-from nq.models.splitting import purged_walk_forward_split
+from nq.models.splitting import WalkForwardFold, purged_walk_forward_split
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
 from nq.research.findings import Finding
@@ -91,7 +91,7 @@ def discover_alpha_from_features(  # noqa: PLR0912, PLR0915
     evaluations = []
     # تقييم خارج العيّنة فقط (purged walk-forward) — لا IC داخل العيّنة أبدًا.
     times = frame[time_col].to_numpy().astype(np.int64)
-    folds: list = []
+    folds: list[WalkForwardFold] = []
     n = int(times.shape[0])
     for splits in range(min(max(int(n_splits), 1), max(n - 1, 1)), 0, -1):
         try:

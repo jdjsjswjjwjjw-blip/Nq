@@ -48,7 +48,13 @@ class TemporalPolicy:
         temporal = raw.get("temporal", {})
         embargo = int(temporal.get("embargo_ns", 1_000_000_000))
         horizon = int(temporal.get("horizon", 1))
-        unknown = set(temporal) - {"split_strategy", "embargo_ns", "horizon", "interval_ns", "profile_interval_ns"}
+        unknown = set(temporal) - {
+            "split_strategy",
+            "embargo_ns",
+            "horizon",
+            "interval_ns",
+            "profile_interval_ns",
+        }
         if unknown:
             raise ValueError(f"unknown [temporal] keys: {sorted(unknown)}")
         return cls(embargo_ns=embargo, horizon=horizon)

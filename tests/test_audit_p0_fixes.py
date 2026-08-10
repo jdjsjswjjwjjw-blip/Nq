@@ -50,7 +50,8 @@ def test_wf_selects_best_not_first_candidate() -> None:
     )
     assert best == "good_second"
     assert folds.height >= 1
-    assert float(folds["train_ic"].abs().max()) < 1e17  # ليس -1e18
+    train_abs_max = float(np.max(folds["train_ic"].abs().to_numpy().astype(np.float64)))
+    assert train_abs_max < 1e17  # ليس -1e18
     assert oos_n > 0
     del oos_ic
 
@@ -168,7 +169,7 @@ def test_rtype_alone_does_not_become_flags() -> None:
     assert out["flags"].to_list() == [0]
 
 
-def test_max_rows_after_causal_sort(tmp_path) -> None:
+def test_max_rows_after_causal_sort(tmp_path: Path) -> None:
     """قصّ max_rows يأخذ أقدم الأحداث سببيًا وليس رأس الملف غير المرتّب."""
 
     path = tmp_path / "unordered.parquet"
@@ -194,7 +195,7 @@ def test_max_rows_after_causal_sort(tmp_path) -> None:
     assert out["order_id"].to_list() == [1, 2]
 
 
-def test_temporal_policy_rejects_unknown_keys(tmp_path) -> None:
+def test_temporal_policy_rejects_unknown_keys(tmp_path: Path) -> None:
     path = tmp_path / "bad.toml"
     path.write_text("[temporal]\nembargo_ns = 1\nhorizon = 1\nweird_key = 9\n", encoding="utf-8")
 
@@ -203,7 +204,6 @@ def test_temporal_policy_rejects_unknown_keys(tmp_path) -> None:
 
 
 def test_vp_auction_toml_embargo_applied() -> None:
-
 
     policy = TemporalPolicy.for_run(
         interval_ns=30_000_000_000,

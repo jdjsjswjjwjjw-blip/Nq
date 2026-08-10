@@ -579,9 +579,7 @@ def measure_lori(  # noqa: PLR0912, PLR0915
                         count += 1
                 null_counts[pi] = float(count)
                 if progress is not None:
-                    progress.heartbeat(
-                        pi + 1, _LORI_PERMUTATIONS, label=f"lori-ts-perm:f{fold_i}"
-                    )
+                    progress.heartbeat(pi + 1, _LORI_PERMUTATIONS, label=f"lori-ts-perm:f{fold_i}")
             ts_p = float((int(np.sum(null_counts >= n_novel)) + 1) / (_LORI_PERMUTATIONS + 1))
             triggered = ts_p <= alpha
             results.append(

@@ -65,11 +65,14 @@ def test_wf_abs_ic_employs_sign_of_train_ic() -> None:
     assert folds.height >= 1
     assert "employed_sign" in folds.columns
     # اختيار بـ |IC| يعني train_ic سالب؛ التوظيف يقلب الإشارة
-    assert float(folds["employed_sign"].mean()) < 0.0
-    assert float(folds["train_ic"].mean()) < 0.0
+    employed_mean = float(np.mean(folds["employed_sign"].to_numpy().astype(np.float64)))
+    train_mean = float(np.mean(folds["train_ic"].to_numpy().astype(np.float64)))
+    assert employed_mean < 0.0
+    assert train_mean < 0.0
     # IC الموظَّف خارج العينة يجب أن يكون موجبًا (بعد المحاذاة)
     assert oos_ic > 0.0
-    assert float(folds["test_ic"].mean()) > 0.0
+    test_mean = float(np.mean(folds["test_ic"].to_numpy().astype(np.float64)))
+    assert test_mean > 0.0
     assert oos_n > 0
 
 

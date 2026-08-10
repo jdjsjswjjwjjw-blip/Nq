@@ -143,9 +143,7 @@ class OrderBook:
             if existing is not None:
                 self.duplicate_add_refs += 1
                 old_bid, old_price, old_size = existing
-                reduce_level(
-                    bids if old_bid else asks, old_price, old_size, is_bid=old_bid
-                )
+                reduce_level(bids if old_bid else asks, old_price, old_size, is_bid=old_bid)
             orders[order_id] = (is_bid, price, size)
             add_level(bids if is_bid else asks, price, size, is_bid=is_bid)
             return
