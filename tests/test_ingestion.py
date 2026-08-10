@@ -62,6 +62,48 @@ def test_iter_batches_preserves_global_order() -> None:
     assert stitched["event_ts"].to_list() == list(range(10))
 
 
+@pytest.mark.parametrize("suffix", [".parquet", ".arrow"])
+def test_iter_file_batches_are_bounded_and_honor_max_rows(tmp_path: Path, suffix: str) -> None:
+    frame = make_stream([("A", "B", 100, 1, i) for i in range(1, 12)])
+    path = tmp_path / f"mbo{suffix}"
+    if suffix == ".parquet":
+        frame.write_parquet(path, row_group_size=3)
+    else:
+        frame.write_ipc(path)
+
+    batches = list(iter_mbo_batches(path, batch_size=4, max_rows=9))
+
+    assert sum(batch.height for batch in batches) == 9
+    assert all(0 < batch.height <= 4 for batch in batches)
+    assert pl.concat(batches)["event_ts"].to_list() == list(range(9))
+
+
+def test_iter_file_batches_reject_cross_batch_time_reversal(tmp_path: Path) -> None:
+    first = make_stream([("A", "B", 100, 1, i) for i in range(5, 9)], event_ts=[4, 5, 6, 7])
+    second = make_stream([("A", "B", 100, 1, i) for i in range(1, 5)], event_ts=[0, 1, 2, 3])
+    path = tmp_path / "reversed.parquet"
+    pl.concat([first, second]).write_parquet(path, row_group_size=4)
+
+    stream = iter_mbo_batches(path, batch_size=4)
+    assert next(stream)["event_ts"].to_list() == [4, 5, 6, 7]
+    with pytest.raises(ValueError, match="causal-order violation across streaming batches"):
+        next(stream)
+
+
+def test_iter_file_batches_does_not_materialize_with_full_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "mbo.parquet"
+    make_stream([("A", "B", 100, 1, i) for i in range(1, 7)]).write_parquet(path)
+
+    def fail_full_load(*args: object, **kwargs: object) -> pl.DataFrame:
+        del args, kwargs
+        raise AssertionError("full loader must not be used")
+
+    monkeypatch.setattr("nq.ingestion.reader.load_mbo_frame", fail_full_load)
+    assert [batch.height for batch in iter_mbo_batches(path, batch_size=2)] == [2, 2, 2]
+
+
 def test_invalid_batch_size_rejected() -> None:
     with pytest.raises(ValueError, match="batch_size must be"):
         list(iter_mbo_batches(_stream(), batch_size=0))
