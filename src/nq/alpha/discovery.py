@@ -19,10 +19,10 @@ from nq.alpha.signals import (
     ExecutionMode,
     align_forward_returns,
     evaluate_signal,
-    evaluate_signal_intraday,
     screen_signals,
 )
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.models.splitting import purged_walk_forward_split
 from nq.research.assistant import ResearchAssistant, ResearchReport
 from nq.research.evidence import Evidence
 from nq.research.findings import Finding
@@ -30,6 +30,7 @@ from nq.research.progress import ProgressLike
 from nq.simulation.execution import (
     depth_matrices_from_frame,
     directional_execution_returns,
+    execution_forward_returns,
     execution_forward_returns_depth,
 )
 
@@ -55,6 +56,8 @@ def discover_alpha_from_features(  # noqa: PLR0912, PLR0915
     price_col: str,
     time_col: str = AVAILABILITY_TS,
     horizon: int = 1,
+    n_splits: int = 3,
+    embargo: int = 0,
     execution_mode: ExecutionMode = "mid",
     bid_col: str = "nq_bid",
     ask_col: str = "nq_ask",
@@ -86,6 +89,33 @@ def discover_alpha_from_features(  # noqa: PLR0912, PLR0915
         )
 
     evaluations = []
+    # تقييم خارج العيّنة فقط (purged walk-forward) — لا IC داخل العيّنة أبدًا.
+    times = frame[time_col].to_numpy().astype(np.int64)
+    folds: list = []
+    n = int(times.shape[0])
+    for splits in range(min(max(int(n_splits), 1), max(n - 1, 1)), 0, -1):
+        try:
+            candidate = purged_walk_forward_split(
+                times,
+                n_splits=splits,
+                embargo=max(int(embargo), 0),
+                purge_samples=max(int(horizon), 0),
+                min_train_size=8,
+            )
+        except ValueError:
+            continue
+        if candidate:
+            folds = candidate
+            break
+    if not folds:
+        if log is not None:
+            log.op("ألفا: طيّات غير كافية — رفض التقييم داخل العيّنة")
+        empty = screen_signals([], alpha=alpha)
+        return AlphaDiscovery(empty, [], research.write_report([], title="Alpha Discovery"))
+    oos_idx = np.unique(np.concatenate([f.test_idx for f in folds]))
+    if log is not None:
+        log.op(f"ألفا: OOS purged · folds={len(folds)} · oos_rows={oos_idx.size:,}")
+
     if execution_mode == "intraday":
         if bid_col not in frame.columns or ask_col not in frame.columns:
             raise ValueError(
@@ -114,56 +144,49 @@ def discover_alpha_from_features(  # noqa: PLR0912, PLR0915
                 tick_size=tick_size,
                 progress=log,
             )
+        # عوائد كاملة السلسلة ثم قصّ OOS — لا إعادة حساب على شريحة مقطوعة.
+        mid = (bid + ask) * 0.5
+        mid_fwd = align_forward_returns(mid, horizon=horizon)
         for i, col in enumerate(cols, start=1):
             mode_tag = "depth-walk" if use_depth else "intraday"
             if log is not None:
-                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} ({mode_tag})")
+                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} ({mode_tag}/OOS)")
+            vals = frame[col].to_numpy().astype(np.float64)
             if use_depth and depth_long is not None and depth_short is not None:
-                directional = directional_execution_returns(
-                    frame[col].to_numpy().astype(np.float64),
-                    depth_long,
-                    depth_short,
-                )
-                evaluations.append(
-                    evaluate_signal(
-                        col,
-                        frame[col].to_numpy().astype(np.float64),
-                        directional,
-                        n_permutations=n_permutations,
-                        rng=generator,
-                        progress=log,
-                        progress_label=f"ألفا-perm:{col}",
-                    )
-                )
+                directional = directional_execution_returns(vals, depth_long, depth_short)
             else:
-                evaluations.append(
-                    evaluate_signal_intraday(
-                        col,
-                        frame[col].to_numpy().astype(np.float64),
-                        bid,
-                        ask,
-                        horizon=horizon,
-                        slippage_ticks=slippage_ticks,
-                        tick_size=tick_size,
-                        commission_bps=commission_bps,
-                        n_permutations=n_permutations,
-                        rng=generator,
-                        progress=log,
-                        progress_label=f"ألفا-perm:{col}",
-                    )
+                long_fwd, short_fwd = execution_forward_returns(
+                    bid,
+                    ask,
+                    horizon=horizon,
+                    slippage_ticks=slippage_ticks,
+                    tick_size=tick_size,
+                    commission_bps=commission_bps,
                 )
-    else:
-        prices = frame[price_col].to_numpy().astype(np.float64)
-        forward = align_forward_returns(prices, horizon=horizon)
-        evaluations = []
-        for i, col in enumerate(cols, start=1):
-            if log is not None:
-                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} (mid)")
+                directional = directional_execution_returns(vals, long_fwd, short_fwd)
             evaluations.append(
                 evaluate_signal(
                     col,
-                    frame[col].to_numpy().astype(np.float64),
-                    forward,
+                    vals[oos_idx],
+                    mid_fwd[oos_idx],
+                    strategy_returns=directional[oos_idx],
+                    n_permutations=n_permutations,
+                    rng=generator,
+                    progress=log,
+                    progress_label=f"ألفا-perm:{col}",
+                )
+            )
+    else:
+        prices = frame[price_col].to_numpy().astype(np.float64)
+        forward = align_forward_returns(prices, horizon=horizon)
+        for i, col in enumerate(cols, start=1):
+            if log is not None:
+                log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} (mid/OOS)")
+            evaluations.append(
+                evaluate_signal(
+                    col,
+                    frame[col].to_numpy().astype(np.float64)[oos_idx],
+                    forward[oos_idx],
                     n_permutations=n_permutations,
                     rng=generator,
                     progress=log,

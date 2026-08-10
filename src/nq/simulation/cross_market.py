@@ -184,6 +184,17 @@ def cross_market_features(
     if aligned.height == 0:
         return aligned
 
+    # Trade-only / دفتر ناقص قد يترك bucket_end فارغًا بعد الدمج — اشتق من البداية.
+    aligned = aligned.with_columns(
+        pl.when(pl.col(BUCKET_END).is_null())
+        .then(pl.col(BUCKET_START) + int(interval_ns))
+        .otherwise(pl.col(BUCKET_END))
+        .alias(BUCKET_END)
+    )
+    aligned = aligned.filter(pl.col(BUCKET_END).is_not_null())
+    if aligned.height == 0:
+        return aligned
+
     nq_ret = pl.col("nq_close").diff()
     mnq_ret = pl.col("mnq_close").diff()
     # قمم/قيعان الجلسة الحالية فقط (إعادة تصفير يومية ET) — لا cum_max عالمي

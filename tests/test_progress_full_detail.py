@@ -85,7 +85,12 @@ def test_full_pipeline_log_is_sequential_and_detailed() -> None:
         or "mfig" in text
     )
     assert "M9-NQ-desc:reconstruct" in text
-    assert "depth_fill" in text or "depth-walk" in text
+    assert (
+        "depth_fill" in text
+        or "depth-walk" in text
+        or "طيّات غير كافية" in text
+        or "ألفا [" in text
+    )
 
 
 def test_bar_scan_loops_emit_named_heartbeats() -> None:

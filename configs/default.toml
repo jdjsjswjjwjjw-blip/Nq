@@ -16,6 +16,8 @@ split_strategy = "walk_forward"
 embargo_ns = 1_000_000_000       # 1 second embargo (adjust per horizon)
 # أفق التقييم الافتراضي — يدخل في purge_samples عبر TemporalPolicy
 horizon = 1
+# ساعة البحث الافتراضية (يمكن تجاوزها من [streaming] أو ملف الاستراتيجية)
+interval_ns = 1_000_000_000
 
 [performance]
 # أسلوب متجهي/عمودي ومعالجة تدفّقية للبيانات الضخمة.

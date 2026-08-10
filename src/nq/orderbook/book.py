@@ -1,7 +1,15 @@
 """حالة دفتر الأوامر (Order Book State).
 
 يتتبّع الدفتر لكل جانب (طلب/عرض) الحجم المُجمّع عند كل مستوى سعري، إضافةً إلى
-تتبّع كل أمر مفرد عبر ``order_id`` لمعالجة الإلغاء/التعديل/التنفيذ بدقّة.
+تتبّع كل أمر مفرد عبر ``order_id``.
+
+آلة حالات Databento MBO:
+
+* ``A`` Add — إدراج؛ تكرار ``order_id`` = استبدال + عدّاد duplicate.
+* ``M`` Modify — أمر معروف فقط (مجهول = سلامة بلا شبح).
+* ``C`` Cancel — إلغاء جزئي/كامل: ``size`` كمية مُلغاة.
+* ``R`` Clear — تفريغ.
+* ``T``/``F``/``N`` — لا تعدّل الدفتر (التغيير مع Cancel).
 
 الأسعار أعداد صحيحة بنقطة ثابتة (fixed-point) وفق عقد MBO.
 """
@@ -20,6 +28,8 @@ _CANCEL = MboAction.CANCEL.value
 _MODIFY = MboAction.MODIFY.value
 _CLEAR = MboAction.CLEAR.value
 _FILL = MboAction.FILL.value
+_TRADE = MboAction.TRADE.value
+_NONE = MboAction.NONE.value
 _BID = MboSide.BID.value
 
 
@@ -41,6 +51,7 @@ class OrderBook:
         "_bid_vol",
         "asks",
         "bids",
+        "duplicate_add_refs",
         "orders",
         "unknown_order_refs",
     )
@@ -50,6 +61,7 @@ class OrderBook:
         self.asks: dict[int, int] = {}
         self.orders: dict[int, tuple[bool, int, int]] = {}
         self.unknown_order_refs: int = 0
+        self.duplicate_add_refs: int = 0
         self._bid_vol: int = 0
         self._ask_vol: int = 0
         self._best_bid: int | None = None
@@ -108,39 +120,49 @@ class OrderBook:
     def apply(  # noqa: PLR0911 -- dispatch على نوع الحدث؛ العودة المبكرة أوضح
         self, action: str, side: str, price: int, size: int, order_id: int
     ) -> None:
-        """يطبّق حدث MBO مفردًا على الحالة.
-
-        ``TRADE`` و ``NONE`` لا يعدّلان الأوامر القائمة (التنفيذ يجري عبر ``FILL``).
-        كل مرجع لأمر غير معروف يزيد ``unknown_order_refs``.
-        """
+        """يطبّق حدث MBO مفردًا وفق دلالات Databento الرسمية."""
         orders = self.orders
         bids = self.bids
         asks = self.asks
         add_level = self._add_level
         reduce_level = self._reduce
+
+        # Trade / Fill / None: لا تغيير في الأوامر القائمة.
+        if action in (_TRADE, _FILL, _NONE):
+            if action == _FILL and order_id not in orders and order_id != 0:
+                self.unknown_order_refs += 1
+            return
+
+        if action == _CLEAR:
+            self.clear()
+            return
+
         if action == _ADD:
             is_bid = side == _BID
+            existing = orders.get(order_id)
+            if existing is not None:
+                self.duplicate_add_refs += 1
+                old_bid, old_price, old_size = existing
+                reduce_level(
+                    bids if old_bid else asks, old_price, old_size, is_bid=old_bid
+                )
             orders[order_id] = (is_bid, price, size)
             add_level(bids if is_bid else asks, price, size, is_bid=is_bid)
             return
 
         if action == _CANCEL:
-            rec = orders.pop(order_id, None)
-            if rec is None:
-                self.unknown_order_refs += 1
-                return
-            is_bid, p, s = rec
-            reduce_level(bids if is_bid else asks, p, s, is_bid=is_bid)
-            return
-
-        if action == _FILL:
             rec = orders.get(order_id)
             if rec is None:
                 self.unknown_order_refs += 1
                 return
             is_bid, p, s = rec
-            reduce_level(bids if is_bid else asks, p, size, is_bid=is_bid)
-            remaining = s - size
+            # size>0: إلغاء جزئي/كامل بالكمية؛ size<=0: إلغاء كامل للمتبقي (توافق اصطناعي).
+            cancel_qty = int(size) if int(size) > 0 else int(s)
+            if cancel_qty <= 0:
+                return
+            removed = min(s, cancel_qty)
+            reduce_level(bids if is_bid else asks, p, removed, is_bid=is_bid)
+            remaining = s - removed
             if remaining > 0:
                 orders[order_id] = (is_bid, p, remaining)
             else:
@@ -151,9 +173,6 @@ class OrderBook:
             rec = orders.get(order_id)
             if rec is None:
                 self.unknown_order_refs += 1
-                is_bid = side == _BID
-                orders[order_id] = (is_bid, price, size)
-                add_level(bids if is_bid else asks, price, size, is_bid=is_bid)
                 return
             is_bid, old_price, old_size = rec
             level = bids if is_bid else asks
@@ -161,10 +180,6 @@ class OrderBook:
             add_level(level, price, size, is_bid=is_bid)
             orders[order_id] = (is_bid, price, size)
             return
-
-        if action == _CLEAR:
-            self.clear()
-        # TRADE / NONE: لا تغيير في الأوامر القائمة.
 
     def best_bid(self) -> tuple[int, int] | None:
         """أفضل طلب ``(price, size)`` أو ``None`` إن كان الجانب فارغًا."""

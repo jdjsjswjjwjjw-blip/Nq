@@ -309,6 +309,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         quiet=quiet,
         interval_ns=sig_iv,
         profile_interval_ns=prof_iv,
+        embargo_ns=30_000_000_000,
         # افتراضي سريع: VP من شريط الصفقات لا يحتاج tick_stream حدث-بحدث
         feature_mode="batch" if not streaming_features else "streaming",
         ssl_mode="bucket" if not streaming_features else "tick",
@@ -344,8 +345,14 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     )
     features = _attach_auction_vp_signals(result.features, auction_signals)
 
-    policy = TemporalPolicy.for_run(interval_ns=iv, window=ssl_window, horizon=horizon)
-    embargo = policy.embargo_time_units(interval_ns=iv)
+    policy = TemporalPolicy.for_run(
+        interval_ns=iv,
+        window=ssl_window,
+        horizon=horizon,
+        config_path=Path("configs/vp_auction.toml"),
+    )
+    feat_times = features["availability_ts"].to_numpy().astype(np.int64)
+    embargo = policy.embargo_time_units(interval_ns=iv, times=feat_times)
     candidates = tuple(c for c in _VP_AUCTION_FOCUS if c in features.columns)
     log.step("VP walk-forward selection", f"candidates={len(candidates)} · pre-execution")
     fold_df, oos_ic, oos_p, oos_n, best = walk_forward_select_hypotheses(

@@ -53,3 +53,16 @@ def test_empty_frame() -> None:
     report = check_integrity(empty)
     assert report.n_events == 0
     assert report.ok
+
+
+def test_session_sequence_reset_is_not_non_monotonic() -> None:
+    """إعادة ضبط يومية كبيرة لا تُحسب خطأ رتابة ولا فجوة."""
+    frame = make_stream(
+        [("A", "B", 100, 1, 1), ("A", "A", 101, 1, 2)],
+        event_ts=[0, 1],
+        sequence=[500_000, 1],
+    )
+    report = check_integrity(frame)
+    assert report.sequence_non_monotonic == 0
+    assert report.sequence_skips == 0
+    assert report.ok

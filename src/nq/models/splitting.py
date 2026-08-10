@@ -69,8 +69,10 @@ def purged_walk_forward_split(
         test_idx = np.arange(test_start, test_end, dtype=np.intp)
 
         cutoff = ts[test_start] - embargo
+        test_ts = ts[test_start]
         train_mask = np.arange(test_start, dtype=np.intp)
-        train_idx = train_mask[ts[:test_start] <= cutoff]
+        # صارم: لا يشارك نفس الطابع الزمني للتدريب والاختبار.
+        train_idx = train_mask[(ts[:test_start] < test_ts) & (ts[:test_start] <= cutoff)]
         if purge_samples > 0 and test_idx.size > 0:
             index_cutoff = int(test_idx.min()) - purge_samples
             train_idx = train_idx[train_idx < index_cutoff]

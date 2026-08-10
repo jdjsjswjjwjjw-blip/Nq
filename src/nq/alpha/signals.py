@@ -80,25 +80,51 @@ def evaluate_signal(
     values: npt.NDArray[np.floating] | Sequence[float],
     forward_returns: npt.NDArray[np.floating] | Sequence[float],
     *,
+    strategy_returns: npt.NDArray[np.floating] | Sequence[float] | None = None,
     n_permutations: int = 2000,
     rng: np.random.Generator | None = None,
     min_samples: int = _MIN_EVAL_SAMPLES,
     progress: ProgressLike | None = None,
     progress_label: str | None = None,
 ) -> SignalEvaluation:
-    """يقيّم إشارة: IC (Spearman) مع دلالة بالتبديل، ونسبة شارب للاستراتيجية."""
+    """يقيّم إشارة: IC مقابل ``forward_returns``، وSharpe مقابل عوائد الاستراتيجية.
+
+    * ``forward_returns``: عوائد أمامية للـIC (عادة mid / غير موجّهة).
+    * ``strategy_returns``: إن وُجدت تُستخدم كما هي لـSharpe/mean (مسار تنفيذي
+      موجّه مسبقًا). وإلا ``sign(values) * forward_returns``.
+    """
     generator = rng if rng is not None else np.random.default_rng(0)
     v = np.asarray(values, dtype=np.float64)
     f = np.asarray(forward_returns, dtype=np.float64)
     if v.shape != f.shape:
         raise ValueError(f"values and forward_returns must align, got {v.shape} vs {f.shape}")
+    if strategy_returns is None:
+        strat_raw = np.sign(v) * f
+    else:
+        strat_raw = np.asarray(strategy_returns, dtype=np.float64)
+        if strat_raw.shape != v.shape:
+            raise ValueError(
+                f"strategy_returns must align with values, got {strat_raw.shape} vs {v.shape}"
+            )
 
-    mask = np.isfinite(v) & np.isfinite(f)
-    v, f = v[mask], f[mask]
+    mask = np.isfinite(v) & np.isfinite(f) & np.isfinite(strat_raw)
+    v, f, strat = v[mask], f[mask], strat_raw[mask]
     n = int(v.shape[0])
-    if n < min_samples or float(np.std(v)) == 0:
+    if n < min_samples:
         return SignalEvaluation(
             name=name, n=n, ic=0.0, ic_pvalue=1.0, sharpe=0.0, mean_strategy_return=0.0
+        )
+
+    # Constant signal ⇒ IC undefined; still report strategy PnL when provided
+    # (e.g. always-short book that already embeds direction once).
+    if float(np.std(v)) == 0.0 or float(np.std(f)) == 0.0:
+        return SignalEvaluation(
+            name=name,
+            n=n,
+            ic=0.0,
+            ic_pvalue=1.0,
+            sharpe=sharpe_ratio(strat) if float(np.std(strat)) > 0.0 else 0.0,
+            mean_strategy_return=float(np.mean(strat)),
         )
 
     observed_ic = information_coefficient(v, f, method="spearman")
@@ -110,14 +136,13 @@ def evaluate_signal(
             progress.heartbeat(i + 1, n_permutations, label=label)
     ic_pvalue = (int(np.sum(np.abs(null) >= abs(observed_ic))) + 1) / (n_permutations + 1)
 
-    strategy = np.sign(v) * f
     return SignalEvaluation(
         name=name,
         n=n,
         ic=observed_ic,
         ic_pvalue=ic_pvalue,
-        sharpe=sharpe_ratio(strategy),
-        mean_strategy_return=float(np.mean(strategy)),
+        sharpe=sharpe_ratio(strat),
+        mean_strategy_return=float(np.mean(strat)),
     )
 
 
@@ -179,10 +204,14 @@ def evaluate_signal_intraday(
         commission_bps=commission_bps,
     )
     directional = directional_execution_returns(values, long_fwd, short_fwd)
+    # IC على mid غير موجّه؛ Sharpe على العائد التنفيذي الموجّه مرة واحدة فقط.
+    mid = (np.asarray(bid, dtype=np.float64) + np.asarray(ask, dtype=np.float64)) * 0.5
+    mid_fwd = align_forward_returns(mid, horizon=horizon)
     return evaluate_signal(
         name,
         values,
-        directional,
+        mid_fwd,
+        strategy_returns=directional,
         n_permutations=n_permutations,
         rng=rng,
         progress=progress,

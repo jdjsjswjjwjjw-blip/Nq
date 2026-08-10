@@ -48,6 +48,9 @@ class TemporalPolicy:
         temporal = raw.get("temporal", {})
         embargo = int(temporal.get("embargo_ns", 1_000_000_000))
         horizon = int(temporal.get("horizon", 1))
+        unknown = set(temporal) - {"split_strategy", "embargo_ns", "horizon", "interval_ns", "profile_interval_ns"}
+        if unknown:
+            raise ValueError(f"unknown [temporal] keys: {sorted(unknown)}")
         return cls(embargo_ns=embargo, horizon=horizon)
 
     @classmethod
@@ -59,11 +62,17 @@ class TemporalPolicy:
         stride: int = 1,
         horizon: int = 1,
         config_path: Path | None = None,
+        embargo_ns: int | None = None,
     ) -> TemporalPolicy:
-        """يبني سياسة لجلسة تشغيل مع نافذة SSL و``interval_ns`` معروفين."""
+        """يبني سياسة لجلسة تشغيل مع نافذة SSL و``interval_ns`` معروفين.
+
+        ``embargo_ns`` إن وُجد يتجاوز قيمة الملف؛ وإلا تُقرأ من ``config_path``.
+        ``interval_ns`` يُمرَّر للواجهة فقط (يُستخدم لاحقًا في ``embargo_time_units``).
+        """
+        del interval_ns  # يُستهلك عبر embargo_time_units عند الاستدعاء
         base = cls.from_config(config_path)
         return cls(
-            embargo_ns=base.embargo_ns,
+            embargo_ns=int(embargo_ns) if embargo_ns is not None else base.embargo_ns,
             window=window,
             stride=stride,
             horizon=horizon,

@@ -405,7 +405,7 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
                 f"(train={len(fold.train_idx):,} · test={len(fold.test_idx):,})"
             )
         best_name = cols[0]
-        best_ic = -1e18
+        best_ic = _ic_on_slice(col_mats[best_name], forward, fold.train_idx)
         for col_i, col in enumerate(cols, start=1):
             vals = col_mats[col]
             ic = _ic_on_slice(vals, forward, fold.train_idx)
@@ -451,7 +451,7 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
                 null_y = np.full(work.height, np.nan, dtype=np.float64)
                 for fold in folds:
                     best_name = cols[0]
-                    best_ic = -1e18
+                    best_ic = _ic_on_slice(col_mats[best_name], perm_fwd, fold.train_idx)
                     for col in cols:
                         ic = _ic_on_slice(col_mats[col], perm_fwd, fold.train_idx)
                         if abs(ic) > abs(best_ic) or (abs(ic) == abs(best_ic) and ic > best_ic):
@@ -720,8 +720,14 @@ def search_fail_fvg_hypotheses(  # noqa: PLR0912, PLR0915
                 uniq.append(c)
         candidates = tuple(uniq)
 
-        policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window, horizon=horizon)
-        embargo = policy.embargo_time_units(interval_ns=interval_ns)
+        policy = TemporalPolicy.for_run(
+            interval_ns=interval_ns,
+            window=ssl_window,
+            horizon=horizon,
+            config_path=Path("configs/fail_fvg.toml"),
+        )
+        feat_times = features["availability_ts"].to_numpy().astype(np.int64)
+        embargo = policy.embargo_time_units(interval_ns=interval_ns, times=feat_times)
         log.step(
             "اختيار walk-forward (purged)",
             f"n_splits={n_splits} · candidates={len(candidates)}",

@@ -90,7 +90,7 @@ def _ridge_r2(
     predictor = NextStatePredictor(alpha=alpha)
     predictor.fit(x_train, ytr)
     pred = predictor.predict(x_test)
-    return max(r2_score(yte, pred, baseline_mean=ytr.mean(axis=0)), 0.0)
+    return r2_score(yte, pred, baseline_mean=ytr.mean(axis=0))
 
 
 def _align_frames(
@@ -245,17 +245,20 @@ def measure_cer(
         train_median = float(np.median(train_cer)) if train_cer else observed
         ratio = observed / (train_median + 1e-9)
 
+        # عدم: خلط استجابة الكتلة مع تحركات السعر داخل نفس الطيّات.
         null = np.empty(n_permutations, dtype=np.float64)
-        pooled = cer_series.copy()
         for i in range(n_permutations):
-            perm = generator.permutation(pooled)
-            if len(train_cer) < len(pooled):
-                null[i] = float(np.median(perm[len(train_cer) :]))
-            else:
-                null[i] = float(np.median(perm))
+            perm_feat = generator.permutation(feat_delta)
+            perm_cer = price_delta / (perm_feat + 1e-9)
+            perm_test: list[float] = []
+            for fold in folds:
+                perm_test.extend(perm_cer[fold.test_idx].tolist())
+            null[i] = float(np.median(perm_test)) if perm_test else 0.0
             if progress is not None:
                 progress.heartbeat(i + 1, n_permutations, label=f"cer-perm:{block_name}")
-        pvalue = (int(np.sum(null >= observed)) + 1) / (n_permutations + 1)
+        # نختبر النسبة الملاحَظة مقابل نسب العدم (median_test / median_train_ref)
+        null_ratios = null / (train_median + 1e-9)
+        pvalue = (int(np.sum(null_ratios >= ratio)) + 1) / (n_permutations + 1)
         triggered = pvalue <= alpha and ratio > _CER_RATIO_THRESHOLD
         results.append(
             MetricResult(
@@ -333,9 +336,18 @@ def measure_psg(
     baseline_arr = np.asarray(train_surprises, dtype=np.float64)
     if progress is not None:
         progress.op("psg: اختبار تبديل surprise")
+    if baseline_arr.shape[0] < _MIN_BLOCK_ROWS or surprise_series.shape[0] < _MIN_BLOCK_ROWS:
+        return MetricResult(
+            "psg",
+            ratio,
+            1.0,
+            len(surprises),
+            f"insufficient surprise samples for null (PSG={ratio:.3f})",
+            False,
+        )
     test_result = permutation_test(
         surprise_series,
-        baseline_arr if baseline_arr.shape[0] >= _MIN_BLOCK_ROWS else surprise_series * 0.5,
+        baseline_arr,
         statistic=lambda a, b: float(np.mean(a) / (np.mean(b) + 1e-9)),
         n_permutations=min(_DEFAULT_N_PERM, 1000),
         rng=generator,
@@ -422,13 +434,21 @@ def measure_crs(
         if not block_errors:
             continue
 
-        ratios = [b / o for b, o in zip(block_errors, other_errors, strict=True)]
-        observed = float(np.mean(ratios))
-        test_result: TestResult = regime_difference_test(
+        # إحصائية موحّدة للملاحظة والعدم: mean(block_err) / mean(other_err).
+        def _crs_stat(a: np.ndarray, b: np.ndarray) -> float:
+            return float(np.mean(a) / (np.mean(b) + 1e-12))
+
+        observed = _crs_stat(
             np.asarray(block_errors, dtype=np.float64),
-            np.zeros(len(block_errors), dtype=np.intp),
+            np.asarray(other_errors, dtype=np.float64),
+        )
+        test_result: TestResult = permutation_test(
+            np.asarray(block_errors, dtype=np.float64),
+            np.asarray(other_errors, dtype=np.float64),
+            statistic=_crs_stat,
             n_permutations=_DEFAULT_N_PERM,
             rng=generator,
+            alternative="greater",
             progress=progress,
             progress_label=f"crs-perm:{block_name}",
         )
@@ -452,7 +472,7 @@ def measure_crs(
     return results
 
 
-def measure_lori(
+def measure_lori(  # noqa: PLR0912, PLR0915
     features: pl.DataFrame,
     *,
     blocks: dict[str, tuple[str, ...]] | None = None,
@@ -546,17 +566,35 @@ def measure_lori(
         if novel:
             max_ts = max(s for _, _, s in novel)
             top_src, top_dst, _ = max(novel, key=lambda item: item[2])
+            n_novel = len(novel)
+            null_counts = np.empty(_LORI_PERMUTATIONS, dtype=np.float64)
+            for pi in range(_LORI_PERMUTATIONS):
+                shuffled = generator.permutation(test_labels)
+                count = 0
+                for i in range(shuffled.shape[0] - 1):
+                    src = int(shuffled[i])
+                    dst = int(shuffled[i + 1])
+                    prob = float(trans_train[src, dst]) if trans_train[src, dst] > 0 else 1e-9
+                    if float(-np.log(prob)) > _TRANSITION_SURPRISE_THRESHOLD:
+                        count += 1
+                null_counts[pi] = float(count)
+                if progress is not None:
+                    progress.heartbeat(
+                        pi + 1, _LORI_PERMUTATIONS, label=f"lori-ts-perm:f{fold_i}"
+                    )
+            ts_p = float((int(np.sum(null_counts >= n_novel)) + 1) / (_LORI_PERMUTATIONS + 1))
+            triggered = ts_p <= alpha
             results.append(
                 MetricResult(
                     f"lori:transition_surprise:fold{fold_i}",
                     max_ts,
-                    0.01,
-                    len(novel),
+                    ts_p,
+                    n_novel,
                     (
-                        f"{len(novel)} novel transitions fold{fold_i} "
-                        f"(max {top_src}->{top_dst} TS={max_ts:.2f})"
+                        f"{n_novel} novel transitions fold{fold_i} "
+                        f"(max {top_src}->{top_dst} TS={max_ts:.2f}, p={ts_p:.4g})"
                     ),
-                    True,
+                    triggered,
                 )
             )
     return results
@@ -591,10 +629,11 @@ def measure_qduf(
         y_test = returns[test_idx]
         r2_mbo = _ridge_r2(desc_mat[train_idx], y_train, desc_mat[test_idx], y_test)
         r2_feat = _ridge_r2(feat_mat[train_idx], y_train, feat_mat[test_idx], y_test)
-        if r2_mbo <= r2_feat:
+        # R² سالب لـ MBO ⇒ لا نسبة؛ السماح بـ R² سالب للإشارات دون انفجار.
+        if r2_mbo <= 0.0 or r2_mbo <= r2_feat:
             qduf_values.append(0.0)
         else:
-            qduf_values.append(1.0 - r2_feat / max(r2_mbo, 1e-9))
+            qduf_values.append(1.0 - r2_feat / r2_mbo)
 
     if not qduf_values:
         return MetricResult("qduf", 0.0, 1.0, 0, "insufficient folds", False)
@@ -615,10 +654,10 @@ def measure_qduf(
             r2_feat = _ridge_r2(
                 feat_mat[train_idx], perm[train_idx], feat_mat[test_idx], perm[test_idx]
             )
-            if r2_mbo <= r2_feat:
+            if r2_mbo <= 0.0 or r2_mbo <= r2_feat:
                 perm_vals.append(0.0)
             else:
-                perm_vals.append(1.0 - r2_feat / max(r2_mbo, 1e-9))
+                perm_vals.append(1.0 - r2_feat / r2_mbo)
         null[i] = float(np.mean(perm_vals)) if perm_vals else 0.0
         if progress is not None:
             progress.heartbeat(i + 1, n_permutations, label="qduf-perm")

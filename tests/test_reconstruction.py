@@ -87,8 +87,8 @@ def test_unified_scan_matches_separate_tob_and_depth() -> None:
             ("A", "A", 103, 4, 2),
             ("A", "B", 99, 3, 3),
             ("M", "A", 102, 6, 2),
-            ("F", "B", 100, 2, 1),
-            ("C", "N", 0, 0, 3),
+            ("F", "B", 100, 2, 1),  # Fill: book unchanged (Databento)
+            ("C", "N", 0, 3, 3),  # Cancel full size of order 3
         ],
         event_ts=[0, 4, 11, 14, 25, 31],
     )

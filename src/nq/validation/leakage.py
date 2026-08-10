@@ -105,7 +105,8 @@ def assert_temporal_split(
         return
     train_end = float(np.max(train))
     test_start = float(np.min(test))
-    if test_start < train_end + embargo:
+    # embargo=0: test_start يجب أن يكون > train_end (لا تشارك نفس الطابع).
+    if test_start < train_end + embargo or (embargo == 0 and test_start <= train_end):
         raise LeakageError(
             "temporal-split violation: test window overlaps train (+embargo). "
             f"train_end={train_end!r}, embargo={embargo!r}, test_start={test_start!r}."

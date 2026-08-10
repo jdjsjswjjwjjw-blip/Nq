@@ -56,21 +56,21 @@ def is_databento_frame(frame: pl.DataFrame) -> bool:
 
 
 def _rename_databento_columns(frame: pl.DataFrame) -> pl.DataFrame:
-    """يُعيد تسمية أعمدة Databento دون إنشاء أعمدة مكرّرة."""
+    """يُعيد تسمية أعمدة Databento دون إنشاء أعمدة مكرّرة.
+
+    ``ts_in_delta`` فرق إرسال بالمحرك (ns قبل ts_recv) — **ليس** زمن استلام.
+    """
     renamed = frame
     for src, dst in _DATABENTO_RENAMES.items():
         if src in renamed.columns and dst not in renamed.columns:
             renamed = renamed.rename({src: dst})
-    if INGEST_TS not in renamed.columns and "ts_in_delta" in renamed.columns:
-        renamed = renamed.rename({"ts_in_delta": INGEST_TS})
     return renamed
 
 
 def _ensure_flags_column(frame: pl.DataFrame) -> pl.DataFrame:
+    """``flags`` حقل بتات؛ لا يُستبدل بـ ``rtype`` (نوع السجل)."""
     if "flags" in frame.columns:
-        return frame
-    if "rtype" in frame.columns:
-        return frame.with_columns(pl.col("rtype").cast(pl.UInt8).alias("flags"))
+        return frame.with_columns(pl.col("flags").cast(pl.UInt8))
     return frame.with_columns(pl.lit(0, dtype=pl.UInt8).alias("flags"))
 
 

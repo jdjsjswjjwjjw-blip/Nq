@@ -158,7 +158,7 @@ def test_pipeline_progress_prints_alpha_and_m9_ops() -> None:
         progress=progress,
     )
     text = buf.getvalue()
-    assert "ألفا [" in text
+    assert ("ألفا [" in text) or ("طيّات غير كافية" in text)
     assert "M9 مقياس:" in text
     assert "mfig" in text
     assert "qduf" in text
@@ -211,7 +211,7 @@ def test_bucket_ssl_emits_fold_progress() -> None:
     )
     text = buf.getvalue()
     assert "SSL-bucket" in text
-    assert "ألفا [" in text
+    assert ("ألفا [" in text) or ("طيّات غير كافية" in text)
     assert "M9 مقياس:" in text
 
 

@@ -944,8 +944,14 @@ def search_fail_breakout_hypotheses(  # noqa: PLR0912, PLR0915
         candidates_t = tuple(uniq)
         log.note(f"إجمالي المرشّحين للاختيار: {len(candidates_t)}")
 
-        policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window, horizon=horizon)
-        embargo = policy.embargo_time_units(interval_ns=interval_ns)
+        policy = TemporalPolicy.for_run(
+            interval_ns=interval_ns,
+            window=ssl_window,
+            horizon=horizon,
+            config_path=Path("configs/fail_breakout.toml"),
+        )
+        feat_times = features["availability_ts"].to_numpy().astype(np.int64)
+        embargo = policy.embargo_time_units(interval_ns=interval_ns, times=feat_times)
         log.step("اختيار walk-forward (OOS)", f"n_splits={n_splits}")
         fold_df, oos_ic, oos_p, oos_n, best = walk_forward_select_hypotheses(
             features,

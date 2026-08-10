@@ -39,30 +39,28 @@ def _read_zst_bytes(path: Path) -> bytes:
 
 
 def _read_columnar(path: Path, *, max_rows: int | None = None) -> pl.DataFrame:
+    """يقرأ الملف كاملًا؛ القصّ السببي يتم بعد الترتيب في ``load_mbo_frame``.
+
+    ``max_rows`` هنا مُتجاهل عند القراءة الخام حتى لا نأخذ رأس الملف غير المرتّب.
+    """
+    del max_rows  # القص بعد sort_causal فقط
     suffix = path.suffix.lower()
     name = path.name.lower()
 
     if suffix == ".parquet" or name.endswith(".parquet.zst"):
-        if max_rows is not None:
-            return pl.read_parquet(path, n_rows=max_rows)
         return pl.read_parquet(path)
 
     if suffix in {".arrow", ".ipc", ".feather"}:
-        frame = pl.read_ipc(path)
-        return frame.head(max_rows) if max_rows is not None else frame
+        return pl.read_ipc(path)
 
     if suffix == ".csv":
-        if max_rows is not None:
-            return pl.read_csv(path, n_rows=max_rows)
         return pl.read_csv(path)
 
     if suffix == ".zst":
         raw = _read_zst_bytes(path)
         if raw[:4] == b"PAR1":
-            frame = pl.read_parquet(io.BytesIO(raw))
-        else:
-            frame = pl.read_csv(io.BytesIO(raw))
-        return frame.head(max_rows) if max_rows is not None else frame
+            return pl.read_parquet(io.BytesIO(raw))
+        return pl.read_csv(io.BytesIO(raw))
 
     raise ValueError(
         f"unsupported MBO file format {suffix!r}; expected .parquet/.arrow/.ipc/.csv/.zst"
@@ -110,22 +108,21 @@ def load_mbo_frame(
         if log is not None:
             log.op(f"MBO من DataFrame جاهز: {source.height:,} صف")
         frame = source
-        if max_rows is not None:
-            if log is not None:
-                log.op(f"قص DataFrame إلى max_rows={max_rows:,}")
-            frame = frame.head(max_rows)
     else:
         path = Path(source)
         if log is not None:
-            detail = f" (n_rows={max_rows:,})" if max_rows is not None else ""
-            log.op(f"قراءة ملف MBO: {path.resolve()}{detail}")
-        frame = _read_columnar(path, max_rows=max_rows)
+            log.op(f"قراءة ملف MBO: {path.resolve()}")
+        frame = _read_columnar(path)
         if log is not None:
             log.op(f"قُرئ الخام: {frame.height:,} صف × {frame.width} عمود")
 
     if log is not None:
         log.op("تطبيع Databento / التحقق من MBO_SCHEMA / ترتيب سببي")
     frame = _prepare_frame(frame)
+    if max_rows is not None and frame.height > max_rows:
+        if log is not None:
+            log.op(f"قص سببي بعد الترتيب إلى max_rows={max_rows:,} (أقدم {max_rows:,})")
+        frame = frame.head(max_rows)
     if log is not None:
         log.op(f"جاهز بعد التحضير: {frame.height:,} صف")
     return frame

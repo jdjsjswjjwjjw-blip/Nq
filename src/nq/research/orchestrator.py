@@ -179,6 +179,8 @@ class PipelineConfig:
     ssl_components: int = 4
     coverage_splits: int = 3
     coverage_embargo: int | None = None
+    #: حظر زمني بالنانوثانية من ``[temporal].embargo_ns`` — يُمرَّر لـ TemporalPolicy.
+    embargo_ns: int | None = None
     execution_mode: ExecutionMode = "intraday"
     slippage_ticks: float = 0.5
     tick_size: float = 0.25
@@ -241,6 +243,7 @@ class PipelineConfig:
         return cls(
             interval_ns=interval_ns,
             horizon=int(temporal.get("horizon", 1)),
+            embargo_ns=int(temporal.get("embargo_ns", 1_000_000_000)),
             latency_ns=int(cross.get("latency_ns", 0)),
             lead_lag_window=int(cross.get("lead_lag_window", 2)),
             ssl_window=int(ssl.get("window", 5)),
@@ -759,6 +762,7 @@ def run_ssl_research_pipeline(  # noqa: PLR0915
     ssl_components: int = 4,
     coverage_splits: int = 3,
     coverage_embargo: int | None = None,
+    embargo_ns: int | None = None,
     execution_mode: ExecutionMode = "intraday",
     slippage_ticks: float = 0.5,
     tick_size: float = 0.25,
@@ -784,11 +788,19 @@ def run_ssl_research_pipeline(  # noqa: PLR0915
     generator = rng if rng is not None else np.random.default_rng(0)
     seed = int(generator.integers(0, 2**31))
 
-    policy = TemporalPolicy.for_run(interval_ns=interval_ns, window=ssl_window, horizon=horizon)
+    policy = TemporalPolicy.for_run(
+        interval_ns=interval_ns,
+        window=ssl_window,
+        horizon=horizon,
+        embargo_ns=embargo_ns,
+    )
+    feat_times = (
+        features["availability_ts"].to_numpy().astype(np.int64) if features.height > 0 else None
+    )
     embargo_val = (
         coverage_embargo
         if coverage_embargo is not None
-        else policy.embargo_time_units(interval_ns=interval_ns)
+        else policy.embargo_time_units(interval_ns=interval_ns, times=feat_times)
     )
     purge_val = policy.purge_samples()
     columns = _resolve_signal_columns(features, signal_columns)
@@ -855,6 +867,26 @@ def run_ssl_research_pipeline(  # noqa: PLR0915
                 mnq_top_of_book=mnq_top_of_book,
             )
 
+    def _run_alpha() -> AlphaDiscovery:
+        return discover_alpha_from_features(
+            features,
+            signal_columns=columns,
+            price_col=price_col,
+            time_col=AVAILABILITY_TS,
+            horizon=horizon,
+            n_splits=coverage_splits,
+            embargo=embargo_val,
+            execution_mode=execution_mode,
+            slippage_ticks=slippage_ticks,
+            tick_size=tick_size,
+            commission_bps=commission_bps,
+            alpha=alpha,
+            n_permutations=n_permutations,
+            rng=generator,
+            assistant=alpha_assistant,
+            progress=log,
+        )
+
     if parallel_coverage and (features.height > 0 or ssl_mode == "tick"):
         log.step("تشغيل SSL ‖ M9 بالتوازي", f"mode={ssl_mode}")
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="coverage-m9") as executor:
@@ -865,22 +897,7 @@ def run_ssl_research_pipeline(  # noqa: PLR0915
             log.note(f"SSL انتهى — metrics={ssl_result.metrics.height}")
             log.step("اكتشاف الألفا (intraday)", f"signals={len(columns)}")
             log.op(f"تقييم إشارات: {columns}")
-            alpha_result = discover_alpha_from_features(
-                features,
-                signal_columns=columns,
-                price_col=price_col,
-                time_col=AVAILABILITY_TS,
-                horizon=horizon,
-                execution_mode=execution_mode,
-                slippage_ticks=slippage_ticks,
-                tick_size=tick_size,
-                commission_bps=commission_bps,
-                alpha=alpha,
-                n_permutations=n_permutations,
-                rng=generator,
-                assistant=alpha_assistant,
-                progress=log,
-            )
+            alpha_result = _run_alpha()
             log.op(
                 f"ألفا انتهى — evals={alpha_result.evaluations.height} · "
                 f"selected={alpha_result.selected!r}"
@@ -894,22 +911,7 @@ def run_ssl_research_pipeline(  # noqa: PLR0915
         log.note(f"SSL انتهى — metrics={ssl_result.metrics.height}")
         log.step("اكتشاف الألفا (intraday)", f"signals={len(columns)}")
         log.op(f"تقييم إشارات: {columns}")
-        alpha_result = discover_alpha_from_features(
-            features,
-            signal_columns=columns,
-            price_col=price_col,
-            time_col=AVAILABILITY_TS,
-            horizon=horizon,
-            execution_mode=execution_mode,
-            slippage_ticks=slippage_ticks,
-            tick_size=tick_size,
-            commission_bps=commission_bps,
-            alpha=alpha,
-            n_permutations=n_permutations,
-            rng=generator,
-            assistant=alpha_assistant,
-            progress=log,
-        )
+        alpha_result = _run_alpha()
         log.op(
             f"ألفا انتهى — evals={alpha_result.evaluations.height} · "
             f"selected={alpha_result.selected!r}"
@@ -1115,6 +1117,7 @@ def run_research_pipeline(
             ssl_components=cfg.ssl_components,
             coverage_splits=cfg.coverage_splits,
             coverage_embargo=cfg.coverage_embargo,
+            embargo_ns=cfg.embargo_ns,
             execution_mode=cfg.execution_mode,
             ssl_mode=cfg.ssl_mode,
             slippage_ticks=cfg.slippage_ticks,

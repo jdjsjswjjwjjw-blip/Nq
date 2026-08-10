@@ -20,6 +20,8 @@ from nq.contracts.temporal import EVENT_TS, SEQUENCE
 
 #: أدنى فرق تسلسل سليم بين حدثين متتاليين لنفس الأداة.
 _EXPECTED_SEQUENCE_STEP = 1
+#: انخفاض أكبر من هذا يُعدّ إعادة ضبط جلسة/قناة لا خطأ رتابة.
+_SEQUENCE_RESET_DROP_MIN = 1_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +49,11 @@ def check_integrity(frame: pl.DataFrame) -> IntegrityReport:
     """يحسب فحوص السلامة المعتمدة على الإطار (per-instrument).
 
     لا يشمل ``unknown_order_refs`` و ``crossed_book_events`` لأنهما يُشتقّان أثناء
-    إعادة البناء؛ يُعيدهما هذا التقرير أصفارًا ويملؤهما ``reconstruct``.
+    البناء؛ يُعيدهما هذا التقرير أصفارًا ويملؤهما ``reconstruct``.
+
+    * تكرار/تراجع طفيف في ``sequence`` = غير رتيب.
+    * قفزة أمامية ``diff > 1`` = فجوة (لا تُبطل ``ok`` وحدها).
+    * انخفاض كبير (>= ``_SEQUENCE_RESET_DROP_MIN``) = إعادة ضبط جلسة، ليس خطأ.
     """
     n = frame.height
     if n == 0:
@@ -56,9 +62,13 @@ def check_integrity(frame: pl.DataFrame) -> IntegrityReport:
     prev_ts = pl.col(EVENT_TS).shift(1).over("instrument_id")
     prev_seq = pl.col(SEQUENCE).cast(pl.Int64).shift(1).over("instrument_id")
     seq = pl.col(SEQUENCE).cast(pl.Int64)
+    drop = prev_seq - seq
+    session_reset = (seq < prev_seq) & (drop >= _SEQUENCE_RESET_DROP_MIN)
 
     out_of_order = (pl.col(EVENT_TS) < prev_ts) | ((pl.col(EVENT_TS) == prev_ts) & (seq < prev_seq))
-    non_monotonic = seq <= prev_seq
+    # تكرار أو تراجع غير-إعادة-ضبط (عبر الزمن أو داخله).
+    non_monotonic = (seq <= prev_seq) & (~session_reset)
+    # فجوات أمامية فقط؛ إعادة الضبط ليست skip.
     skips = (seq - prev_seq) > _EXPECTED_SEQUENCE_STEP
 
     stats = frame.select(
