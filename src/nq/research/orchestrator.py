@@ -129,6 +129,26 @@ _VP_AUCTION_SIGNAL_COLUMNS = (
     "vp_auction_setup",
 )
 
+# أحداث/تدفقات تخص البرميل نفسه: غياب التطابق = لا حدث، لا يجوز asof sticky.
+_VP_AUCTION_PULSE_COLUMNS = frozenset(
+    {
+        "vp_of_delta",
+        "vp_absorb",
+        "vp_look_fail",
+        "vp_order_accel",
+        "vp_early_imbalance",
+        "vp_pullback_defense",
+        "vp_flip_to_imbalance",
+        "vp_fr_accepted_expansion",
+        "vp_fr_exit",
+        "vp_fsm_break",
+        "vp_fsm_accel",
+        "vp_fsm_retest",
+        "vp_fsm_expand",
+        "vp_auction_setup",
+    }
+)
+
 _FB_SIGNAL_COLUMNS = (
     "fail_breakout",
     "fb_break_level",
@@ -387,19 +407,26 @@ def _attach_auction_vp_signals(
     features: pl.DataFrame,
     signals: pl.DataFrame,
 ) -> pl.DataFrame:
-    """يلحق إشارات مزاد محسوبة مسبقًا بـ asof خلفي."""
+    """يلحق حالة المزاد بـasof، والنبضات بتطابق زمني فقط."""
     zero_exprs = [pl.lit(0.0).alias(c) for c in _VP_AUCTION_SIGNAL_COLUMNS]
     if signals.height == 0 or features.height == 0:
         return features.with_columns(zero_exprs)
 
-    keep = [c for c in (AVAILABILITY_TS, *_VP_AUCTION_SIGNAL_COLUMNS) if c in signals.columns]
-    right = signals.select(keep).sort(AVAILABILITY_TS)
+    present = [c for c in _VP_AUCTION_SIGNAL_COLUMNS if c in signals.columns]
+    pulse_cols = [c for c in present if c in _VP_AUCTION_PULSE_COLUMNS]
+    state_cols = [c for c in present if c not in _VP_AUCTION_PULSE_COLUMNS]
     left = features.sort(AVAILABILITY_TS)
-    drop_existing = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
+    drop_existing = [c for c in present if c in left.columns]
     if drop_existing:
         left = left.drop(drop_existing)
-    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
-    fills = [pl.col(c).fill_null(0.0) for c in _VP_AUCTION_SIGNAL_COLUMNS if c in joined.columns]
+    joined = left
+    if state_cols:
+        state_right = signals.select(AVAILABILITY_TS, *state_cols).sort(AVAILABILITY_TS)
+        joined = joined.join_asof(state_right, on=AVAILABILITY_TS, strategy="backward")
+    if pulse_cols:
+        pulse_right = signals.select(AVAILABILITY_TS, *pulse_cols).sort(AVAILABILITY_TS)
+        joined = joined.join(pulse_right, on=AVAILABILITY_TS, how="left")
+    fills = [pl.col(c).fill_null(0.0) for c in present if c in joined.columns]
     return joined.with_columns(fills) if fills else joined
 
 
