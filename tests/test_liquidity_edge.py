@@ -244,16 +244,35 @@ def test_market_truth_hold_and_verdict_columns() -> None:
 def test_plan_levels_enforces_min_rr() -> None:
     planned = _plan_levels(
         direction=1.0,
-        entry=100.0,
+        entry=101.0,
         vah=100.5,
         val=99.5,
-        cfg=EdgeExecConfig(min_rr=3.0, stop_buffer_ticks=0.0, target_mode="va_opposite"),
+        poc=100.0,
+        cfg=EdgeExecConfig(min_rr=3.0, stop_buffer_ticks=0.0, target_mode="rr_multiple"),
     )
-    # risk=0.5 من VAL؛ الهدف يُوسَّع لـ entry + min_rr*risk إن VAH قريب
+    # initiative long: الوقف خلف VAH المكسور، لا خلف VAL البعيد.
     assert planned is not None
     _stop, target, risk, reward = planned
     assert reward / risk >= 3.0 - 1e-9
-    assert target >= 100.0 + 3.0 * risk - 1e-9
+    assert target >= 101.0 + 3.0 * risk - 1e-9
+
+    responsive = _plan_levels(
+        direction=1.0,
+        entry=99.25,
+        vah=101.0,
+        val=99.5,
+        poc=100.25,
+        cfg=EdgeExecConfig(
+            min_rr=1.0,
+            stop_buffer_ticks=1.0,
+            target_mode="poc",
+            playbook="responsive",
+        ),
+    )
+    assert responsive is not None
+    responsive_stop, responsive_target, _risk, _reward = responsive
+    assert responsive_stop < 99.5
+    assert responsive_target == 100.25
 
 
 def test_simulate_edge_trades_no_chase_every_bar() -> None:
@@ -265,12 +284,12 @@ def test_simulate_edge_trades_no_chase_every_bar() -> None:
             "thesis_dir": [0.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             "market_verdict": [0.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             "close": [
-                _px(100.0),
-                _px(100.0),
-                _px(100.5),
                 _px(101.0),
+                _px(101.25),
                 _px(101.5),
+                _px(101.75),
                 _px(102.0),
+                _px(102.25),
             ],
             "vah": [_px(101.0)] * 6,
             "val": [_px(99.0)] * 6,
@@ -298,7 +317,7 @@ def test_edge_execution_uses_mbo_first_touch_and_deducts_costs() -> None:
             "entry_gate": [1.0, 0.0, 0.0],
             "thesis_dir": [1.0, 1.0, 1.0],
             "market_verdict": [1.0, 1.0, 1.0],
-            "close": [_px(100.0)] * 3,
+            "close": [_px(101.25)] * 3,
             "vah": [_px(101.0)] * 3,
             "val": [_px(99.0)] * 3,
         }
@@ -307,7 +326,7 @@ def test_edge_execution_uses_mbo_first_touch_and_deducts_costs() -> None:
     tape = pl.DataFrame(
         {
             "event_ts": [11, 12],
-            "price": [_px(101.25), _px(98.75)],
+            "price": [_px(101.75), _px(100.75)],
         }
     )
     free = simulate_edge_trades(
