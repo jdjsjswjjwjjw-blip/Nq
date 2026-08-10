@@ -293,11 +293,23 @@ def auction_action_states(
                         "vp_fr_upper",
                         "vp_fr_mid",
                         "vp_fr_lower",
+                        "vp_prior_upper",
+                        "vp_prior_mid",
+                        "vp_prior_lower",
                     )
                 },
                 "vp_fr_upper": pl.Series("vp_fr_upper", [None] * profile.height, dtype=pl.Float64),
                 "vp_fr_mid": pl.Series("vp_fr_mid", [None] * profile.height, dtype=pl.Float64),
                 "vp_fr_lower": pl.Series("vp_fr_lower", [None] * profile.height, dtype=pl.Float64),
+                "vp_prior_upper": pl.Series(
+                    "vp_prior_upper", [None] * profile.height, dtype=pl.Float64
+                ),
+                "vp_prior_mid": pl.Series(
+                    "vp_prior_mid", [None] * profile.height, dtype=pl.Float64
+                ),
+                "vp_prior_lower": pl.Series(
+                    "vp_prior_lower", [None] * profile.height, dtype=pl.Float64
+                ),
                 "vp_fr_start_ts": pl.Series("vp_fr_start_ts", [0] * profile.height, dtype=pl.Int64),
                 "vp_fr_end_ts": pl.Series("vp_fr_end_ts", [0] * profile.height, dtype=pl.Int64),
             }
@@ -789,6 +801,9 @@ def auction_signals_from_states(
         "vp_fr_lower",
         "vp_fr_start_ts",
         "vp_fr_end_ts",
+        "vp_prior_upper",
+        "vp_prior_mid",
+        "vp_prior_lower",
     )
     base_schema = {
         AVAILABILITY_TS: pl.Int64(),
@@ -832,6 +847,9 @@ def auction_signals_from_states(
             (pl.col("vp_fr_upper").cast(pl.Float64) * scale).alias("vp_fr_upper"),
             (pl.col("vp_fr_mid").cast(pl.Float64) * scale).alias("vp_fr_mid"),
             (pl.col("vp_fr_lower").cast(pl.Float64) * scale).alias("vp_fr_lower"),
+            (pl.col("vp_prior_upper").cast(pl.Float64) * scale).alias("vp_prior_upper"),
+            (pl.col("vp_prior_mid").cast(pl.Float64) * scale).alias("vp_prior_mid"),
+            (pl.col("vp_prior_lower").cast(pl.Float64) * scale).alias("vp_prior_lower"),
             pl.col("vp_fr_start_ts").fill_null(0).cast(pl.Float64).alias("vp_fr_start_ts"),
             pl.col("vp_fr_end_ts").fill_null(0).cast(pl.Float64).alias("vp_fr_end_ts"),
         ]

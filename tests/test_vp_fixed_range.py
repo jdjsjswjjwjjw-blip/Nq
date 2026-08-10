@@ -171,6 +171,9 @@ def test_session_change_closes_range_without_exit_signal() -> None:
     assert out["vp_fr_active"].to_list()[4] == 0.0
     assert out["vp_fr_exit"].to_list()[4] == 0.0
     assert out["vp_fr_exit"].sum() == 0.0
+    assert out["vp_prior_upper"][4] == out["vp_fr_upper"][3]
+    assert out["vp_prior_mid"][4] == out["vp_fr_mid"][3]
+    assert out["vp_prior_lower"][4] == out["vp_fr_lower"][3]
 
 
 def test_fsm_fires_setup_once_on_fr_exit_edge() -> None:
