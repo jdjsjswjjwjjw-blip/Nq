@@ -442,7 +442,12 @@ def test_edge_search_grid_structural_rr_specs_nonempty() -> None:
     for spec in grid:
         assert spec.min_rr >= 2.0
         assert spec.hold_buckets >= 1
-        assert spec.target_mode in ("va_opposite", "rr_multiple")
+        assert spec.target_mode in ("poc", "va_opposite", "rr_multiple")
+        assert spec.playbook in ("responsive", "initiative")
+        if spec.playbook == "responsive":
+            assert spec.target_mode == "poc"
+        else:
+            assert spec.target_mode == "rr_multiple"
 
 
 def test_edge_search_reuses_auction_and_deceptive_frames() -> None:

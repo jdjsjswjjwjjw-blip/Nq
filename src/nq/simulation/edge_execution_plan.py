@@ -37,7 +37,8 @@ from nq.simulation.execution.costs import commission_rate
 from nq.simulation.market_truth import MarketTruthConfig, build_market_truth_frame
 
 FloatArray = npt.NDArray[np.float64]
-TargetMode = Literal["va_opposite", "rr_multiple"]
+TargetMode = Literal["poc", "va_opposite", "rr_multiple"]
+Playbook = Literal["responsive", "initiative"]
 
 EDGE_TRADE_COLUMNS: Final[tuple[str, ...]] = (
     "edge_signal",
@@ -72,6 +73,7 @@ class EdgeExecConfig:
     tick_size: float = 0.25
     slippage_ticks: float = 0.5
     commission_bps: float = 0.5
+    playbook: Playbook = "initiative"
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +86,7 @@ class EdgeSearchSpec:
     stop_buffer_ticks: float
     target_mode: TargetMode
     rr_multiple: float = 3.0
+    playbook: Playbook = "initiative"
 
     def exec_config(self) -> EdgeExecConfig:
         return EdgeExecConfig(
@@ -91,6 +94,7 @@ class EdgeSearchSpec:
             stop_buffer_ticks=self.stop_buffer_ticks,
             target_mode=self.target_mode,
             rr_multiple=self.rr_multiple,
+            playbook=self.playbook,
         )
 
     def truth_config(self) -> MarketTruthConfig:
@@ -100,11 +104,15 @@ class EdgeSearchSpec:
 def default_edge_search_grid() -> tuple[EdgeSearchSpec, ...]:
     """شبكة بحث محافظة — R:R قوي، هولد يمنع ملاحقة كل أمر."""
     specs: list[EdgeSearchSpec] = []
+    playbooks: tuple[tuple[Playbook, TargetMode], ...] = (
+        ("responsive", "poc"),
+        ("initiative", "rr_multiple"),
+    )
     for hold in (2, 3, 5):
         for min_rr in (2.0, 2.5, 3.0, 4.0):
             for buf in (1.0, 2.0, 4.0):
-                for mode in ("va_opposite", "rr_multiple"):
-                    name = f"hold{hold}_rr{min_rr:g}_buf{buf:g}_{mode}"
+                for playbook, mode in playbooks:
+                    name = f"{playbook}_hold{hold}_rr{min_rr:g}_buf{buf:g}_{mode}"
                     specs.append(
                         EdgeSearchSpec(
                             name=name,
@@ -113,6 +121,7 @@ def default_edge_search_grid() -> tuple[EdgeSearchSpec, ...]:
                             stop_buffer_ticks=buf,
                             target_mode=mode,
                             rr_multiple=max(min_rr, 3.0),
+                            playbook=playbook,
                         )
                     )
     return tuple(specs)
@@ -137,26 +146,34 @@ def _plan_levels(
     vah: float,
     val: float,
     cfg: EdgeExecConfig,
+    poc: float | None = None,
 ) -> tuple[float, float, float, float] | None:
     """يُعيد (stop, target, risk, reward) بالسعر الحقيقي أو None إن R:R ضعيف."""
     tick = cfg.tick_size
     buf = cfg.stop_buffer_ticks * tick
+    mid = float(poc) if poc is not None and np.isfinite(poc) else (vah + val) / 2.0
     if direction > 0:
-        stop = min(val, entry) - buf
+        boundary = val if cfg.playbook == "responsive" else vah
+        stop = min(boundary, entry) - buf
         risk = entry - stop
         if risk <= 0:
             return None
-        if cfg.target_mode == "va_opposite":
+        if cfg.playbook == "responsive" or cfg.target_mode == "poc":
+            target = mid
+        elif cfg.target_mode == "va_opposite":
             target = max(vah, entry + cfg.min_rr * risk)
         else:
             target = entry + cfg.rr_multiple * risk
         reward = target - entry
     elif direction < 0:
-        stop = max(vah, entry) + buf
+        boundary = vah if cfg.playbook == "responsive" else val
+        stop = max(boundary, entry) + buf
         risk = stop - entry
         if risk <= 0:
             return None
-        if cfg.target_mode == "va_opposite":
+        if cfg.playbook == "responsive" or cfg.target_mode == "poc":
+            target = mid
+        elif cfg.target_mode == "va_opposite":
             target = min(val, entry - cfg.min_rr * risk)
         else:
             target = entry - cfg.rr_multiple * risk
@@ -188,6 +205,21 @@ def simulate_edge_trades(  # noqa: PLR0912, PLR0915
     close = truth["close"].to_numpy().astype(np.float64) * PRICE_SCALE
     vah = truth["vah"].to_numpy().astype(np.float64) * PRICE_SCALE
     val = truth["val"].to_numpy().astype(np.float64) * PRICE_SCALE
+    poc = (
+        truth["poc"].to_numpy().astype(np.float64) * PRICE_SCALE
+        if "poc" in truth.columns
+        else (vah + val) / 2.0
+    )
+    balanced = (
+        truth["is_balanced"].to_numpy().astype(bool)
+        if "is_balanced" in truth.columns
+        else np.full(n, cfg.playbook == "responsive")
+    )
+    expansion = (
+        truth["is_expansion"].to_numpy().astype(bool)
+        if "is_expansion" in truth.columns
+        else np.full(n, cfg.playbook == "initiative")
+    )
     verdict = truth["market_verdict"].to_numpy().astype(np.float64)
     truth_ts = (
         truth[AVAILABILITY_TS].to_numpy().astype(np.int64)
@@ -224,6 +256,12 @@ def simulate_edge_trades(  # noqa: PLR0912, PLR0915
         if gate[i] < 1.0 or verdict[i] < 0.0 or thesis[i] == 0.0:
             i += 1
             continue
+        if cfg.playbook == "responsive" and not balanced[i]:
+            i += 1
+            continue
+        if cfg.playbook == "initiative" and not expansion[i]:
+            i += 1
+            continue
         direction = float(thesis[i])
         slip = cfg.slippage_ticks * cfg.tick_size
         entry_fill = float(close[i]) + direction * slip
@@ -232,6 +270,7 @@ def simulate_edge_trades(  # noqa: PLR0912, PLR0915
             entry=entry_fill,
             vah=float(vah[i]),
             val=float(val[i]),
+            poc=float(poc[i]),
             cfg=cfg,
         )
         if planned is None:
