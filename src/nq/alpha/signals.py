@@ -23,6 +23,7 @@ from nq.simulation.execution.intraday import (
 )
 from nq.statistics.metrics import information_coefficient, sharpe_ratio
 from nq.statistics.multiple_testing import benjamini_hochberg
+from nq.statistics.resampling import temporal_block_permutation
 
 FloatArray = npt.NDArray[np.float64]
 ExecutionMode = Literal["mid", "intraday"]
@@ -84,6 +85,7 @@ def evaluate_signal(
     n_permutations: int = 2000,
     rng: np.random.Generator | None = None,
     min_samples: int = _MIN_EVAL_SAMPLES,
+    active_only: bool = False,
     progress: ProgressLike | None = None,
     progress_label: str | None = None,
 ) -> SignalEvaluation:
@@ -108,6 +110,10 @@ def evaluate_signal(
             )
 
     mask = np.isfinite(v) & np.isfinite(f) & np.isfinite(strat_raw)
+    if active_only:
+        # النبضة الصفرية تعني "لا صفقة" لا رأيًا محايدًا؛ لا تدع صفوف الخمول
+        # تطغى على IC أو تضخّم n الفعلي للإشارة الحدثية.
+        mask &= v != 0.0
     v, f, strat = v[mask], f[mask], strat_raw[mask]
     n = int(v.shape[0])
     if n < min_samples:
@@ -131,7 +137,9 @@ def evaluate_signal(
     null = np.empty(n_permutations, dtype=np.float64)
     label = progress_label or f"perm:{name}"
     for i in range(n_permutations):
-        null[i] = information_coefficient(v, generator.permutation(f), method="spearman")
+        null[i] = information_coefficient(
+            v, temporal_block_permutation(f, rng=generator), method="spearman"
+        )
         if progress is not None:
             progress.heartbeat(i + 1, n_permutations, label=label)
     ic_pvalue = (int(np.sum(np.abs(null) >= abs(observed_ic))) + 1) / (n_permutations + 1)

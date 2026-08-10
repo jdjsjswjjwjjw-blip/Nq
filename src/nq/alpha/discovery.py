@@ -33,11 +33,16 @@ from nq.simulation.execution import (
     execution_forward_returns,
     execution_forward_returns_depth,
 )
+from nq.statistics.metrics import information_coefficient
 
 if TYPE_CHECKING:
     from nq.coverage.types import CoverageReport
 
 _DEFAULT_SIGNAL_COLUMNS = ("nq_delta", "mnq_delta", "lead_lag", "trap_setup", "divergence")
+_MIN_EVAL_SAMPLES = 8
+_MIN_STABILITY_FOLDS = 2
+_MIN_SIGN_CONSISTENCY = 2.0 / 3.0
+_SPARSE_ACTIVE_RATE = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +52,45 @@ class AlphaDiscovery:
     evaluations: pl.DataFrame
     selected: list[str]
     report: ResearchReport
+
+
+def _is_sparse_event_signal(values: np.ndarray) -> bool:
+    """هل العمود نبضة اتجاهية نادرة (−1/0/+1) حيث الصفر = لا حدث؟"""
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return False
+    unique = np.unique(finite)
+    return bool(
+        np.all(np.isin(unique, np.asarray([-1.0, 0.0, 1.0])))
+        and float(np.mean(finite != 0.0)) < _SPARSE_ACTIVE_RATE
+    )
+
+
+def _fold_sign_stability(
+    values: np.ndarray,
+    forward: np.ndarray,
+    folds: Sequence[WalkForwardFold],
+    *,
+    active_only: bool,
+) -> tuple[int, float, bool]:
+    """ثبات اتجاه IC على طيات OOS بدل الاكتفاء بتجميع قد يخفي الانقلاب."""
+    fold_ics: list[float] = []
+    for fold in folds:
+        v = values[fold.test_idx]
+        f = forward[fold.test_idx]
+        mask = np.isfinite(v) & np.isfinite(f)
+        if active_only:
+            mask &= v != 0.0
+        v, f = v[mask], f[mask]
+        if v.size < _MIN_EVAL_SAMPLES or float(np.std(v)) == 0.0 or float(np.std(f)) == 0.0:
+            continue
+        fold_ics.append(float(information_coefficient(v, f, method="spearman")))
+    if len(fold_ics) < _MIN_STABILITY_FOLDS:
+        return len(fold_ics), 0.0, False
+    arr = np.asarray(fold_ics, dtype=np.float64)
+    aggregate_sign = 1.0 if float(np.mean(arr)) >= 0.0 else -1.0
+    consistency = float(np.mean(np.sign(arr) == aggregate_sign))
+    return len(fold_ics), consistency, consistency >= _MIN_SIGN_CONSISTENCY
 
 
 def discover_alpha_from_features(  # noqa: PLR0912, PLR0915
@@ -89,6 +133,7 @@ def discover_alpha_from_features(  # noqa: PLR0912, PLR0915
         )
 
     evaluations = []
+    stability_rows: list[dict[str, float | int | str | bool]] = []
     # تقييم خارج العيّنة فقط (purged walk-forward) — لا IC داخل العيّنة أبدًا.
     times = frame[time_col].to_numpy().astype(np.int64)
     folds: list[WalkForwardFold] = []
@@ -152,6 +197,7 @@ def discover_alpha_from_features(  # noqa: PLR0912, PLR0915
             if log is not None:
                 log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} ({mode_tag}/OOS)")
             vals = frame[col].to_numpy().astype(np.float64)
+            active_only = _is_sparse_event_signal(vals)
             if use_depth and depth_long is not None and depth_short is not None:
                 directional = directional_execution_returns(vals, depth_long, depth_short)
             else:
@@ -172,9 +218,23 @@ def discover_alpha_from_features(  # noqa: PLR0912, PLR0915
                     strategy_returns=directional[oos_idx],
                     n_permutations=n_permutations,
                     rng=generator,
+                    active_only=active_only,
                     progress=log,
                     progress_label=f"ألفا-perm:{col}",
                 )
+            )
+            stable_n, consistency, stable = _fold_sign_stability(
+                vals, mid_fwd, folds, active_only=active_only
+            )
+            stability_rows.append(
+                {
+                    "name": col,
+                    "evaluation_scope": "active_events" if active_only else "all_rows",
+                    "active_rate": float(np.mean(np.isfinite(vals) & (vals != 0.0))),
+                    "valid_oos_folds": stable_n,
+                    "fold_sign_consistency": consistency,
+                    "sign_stable": stable,
+                }
             )
     else:
         prices = frame[price_col].to_numpy().astype(np.float64)
@@ -182,20 +242,45 @@ def discover_alpha_from_features(  # noqa: PLR0912, PLR0915
         for i, col in enumerate(cols, start=1):
             if log is not None:
                 log.op(f"ألفا [{i}/{len(cols)}]: تقييم {col!r} (mid/OOS)")
+            vals = frame[col].to_numpy().astype(np.float64)
+            active_only = _is_sparse_event_signal(vals)
             evaluations.append(
                 evaluate_signal(
                     col,
-                    frame[col].to_numpy().astype(np.float64)[oos_idx],
+                    vals[oos_idx],
                     forward[oos_idx],
                     n_permutations=n_permutations,
                     rng=generator,
+                    active_only=active_only,
                     progress=log,
                     progress_label=f"ألفا-perm:{col}",
                 )
             )
+            stable_n, consistency, stable = _fold_sign_stability(
+                vals, forward, folds, active_only=active_only
+            )
+            stability_rows.append(
+                {
+                    "name": col,
+                    "evaluation_scope": "active_events" if active_only else "all_rows",
+                    "active_rate": float(np.mean(np.isfinite(vals) & (vals != 0.0))),
+                    "valid_oos_folds": stable_n,
+                    "fold_sign_consistency": consistency,
+                    "sign_stable": stable,
+                }
+            )
     if log is not None:
         log.op("ألفا: فرز/تصحيح تعدّد (screen_signals)")
     screened = screen_signals(evaluations, alpha=alpha)
+    if screened.height and stability_rows:
+        screened = (
+            screened.join(pl.DataFrame(stability_rows), on="name", how="left")
+            .rename({"selected": "significance_selected"})
+            .with_columns(
+                (pl.col("significance_selected") & pl.col("sign_stable")).alias("selected")
+            )
+            .sort("adjusted_pvalue")
+        )
 
     findings: list[Finding] = []
     selected: list[str] = []

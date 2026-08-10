@@ -65,13 +65,10 @@ _VP_AUCTION_FOCUS = (
     "vp_look_fail",
     "vp_order_accel",
     "vp_early_imbalance",
-    "vp_flip_to_imbalance",
-    "vp_pullback_defense",
     "vp_fr_accepted_expansion",
     "vp_fr_exit",
     "vp_auction_setup",
     "vp_fsm_break",
-    "vp_fsm_build",
     "vp_fsm_retest",
     "nq_delta",
 )

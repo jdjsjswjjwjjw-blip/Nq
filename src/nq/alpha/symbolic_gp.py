@@ -27,6 +27,7 @@ from nq.contracts.temporal import AVAILABILITY_TS
 from nq.models.splitting import purged_walk_forward_split
 from nq.research.progress import ProgressLike
 from nq.statistics.metrics import information_coefficient
+from nq.statistics.resampling import temporal_block_permutation
 
 FloatArray = npt.NDArray[np.float64]
 Backend = Literal["deap", "gplearn", "both"]
@@ -645,7 +646,7 @@ def search_symbolic_hypotheses(  # noqa: PLR0915
                 )
             null_ics = np.empty(n_permutations, dtype=np.float64)
             for p_i in range(n_permutations):
-                perm_fwd = rng.permutation(forward)
+                perm_fwd = temporal_block_permutation(forward, rng=rng)
                 null_oos = np.full(work.height, np.nan, dtype=np.float64)
                 null_y = np.full(work.height, np.nan, dtype=np.float64)
                 for fold_i, fold in enumerate(folds):

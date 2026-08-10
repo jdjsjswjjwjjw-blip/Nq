@@ -42,6 +42,7 @@ from nq.research.capacity import UNDERSTAND_N_PERMUTATIONS
 from nq.research.progress import PipelineProgress, resolve_progress
 from nq.statistics.metrics import information_coefficient
 from nq.statistics.multiple_testing import benjamini_hochberg
+from nq.statistics.resampling import temporal_block_permutation
 
 DEPTH_MARK = "__depth__"
 ENH_MARK = "__enh__"
@@ -285,7 +286,9 @@ def _oos_ic(
     observed = information_coefficient(v, f, method="spearman")
     null = np.empty(n_permutations, dtype=np.float64)
     for i in range(n_permutations):
-        null[i] = information_coefficient(v, rng.permutation(f), method="spearman")
+        null[i] = information_coefficient(
+            v, temporal_block_permutation(f, rng=rng), method="spearman"
+        )
     p = float((int(np.sum(np.abs(null) >= abs(observed))) + 1) / (n_permutations + 1))
     return float(observed), n, p
 
@@ -516,7 +519,7 @@ def _depth_counterfactual(
     s_on, s_off, y = s_on[finite], s_off[finite], y[finite]
     null_deltas = np.empty(n_permutations, dtype=np.float64)
     for i in range(n_permutations):
-        perm = rng.permutation(y)
+        perm = temporal_block_permutation(y, rng=rng)
         null_deltas[i] = information_coefficient(
             s_on, perm, method="spearman"
         ) - information_coefficient(s_off, perm, method="spearman")
@@ -582,7 +585,9 @@ def _ssl_state_link(
     y = s[finite]
     x = inten[finite]
     for i in range(n_permutations):
-        null[i] = information_coefficient(rng.permutation(x), y, method="spearman")
+        null[i] = information_coefficient(
+            temporal_block_permutation(x, rng=rng), y, method="spearman"
+        )
     p = float((np.sum(np.abs(null) >= abs(obs)) + 1) / (n_permutations + 1))
     return SslStateLink(
         embedding_dim=dim,
