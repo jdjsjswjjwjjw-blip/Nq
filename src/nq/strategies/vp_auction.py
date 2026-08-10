@@ -91,6 +91,9 @@ _VP_LEVEL_DISTANCE_FEATURES = (
     "vp_fr_lower",
     "vp_fr_start_ts",
     "vp_fr_end_ts",
+    "vp_prior_upper",
+    "vp_prior_mid",
+    "vp_prior_lower",
 )
 
 #: أعلام حالة/نظام — ليست متنبّئ اتجاه سعري.
