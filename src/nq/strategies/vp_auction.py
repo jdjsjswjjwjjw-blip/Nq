@@ -56,6 +56,10 @@ from nq.simulation.edge_execution_plan import (
 from nq.simulation.market_truth import MARKET_TRUTH_COLUMNS
 from nq.strategies.fvg_hypothesis import walk_forward_select_hypotheses
 
+# 10 × 30ث = 5 دقائق: أفق أطروحة يقع داخل نافذة التنفيذ (حتى 15د)، لا عائد 30ث
+# كان منفصلًا زمنيًا عن الوقف/الهدف والهولد.
+VP_DEFAULT_SELECTION_HORIZON = 10
+
 #: مرشّحو IC = متنبّئات اتجاهية موقّعة فقط.
 #: مسافات/حدود VP (``vp_rel_*`` / excess / حدود مطلقة) وأعلام نظام
 #: (balance/imbalance/session) تبقى في الإطار للسياق/FSM لكنها **ليست** ألفا IC.
@@ -288,7 +292,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     *,
     ssl_window: int = 5,
     ssl_components: int = 4,
-    horizon: int = 1,
+    horizon: int = VP_DEFAULT_SELECTION_HORIZON,
     alpha: float = 0.05,
     n_permutations: int = 2000,
     n_splits: int = 3,
@@ -673,6 +677,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
 
 
 __all__ = [
+    "VP_DEFAULT_SELECTION_HORIZON",
     "_VP_AUCTION_FOCUS",
     "_VP_LEVEL_DISTANCE_FEATURES",
     "_VP_REGIME_STATE_FEATURES",

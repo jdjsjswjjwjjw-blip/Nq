@@ -24,7 +24,10 @@ if sys.version_info < _MIN_PYTHON:
         f"الحالي {sys.version_info.major}.{sys.version_info.minor}"
     )
 
-from nq.strategies.vp_auction import run_vp_auction_research  # noqa: E402
+from nq.strategies.vp_auction import (  # noqa: E402
+    VP_DEFAULT_SELECTION_HORIZON,
+    run_vp_auction_research,
+)
 
 
 def main() -> None:
@@ -37,7 +40,12 @@ def main() -> None:
     parser.add_argument("--nq", type=Path, required=True, help="مسار NQ MBO")
     parser.add_argument("--output", type=Path, default=Path("data/runs/vp_auction"))
     parser.add_argument("--max-rows", type=int, default=None)
-    parser.add_argument("--horizon", type=int, default=1)
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=VP_DEFAULT_SELECTION_HORIZON,
+        help="أفق IC بعدد براميل 30ث (الافتراضي 10 = 5د، داخل نافذة التنفيذ)",
+    )
     parser.add_argument(
         "--no-execution",
         action="store_true",

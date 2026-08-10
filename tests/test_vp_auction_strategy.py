@@ -5,9 +5,13 @@ from __future__ import annotations
 from nq.core.determinism import make_generator
 from nq.simulation.deceptive_liquidity import DeceptiveLiquidityConfig
 from nq.simulation.edge_execution_plan import EdgeSearchSpec
-from nq.strategies.vp_auction import run_vp_auction_research
+from nq.strategies.vp_auction import VP_DEFAULT_SELECTION_HORIZON, run_vp_auction_research
 from tests.test_coverage import _paired_streams
 from tests.test_liquidity_edge import _session_with_imbalance
+
+
+def test_default_vp_ic_horizon_matches_execution_time_scale() -> None:
+    assert VP_DEFAULT_SELECTION_HORIZON == 10  # 5m on 30s action bars; max hold is 15m
 
 
 def test_run_vp_auction_research_uses_unified_features() -> None:

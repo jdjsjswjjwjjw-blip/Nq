@@ -70,8 +70,22 @@ def value_area_from_levels(
     if n != len(volumes):
         raise ValueError("prices and volumes must have the same length")
 
-    poc_idx = max(range(n), key=lambda i: volumes[i])
     total = sum(volumes)
+    max_volume = max(volumes)
+    poc_candidates = [i for i, volume in enumerate(volumes) if volume == max_volume]
+    # لا تختَر أدنى سعر دائمًا عند تعادل POC (تحيز هبوطي صامت). مرساة التعادل
+    # هي متوسط السعر المرجّح بالحجم، ثم منتصف الملف، ثم السعر الأدنى للحتمية فقط.
+    weighted_sum = float(sum(price * volume for price, volume in zip(prices, volumes, strict=True)))
+    weighted_center = weighted_sum / total if total > 0 else sum(prices) / n
+    profile_mid = (prices[0] + prices[-1]) * 0.5
+    poc_idx = min(
+        poc_candidates,
+        key=lambda i: (
+            abs(prices[i] - weighted_center),
+            abs(prices[i] - profile_mid),
+            prices[i],
+        ),
+    )
     target = fraction * total
     acc = volumes[poc_idx]
     lo = hi = poc_idx
