@@ -257,8 +257,8 @@ def test_align_horizon_to_context_scales_when_horizon_one() -> None:
 # ─── بقايا الطبقات: أنطولوجيا vp_* + TOML research ─────────────────────────
 
 
-def test_default_alpha_signals_prefer_vp_ontology_not_streaming_va() -> None:
-    assert "vp_balance" in _DEFAULT_SIGNAL_COLUMNS
+def test_default_alpha_signals_are_signed_predictors_not_context_gates() -> None:
+    assert "vp_balance" not in _DEFAULT_SIGNAL_COLUMNS
     assert "in_value_area" not in _DEFAULT_SIGNAL_COLUMNS
     assert "near_vah" not in _DEFAULT_SIGNAL_COLUMNS
     frame = pl.DataFrame(
@@ -271,7 +271,8 @@ def test_default_alpha_signals_prefer_vp_ontology_not_streaming_va() -> None:
         }
     )
     resolved = _resolve_signal_columns(frame, None)
-    assert "vp_balance" in resolved
+    assert "nq_delta" in resolved
+    assert "vp_balance" not in resolved
     assert "in_value_area" not in resolved
     assert "near_vah" not in resolved
 
@@ -283,5 +284,6 @@ def test_research_toml_wires_streaming_depth_and_vp_ontology() -> None:
     assert cfg.filter_depth_noise is True
     assert cfg.include_bottom_book is True
     assert cfg.signal_columns is not None
-    assert "vp_balance" in cfg.signal_columns
+    assert "vp_balance" not in cfg.signal_columns
+    assert "vp_absorb" in cfg.signal_columns
     assert "in_value_area" not in cfg.signal_columns

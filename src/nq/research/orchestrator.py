@@ -26,10 +26,7 @@ from nq.core.determinism import seed_everything
 from nq.core.temporal_policy import TemporalPolicy
 from nq.coverage.monitor import run_coverage_on_features
 from nq.coverage.types import CoverageReport
-from nq.features.streaming import (
-    STREAMING_SIGNAL_COLUMNS,
-    build_streaming_research_features,
-)
+from nq.features.streaming import build_streaming_research_features
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_pipeline, run_ssl_tick_pipeline
 from nq.models.tick_stream import TickStream
@@ -67,16 +64,8 @@ _DEFAULT_SIGNAL_COLUMNS = (
     "nq_delta",
     "mnq_delta",
     "trap_setup",
-    "phase_balance",
-    "phase_expansion",
-    "session_phase",
     "fail_fvg",
     "fail_breakout",
-    "vp_balance",
-    "vp_imbalance",
-    "vp_expansion",
-    "vp_close_in_value",
-    "vp_flip_to_imbalance",
 )
 
 _BATCH_SIGNAL_COLUMNS = (
@@ -85,14 +74,19 @@ _BATCH_SIGNAL_COLUMNS = (
     "lead_lag",
     "trap_setup",
     "divergence",
-    "session_phase",
     "fail_fvg",
     "fail_breakout",
-    "vp_balance",
-    "vp_imbalance",
-    "vp_expansion",
-    "vp_close_in_value",
-    "vp_flip_to_imbalance",
+)
+
+# المرشّح الخام يجب أن يحمل اتجاهًا. حالات النظام/السيولة تبقى ميزات سياق
+# للبوابات والنماذج المركبة، لكنها لا تدخل IC منفردة كأن +1 يعني LONG.
+_STREAMING_DIRECTIONAL_COLUMNS = (
+    "trap_setup",
+    "mnq_delta",
+    "nq_delta",
+    "nq_return",
+    "mnq_return",
+    "depth_imbalance",
 )
 
 _VP_AUCTION_SIGNAL_COLUMNS = (
@@ -323,12 +317,12 @@ def _resolve_signal_columns(
         return [c for c in signal_columns if c in features.columns]
     if config_columns is not None:
         return [c for c in config_columns if c in features.columns]
-    # افتراضي: لا تخلط streaming VA مع vp_* في شاشة الألفا
-    streaming_va = frozenset({"in_value_area", "near_vah", "near_val", "poc_dist_norm"})
     ordered = list(
-        dict.fromkeys([*_DEFAULT_SIGNAL_COLUMNS, *_BATCH_SIGNAL_COLUMNS, *STREAMING_SIGNAL_COLUMNS])
+        dict.fromkeys(
+            [*_DEFAULT_SIGNAL_COLUMNS, *_BATCH_SIGNAL_COLUMNS, *_STREAMING_DIRECTIONAL_COLUMNS]
+        )
     )
-    return [c for c in ordered if c in features.columns and c not in streaming_va]
+    return [c for c in ordered if c in features.columns]
 
 
 def _attach_failed_fvg(
