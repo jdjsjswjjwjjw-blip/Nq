@@ -402,7 +402,7 @@ def test_search_and_strategy_smoke() -> None:
 
 
 def test_edge_search_selects_on_train_not_oos(monkeypatch: pytest.MonkeyPatch) -> None:
-    """المواصفة الفائزة تُختار من train حتى لو فضّلت OOS مواصفة أخرى."""
+    """الـholdout الخارجي لا يُقاس إلا للمواصفة المختارة داخليًا."""
     grid = (
         EdgeSearchSpec(
             name="train_winner",
@@ -426,9 +426,8 @@ def test_edge_search_selects_on_train_not_oos(monkeypatch: pytest.MonkeyPatch) -
         lambda *_args, **_kwargs: pl.DataFrame({"dummy": list(range(20))}),
     )
 
-    def fake_score(_mbo: pl.DataFrame, spec: EdgeSearchSpec, **_kwargs: Any) -> dict[str, Any]:
+    def fake_inner(_truth: pl.DataFrame, spec: EdgeSearchSpec, **_kwargs: Any) -> dict[str, Any]:
         train_expectancy = 0.02 if spec.name == "train_winner" else 0.01
-        oos_expectancy = -0.50 if spec.name == "train_winner" else 0.50
         return {
             "name": spec.name,
             "train_expectancy": train_expectancy,
@@ -436,14 +435,36 @@ def test_edge_search_selects_on_train_not_oos(monkeypatch: pytest.MonkeyPatch) -
             "train_n": 20.0,
             "train_avg_rr": 2.5,
             "train_profit_factor": 1.5,
-            "oos_expectancy": oos_expectancy,
-            "oos_win_rate": 0.5,
-            "oos_n": 10.0,
-            "oos_avg_rr": 2.5,
-            "oos_profit_factor": 1.0,
+            "train_positive_fold_rate": 1.0,
+            "train_fold_count": 3.0,
+            "selection_scope": "inner_walk_forward",
+            "outer_evaluated": 0.0,
+            "oos_expectancy": 0.0,
+            "oos_win_rate": 0.0,
+            "oos_n": 0.0,
+            "oos_avg_rr": 0.0,
+            "oos_profit_factor": 0.0,
+            "oos_start_index": -1.0,
+            "oos_start_ts": -1.0,
         }
 
-    monkeypatch.setattr(edge_module, "score_edge_spec_oos", fake_score)
+    outer_calls: list[str] = []
+
+    def fake_outer(_truth: pl.DataFrame, spec: EdgeSearchSpec, **_kwargs: Any) -> dict[str, float]:
+        outer_calls.append(spec.name)
+        return {
+            "oos_expectancy": -0.50,
+            "oos_win_rate": 0.4,
+            "oos_n": 10.0,
+            "oos_avg_rr": 2.5,
+            "oos_profit_factor": 0.8,
+            "oos_start_index": 15.0,
+            "oos_start_ts": -1.0,
+            "outer_evaluated": 1.0,
+        }
+
+    monkeypatch.setattr(edge_module, "_inner_walk_forward_summary", fake_inner)
+    monkeypatch.setattr(edge_module, "_outer_holdout_summary", fake_outer)
     table, best, row = edge_module.search_best_edge_spec(
         pl.DataFrame(),
         interval_ns=1,
@@ -458,3 +479,7 @@ def test_edge_search_selects_on_train_not_oos(monkeypatch: pytest.MonkeyPatch) -
     assert best is not None
     assert best.name == "train_winner"
     assert row["oos_expectancy"] == -0.50
+    assert outer_calls == ["train_winner"]
+    unselected = table.filter(pl.col("name") == "oos_winner").row(0, named=True)
+    assert unselected["oos_n"] == 0.0
+    assert unselected["outer_evaluated"] == 0.0

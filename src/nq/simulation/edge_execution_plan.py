@@ -21,6 +21,8 @@ import numpy.typing as npt
 import polars as pl
 
 from nq.contracts.mbo import PRICE_SCALE
+from nq.contracts.temporal import AVAILABILITY_TS
+from nq.models.splitting import purged_walk_forward_split
 from nq.research.progress import ProgressLike
 from nq.simulation.auction import (
     VP_PROFILE_INTERVAL_NS,
@@ -390,6 +392,102 @@ def score_edge_spec_oos(
     }
 
 
+def _inner_walk_forward_summary(
+    truth: pl.DataFrame,
+    spec: EdgeSearchSpec,
+    *,
+    n_splits: int = 3,
+) -> dict[str, float | str]:
+    """يلخّص OOS الداخلي داخل جزء التدريب فقط لاختيار مواصفة التنفيذ."""
+    empty: dict[str, float | str] = {
+        "name": spec.name,
+        "train_expectancy": 0.0,
+        "train_win_rate": 0.0,
+        "train_n": 0.0,
+        "train_avg_rr": 0.0,
+        "train_profit_factor": 0.0,
+        "train_positive_fold_rate": 0.0,
+        "train_fold_count": 0.0,
+        "selection_scope": "inner_walk_forward",
+        "outer_evaluated": 0.0,
+        "oos_expectancy": 0.0,
+        "oos_win_rate": 0.0,
+        "oos_n": 0.0,
+        "oos_avg_rr": 0.0,
+        "oos_profit_factor": 0.0,
+        "oos_start_index": -1.0,
+        "oos_start_ts": -1.0,
+    }
+    if truth.height < _MIN_TRUTH_ROWS_FOR_OOS:
+        return empty
+    if AVAILABILITY_TS in truth.columns:
+        times = truth[AVAILABILITY_TS].to_numpy().astype(np.int64)
+    else:
+        times = np.arange(truth.height, dtype=np.int64)
+    purge = int(spec.exec_config().max_hold_buckets)
+    folds = purged_walk_forward_split(
+        times,
+        n_splits=max(1, min(int(n_splits), truth.height - 1)),
+        purge_samples=purge,
+        min_train_size=max(_MIN_TRUTH_ROWS_FOR_OOS // 2, purge + 1),
+    )
+    active_frames: list[pl.DataFrame] = []
+    fold_expectancies: list[float] = []
+    for fold in folds:
+        start = int(fold.test_idx[0])
+        stop = int(fold.test_idx[-1]) + 1
+        simulated = simulate_edge_trades(
+            truth.slice(start, stop - start),
+            exec_cfg=spec.exec_config(),
+        )
+        summary = summarize_edge_trades(simulated)
+        fold_expectancies.append(float(summary["expectancy"]))
+        active = simulated.filter(pl.col("edge_signal") != 0.0)
+        if active.height:
+            active_frames.append(active)
+    if not folds:
+        return empty
+    combined = pl.concat(active_frames, how="vertical") if active_frames else pl.DataFrame()
+    summary = summarize_edge_trades(combined)
+    positive_rate = float(np.mean(np.asarray(fold_expectancies) > 0.0))
+    return {
+        **empty,
+        "train_expectancy": summary["expectancy"],
+        "train_win_rate": summary["win_rate"],
+        "train_n": summary["n_trades"],
+        "train_avg_rr": summary["avg_rr_planned"],
+        "train_profit_factor": summary["profit_factor"],
+        "train_positive_fold_rate": positive_rate,
+        "train_fold_count": float(len(folds)),
+    }
+
+
+def _outer_holdout_summary(
+    truth: pl.DataFrame,
+    spec: EdgeSearchSpec,
+    *,
+    train_frac: float,
+) -> dict[str, float]:
+    """يقيس المواصفة المختارة وحدها على الـholdout الخارجي النهائي."""
+    cut = int(truth.height * train_frac)
+    start = min(truth.height, cut + int(spec.exec_config().max_hold_buckets))
+    simulated = simulate_edge_trades(truth.slice(start), exec_cfg=spec.exec_config())
+    summary = summarize_edge_trades(simulated)
+    start_ts = -1.0
+    if start < truth.height and AVAILABILITY_TS in truth.columns:
+        start_ts = float(truth[AVAILABILITY_TS][start])
+    return {
+        "oos_expectancy": summary["expectancy"],
+        "oos_win_rate": summary["win_rate"],
+        "oos_n": summary["n_trades"],
+        "oos_avg_rr": summary["avg_rr_planned"],
+        "oos_profit_factor": summary["profit_factor"],
+        "oos_start_index": float(start),
+        "oos_start_ts": start_ts,
+        "outer_evaluated": 1.0,
+    }
+
+
 def search_best_edge_spec(  # noqa: PLR0912
     mbo: pl.DataFrame,
     *,
@@ -411,8 +509,13 @@ def search_best_edge_spec(  # noqa: PLR0912
     """يبحث عن أفضل دخول/خروج؛ يعيد ``best=None`` إن لم تُحقَّق القيود.
 
     ``auction`` / ``deceptive_frame`` / ``scored`` اختياريان لإعادة استخدام
-    بناء اليوم. الرينج الافتراضي 5د على ساعة فعل ``interval_ns`` (30ث).
+    بناء اليوم. الاختيار من OOS داخلي داخل train، ثم تُقاس المواصفة الفائزة
+    وحدها على holdout خارجي لم يُستعمل في الشبكة.
     """
+    if not _TRAIN_FRAC_MIN < train_frac < _TRAIN_FRAC_MAX:
+        raise ValueError(
+            f"train_frac must be in ({_TRAIN_FRAC_MIN}, {_TRAIN_FRAC_MAX}), got {train_frac}"
+        )
     specs = grid if grid is not None else default_edge_search_grid()
     rows: list[dict[str, float | str]] = []
     if progress is not None:
@@ -462,12 +565,11 @@ def search_best_edge_spec(  # noqa: PLR0912
                 thesis_frame=thesis_frame,
                 thesis_col=thesis_col,
             )
-        row = score_edge_spec_oos(
-            mbo,
+        truth = truth_by_hold[hold]
+        outer_train = truth.head(int(truth.height * train_frac))
+        row = _inner_walk_forward_summary(
+            outer_train,
             spec,
-            interval_ns=interval_ns,
-            train_frac=train_frac,
-            truth_frame=truth_by_hold[hold],
         )
         rows.append(row)
         if progress is not None:
@@ -475,20 +577,31 @@ def search_best_edge_spec(  # noqa: PLR0912
     table = pl.DataFrame(rows) if rows else pl.DataFrame()
     if table.height == 0:
         return table, None, {}
-    # مهم: OOS للتقرير فقط. أهلية/اختيار المواصفة من التدريب حصراً.
-    # الاسمان min_oos_* محفوظان توافقياً للـ CLI القديم، لكنهما يطبّقان هنا
-    # على جزء الاختيار (train) كي لا تتحول OOS إلى validation مخفية.
+    # الاسمان min_oos_* محفوظان توافقياً للـ CLI القديم؛ المقاييس train_ هنا
+    # هي OOS داخلي walk-forward داخل التدريب الخارجي، لا ملاءمة داخل العينة.
     eligible = table.filter(
         (pl.col("train_n") >= float(min_oos_trades)) & (pl.col("train_avg_rr") >= float(min_oos_rr))
     )
     if eligible.height == 0:
         return table, None, {}
     best_row = eligible.sort(
-        ["train_expectancy", "train_n", "name"],
-        descending=[True, True, False],
+        ["train_positive_fold_rate", "train_expectancy", "train_n", "name"],
+        descending=[True, True, True, False],
     ).row(0, named=True)
     best_spec = next((s for s in specs if s.name == best_row["name"]), None)
-    return table, best_spec, dict(best_row)
+    if best_spec is None:
+        return table, None, {}
+    outer = _outer_holdout_summary(
+        truth_by_hold[int(best_spec.hold_buckets)],
+        best_spec,
+        train_frac=train_frac,
+    )
+    updated_rows: list[dict[str, float | str]] = []
+    for row in rows:
+        updated_rows.append({**row, **outer} if row["name"] == best_spec.name else row)
+    table = pl.DataFrame(updated_rows)
+    selected = next(row for row in updated_rows if row["name"] == best_spec.name)
+    return table, best_spec, dict(selected)
 
 
 __all__ = [
