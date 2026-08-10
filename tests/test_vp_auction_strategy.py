@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime as dt
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from nq.core.determinism import make_generator
 from nq.simulation.deceptive_liquidity import DeceptiveLiquidityConfig
 from nq.simulation.edge_execution_plan import EdgeSearchSpec
@@ -48,6 +50,12 @@ def test_max_rows_at_cme_boundary_is_complete() -> None:
     limited, complete = _load_nq(frame, max_rows=1, progress=None)
     assert limited.height == 1
     assert complete is True
+
+
+def test_vp_loader_rejects_nonpositive_max_rows() -> None:
+    frame = make_stream([("T", "B", 100, 1, 0)])
+    with pytest.raises(ValueError, match="max_rows must be"):
+        _load_nq(frame, max_rows=0, progress=None)
 
 
 def test_run_vp_auction_research_uses_unified_features() -> None:

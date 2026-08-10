@@ -173,6 +173,8 @@ def _load_nq(
     progress: ProgressLike | None,
 ) -> tuple[pl.DataFrame, bool]:
     """حمّل العينة وبيّن هل ``max_rows`` قطع جلسة CME من المنتصف."""
+    if max_rows is not None and max_rows < 1:
+        raise ValueError(f"max_rows must be >= 1, got {max_rows}")
     # load_mbo_frame يقرأ الملف ثم يرتبه قبل القص أصلًا؛ نحتفظ بصف واحد بعد
     # الحد حتى نعرف إن كان الحد جلسيًا بدل افتراض أن 500k = يوم كامل.
     full = load_mbo_frame(nq, max_rows=None, progress=progress)
