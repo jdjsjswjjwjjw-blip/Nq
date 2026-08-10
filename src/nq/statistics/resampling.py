@@ -10,15 +10,35 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import numpy.typing as npt
 
-from nq.research.progress import ProgressLike
+if TYPE_CHECKING:
+    from nq.research.progress import ProgressLike
 
 FloatArray = npt.NDArray[np.float64]
 Alternative = Literal["two-sided", "greater", "less"]
+_MIN_TEMPORAL_BLOCK = 2
+
+
+def temporal_block_permutation(
+    series: npt.NDArray[np.generic] | list[float],
+    *,
+    rng: np.random.Generator,
+    block_size: int | None = None,
+) -> np.ndarray:
+    """يبدّل ترتيب كتل متجاورة ويحافظ على الارتباط الذاتي داخل كل كتلة."""
+    arr = np.asarray(series)
+    n = int(arr.shape[0])
+    if n < _MIN_TEMPORAL_BLOCK:
+        return arr.copy()
+    size = int(block_size) if block_size is not None else max(_MIN_TEMPORAL_BLOCK, int(np.sqrt(n)))
+    size = min(max(size, 1), n)
+    blocks = [arr[start : start + size] for start in range(0, n, size)]
+    order = rng.permutation(len(blocks))
+    return np.concatenate([blocks[int(i)] for i in order], axis=0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,3 +172,12 @@ def moving_block_bootstrap_ci(
     hi = (1 + ci) / 2 * 100
     low, high = np.percentile(estimates, [lo, hi])
     return float(low), float(point), float(high)
+
+
+__all__ = [
+    "TestResult",
+    "bootstrap_ci",
+    "moving_block_bootstrap_ci",
+    "permutation_test",
+    "temporal_block_permutation",
+]

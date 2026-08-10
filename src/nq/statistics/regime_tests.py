@@ -7,11 +7,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import numpy.typing as npt
 
-from nq.research.progress import ProgressLike
-from nq.statistics.resampling import TestResult
+from nq.statistics.resampling import TestResult, temporal_block_permutation
+
+if TYPE_CHECKING:
+    from nq.research.progress import ProgressLike
 
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.intp]
@@ -63,7 +67,7 @@ def regime_difference_test(
     observed = _f_statistic(vals, labs)
     null = np.empty(n_permutations, dtype=np.float64)
     for i in range(n_permutations):
-        null[i] = _f_statistic(vals, generator.permutation(labs))
+        null[i] = _f_statistic(vals, temporal_block_permutation(labs, rng=generator))
         if progress is not None:
             progress.heartbeat(i + 1, n_permutations, label=progress_label)
     pvalue = (int(np.sum(null >= observed)) + 1) / (n_permutations + 1)

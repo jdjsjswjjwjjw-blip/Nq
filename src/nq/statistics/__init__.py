@@ -21,6 +21,7 @@ from nq.statistics.resampling import (
     bootstrap_ci,
     moving_block_bootstrap_ci,
     permutation_test,
+    temporal_block_permutation,
 )
 
 __all__ = [
@@ -35,5 +36,6 @@ __all__ = [
     "regime_difference_test",
     "sharpe_ratio",
     "t_statistic",
+    "temporal_block_permutation",
     "verify_hypotheses",
 ]
