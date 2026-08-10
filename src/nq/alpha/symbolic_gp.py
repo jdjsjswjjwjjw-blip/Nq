@@ -531,6 +531,7 @@ def search_symbolic_hypotheses(  # noqa: PLR0915
             "selected": pl.Utf8(),
             "train_ic": pl.Float64(),
             "test_ic": pl.Float64(),
+            "employed_sign": pl.Float64(),
             "expression": pl.Utf8(),
             "backend": pl.Utf8(),
         }
@@ -593,17 +594,20 @@ def search_symbolic_hypotheses(  # noqa: PLR0915
                     "selected": "",
                     "train_ic": 0.0,
                     "test_ic": 0.0,
+                    "employed_sign": 1.0,
                     "expression": "",
                     "backend": backend,
                 }
             )
             continue
-        # اختر أفضل |IC| تدريب
+        # اختر أفضل |IC| تدريب ثم وظّف بعلامة train_ic
         best = max(programs, key=lambda p: abs(p.train_ic))
         all_programs.extend(programs)
         fold_programs.append(list(programs))
-        test_ic = _spearman_ic(best.values[fold.test_idx], forward[fold.test_idx])
-        oos_values[fold.test_idx] = best.values[fold.test_idx]
+        employed_sign = 1.0 if best.train_ic >= 0.0 else -1.0
+        employed = employed_sign * best.values
+        test_ic = _spearman_ic(employed[fold.test_idx], forward[fold.test_idx])
+        oos_values[fold.test_idx] = employed[fold.test_idx]
         oos_fwd[fold.test_idx] = forward[fold.test_idx]
         fold_rows.append(
             {
@@ -611,6 +615,7 @@ def search_symbolic_hypotheses(  # noqa: PLR0915
                 "selected": best.name,
                 "train_ic": float(best.train_ic),
                 "test_ic": float(test_ic),
+                "employed_sign": float(employed_sign),
                 "expression": best.expression,
                 "backend": best.backend,
             }
@@ -618,7 +623,8 @@ def search_symbolic_hypotheses(  # noqa: PLR0915
         if progress is not None:
             progress.op(
                 f"symbolic fold {fold_i + 1}: {best.name} · "
-                f"train|IC|={best.train_ic:.4g} · test_ic={test_ic:.4g}"
+                f"train|IC|={best.train_ic:.4g} · employed_sign={employed_sign:+.0f} · "
+                f"test_ic={test_ic:.4g}"
             )
 
     fold_df = pl.DataFrame(fold_rows) if fold_rows else empty_folds
@@ -652,7 +658,11 @@ def search_symbolic_hypotheses(  # noqa: PLR0915
                             _spearman_ic(prog.values[fold.train_idx], perm_fwd[fold.train_idx])
                         ),
                     )
-                    null_oos[fold.test_idx] = best_null.values[fold.test_idx]
+                    null_train_ic = _spearman_ic(
+                        best_null.values[fold.train_idx], perm_fwd[fold.train_idx]
+                    )
+                    employed_sign = 1.0 if null_train_ic >= 0.0 else -1.0
+                    null_oos[fold.test_idx] = employed_sign * best_null.values[fold.test_idx]
                     null_y[fold.test_idx] = perm_fwd[fold.test_idx]
                 nmask = np.isfinite(null_oos) & np.isfinite(null_y)
                 if int(nmask.sum()) >= _MIN_IC_SAMPLES and float(np.std(null_oos[nmask])) > 0:

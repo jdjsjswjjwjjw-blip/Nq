@@ -25,7 +25,10 @@ def test_run_vp_auction_research_uses_unified_features() -> None:
     )
     assert "vp_balance" in result.features.columns
     assert "vp_imbalance" in result.features.columns
-    assert "vp_balance" in result.signal_columns
+    assert "vp_of_delta" in result.signal_columns
+    assert "vp_look_fail" in result.signal_columns
+    assert "vp_rel_upper" not in result.signal_columns
+    assert "vp_balance" not in result.signal_columns
     assert "fail_fvg" not in result.signal_columns
     assert result.unified is not None
     assert result.fold_df is not None
@@ -91,5 +94,6 @@ def test_run_vp_auction_connected_execution_layer() -> None:
         assert col in result.features.columns, f"missing connected col {col}"
     assert "edge_pnl" not in result.features.columns
     assert "entry_gate" not in result.signal_columns
-    assert "vp_balance" in result.signal_columns
+    assert "vp_look_fail" in result.signal_columns
+    assert "vp_rel_upper" not in result.signal_columns
     assert result.edge_search_table.height >= 1

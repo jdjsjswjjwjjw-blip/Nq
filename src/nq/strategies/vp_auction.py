@@ -56,33 +56,53 @@ from nq.simulation.edge_execution_plan import (
 from nq.simulation.market_truth import MARKET_TRUTH_COLUMNS
 from nq.strategies.fvg_hypothesis import walk_forward_select_hypotheses
 
+#: مرشّحو IC = متنبّئات اتجاهية موقّعة فقط.
+#: مسافات/حدود VP (``vp_rel_*`` / excess / حدود مطلقة) وأعلام نظام
+#: (balance/imbalance/session) تبقى في الإطار للسياق/FSM لكنها **ليست** ألفا IC.
 _VP_AUCTION_FOCUS = (
-    "vp_rel_upper",
-    "vp_rel_mid",
-    "vp_rel_lower",
-    "vp_excess_upper",
-    "vp_excess_lower",
     "vp_of_delta",
     "vp_absorb",
     "vp_look_fail",
     "vp_order_accel",
     "vp_early_imbalance",
-    "vp_balance",
-    "vp_imbalance",
-    "vp_expansion",
-    "vp_close_in_value",
     "vp_flip_to_imbalance",
-    "vp_liquidity_session",
     "vp_pullback_defense",
-    "vp_fr_active",
     "vp_fr_accepted_expansion",
-    "vp_fr_in_balance",
     "vp_fr_exit",
     "vp_auction_setup",
     "vp_fsm_break",
     "vp_fsm_build",
     "vp_fsm_retest",
     "nq_delta",
+)
+
+#: ميزات مستوى/مسافة — وصفيّة للمزاد، ليست إشارة اتجاه لـ Spearman IC.
+_VP_LEVEL_DISTANCE_FEATURES = (
+    "vp_upper",
+    "vp_mid",
+    "vp_lower",
+    "vp_rel_upper",
+    "vp_rel_mid",
+    "vp_rel_lower",
+    "vp_excess_upper",
+    "vp_excess_lower",
+    "vp_fr_upper",
+    "vp_fr_mid",
+    "vp_fr_lower",
+    "vp_fr_start_ts",
+    "vp_fr_end_ts",
+)
+
+#: أعلام حالة/نظام — ليست متنبّئ اتجاه سعري.
+_VP_REGIME_STATE_FEATURES = (
+    "vp_balance",
+    "vp_imbalance",
+    "vp_expansion",
+    "vp_close_in_value",
+    "vp_in_value_frac",
+    "vp_liquidity_session",
+    "vp_fr_active",
+    "vp_fr_in_balance",
 )
 
 #: إشارات VP بعد بوابة الهولد/التضليل — جزء من نفس أنطولوجيا الفرز.
@@ -583,5 +603,8 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
 
 __all__ = [
     "VpAuctionResearchResult",
+    "_VP_AUCTION_FOCUS",
+    "_VP_LEVEL_DISTANCE_FEATURES",
+    "_VP_REGIME_STATE_FEATURES",
     "run_vp_auction_research",
 ]

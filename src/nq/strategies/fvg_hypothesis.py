@@ -347,7 +347,11 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
 ) -> tuple[pl.DataFrame, float, float, int, str | None]:
     """اختيار فرضية على التدريب فقط؛ قياس IC خارج العينة على الاختبار.
 
-    ترتيب المرشّحين داخل كل طيّة = Spearman IC فقط (بلا تبديلات).
+    ترتيب المرشّحين داخل كل طيّة = ``|Spearman IC|`` فقط (بلا تبديلات).
+    التوظيف (OOS): الإشارة المختارة تُضرَب بـ ``sign(train_ic)`` قبل تجميع
+    العيّنة خارج العينة — حتى لا يبقى IC سالبًا لمجرد اختيار متنبّئ معاكس
+    الاتجاه الاسمي بـ abs(IC).
+
     الدلالة الإحصائية:
 
     * ``selection_aware_null=True`` (افتراضي): لكل تبديل يُعاد اختيار أفضل مرشّح
@@ -370,6 +374,7 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
             "selected": pl.Utf8(),
             "train_ic": pl.Float64(),
             "test_ic": pl.Float64(),
+            "employed_sign": pl.Float64(),
         }
     )
     if not cols or work.height < _MIN_ROWS_FOR_SEARCH:
@@ -389,7 +394,7 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
     if log is not None:
         log.op(
             f"walk-forward: {len(folds)} طيّات · candidates={len(cols)} · "
-            f"rank=IC · oos_perm={n_permutations} · "
+            f"rank=|IC| · employ=sign(train_ic)·x · oos_perm={n_permutations} · "
             f"selection_null={selection_aware_null} · purge={effective_purge}"
         )
 
@@ -418,7 +423,10 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
                     len(cols),
                     label=f"WF fold {fold_i + 1} candidates",
                 )
-        test_vals = col_mats[best_name]
+        # abs(|IC|) اختيار؛ التوظيف يحاذي الإشارة بعلامة train_ic حتى لا يبقى OOS سالبًا
+        # لمجرد أن أفضل متنبّئ معاكس للاتجاه الاسمي.
+        employed_sign = 1.0 if best_ic >= 0.0 else -1.0
+        test_vals = employed_sign * col_mats[best_name]
         test_ic = _ic_on_slice(test_vals, forward, fold.test_idx)
         oos_values[fold.test_idx] = test_vals[fold.test_idx]
         oos_fwd[fold.test_idx] = forward[fold.test_idx]
@@ -428,12 +436,14 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
                 "selected": best_name,
                 "train_ic": float(best_ic),
                 "test_ic": float(test_ic),
+                "employed_sign": float(employed_sign),
             }
         )
         if log is not None:
             log.op(
                 f"WF fold {fold_i + 1}: selected={best_name!r} · "
-                f"train_ic={best_ic:.4g} · test_ic={test_ic:.4g}"
+                f"train_ic={best_ic:.4g} · employed_sign={employed_sign:+.0f} · "
+                f"test_ic={test_ic:.4g}"
             )
 
     fold_df = pl.DataFrame(rows) if rows else empty
@@ -457,7 +467,8 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
                         if abs(ic) > abs(best_ic) or (abs(ic) == abs(best_ic) and ic > best_ic):
                             best_ic = ic
                             best_name = col
-                    null_oos[fold.test_idx] = col_mats[best_name][fold.test_idx]
+                    employed_sign = 1.0 if best_ic >= 0.0 else -1.0
+                    null_oos[fold.test_idx] = employed_sign * col_mats[best_name][fold.test_idx]
                     null_y[fold.test_idx] = perm_fwd[fold.test_idx]
                 nmask = np.isfinite(null_oos) & np.isfinite(null_y)
                 if int(nmask.sum()) >= _MIN_OOS_SAMPLES and float(np.std(null_oos[nmask])) > 0:
