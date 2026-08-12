@@ -203,11 +203,16 @@ def simulate_edge_trades(  # noqa: PLR0912, PLR0915
     gate = truth["entry_gate"].to_numpy().astype(np.float64)
     thesis = truth["thesis_dir"].to_numpy().astype(np.float64)
     close = truth["close"].to_numpy().astype(np.float64) * PRICE_SCALE
-    vah = truth["vah"].to_numpy().astype(np.float64) * PRICE_SCALE
-    val = truth["val"].to_numpy().astype(np.float64) * PRICE_SCALE
+    # الوقف/الهدف من VA كانت مكتملة ومتاحة قبل برميل القرار. الحدود الحالية
+    # وصفية وقد تضم حجم برميل الدخول نفسه، فلا تدخل خطة التنفيذ.
+    vah_col = "decision_vah" if "decision_vah" in truth.columns else "vah"
+    val_col = "decision_val" if "decision_val" in truth.columns else "val"
+    poc_col = "decision_poc" if "decision_poc" in truth.columns else "poc"
+    vah = truth[vah_col].to_numpy().astype(np.float64) * PRICE_SCALE
+    val = truth[val_col].to_numpy().astype(np.float64) * PRICE_SCALE
     poc = (
-        truth["poc"].to_numpy().astype(np.float64) * PRICE_SCALE
-        if "poc" in truth.columns
+        truth[poc_col].to_numpy().astype(np.float64) * PRICE_SCALE
+        if poc_col in truth.columns
         else (vah + val) / 2.0
     )
     balanced = (

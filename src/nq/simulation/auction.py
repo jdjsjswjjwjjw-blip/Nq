@@ -108,6 +108,9 @@ _PROFILE_JOIN_COLS = (
     "poc",
     "vah",
     "val",
+    "decision_poc",
+    "decision_vah",
+    "decision_val",
     "poc_migration",
     "is_balanced",
     "is_expansion",
@@ -165,6 +168,7 @@ def auction_states(
         .cum_sum()
         .alias("_liq_run")
     ).with_columns(
+        pl.col("poc").shift(1).over("_liq_run").alias("decision_poc"),
         pl.col("vah").shift(1).over("_liq_run").alias("decision_vah"),
         pl.col("val").shift(1).over("_liq_run").alias("decision_val"),
     )
@@ -379,6 +383,9 @@ def auction_action_states(
             "poc": pl.Int64(),
             "vah": pl.Int64(),
             "val": pl.Int64(),
+            "decision_poc": pl.Int64(),
+            "decision_vah": pl.Int64(),
+            "decision_val": pl.Int64(),
             "poc_migration": pl.Int64(),
             "excess_upper": pl.Int64(),
             "excess_lower": pl.Int64(),
@@ -443,7 +450,11 @@ def auction_action_states(
 
     profile_right = profile.select(AVAILABILITY_TS, *_PROFILE_JOIN_COLS).sort(AVAILABILITY_TS)
     merged = signal.join_asof(profile_right, on=AVAILABILITY_TS, strategy="backward")
-    merged = merged.filter(pl.col("vah").is_not_null() & pl.col("val").is_not_null())
+    merged = merged.filter(
+        pl.col("decision_poc").is_not_null()
+        & pl.col("decision_vah").is_not_null()
+        & pl.col("decision_val").is_not_null()
+    )
     if merged.height == 0:
         return empty
 
@@ -451,7 +462,11 @@ def auction_action_states(
     prev_low = pl.col("low").shift(1)
     price_range = pl.col("high") - pl.col("low")
     prev_range = price_range.shift(1)
-    closed_in_value = (pl.col("close") >= pl.col("val")) & (pl.col("close") <= pl.col("vah"))
+    # كل قرار على برميل الفعل يقرأ آخر VA مكتملة فقط. vah/poc/val الحالية
+    # تبقى وصفية ولا يجوز أن يحكم البرميل نفسه بحدود ساهم حجمه في صنعها.
+    closed_in_value = (pl.col("close") >= pl.col("decision_val")) & (
+        pl.col("close") <= pl.col("decision_vah")
+    )
     made_new_high = (prev_high.is_not_null()) & (pl.col("high") > prev_high)
     made_new_low = (prev_low.is_not_null()) & (pl.col("low") < prev_low)
     expansion_ratio = (
@@ -460,23 +475,27 @@ def auction_action_states(
         .otherwise(None)
     )
     va_w = pl.max_horizontal(
-        pl.col("vah").cast(pl.Float64) - pl.col("val").cast(pl.Float64),
+        pl.col("decision_vah").cast(pl.Float64) - pl.col("decision_val").cast(pl.Float64),
         pl.lit(1.0),
     )
     touch = float(bound_touch_frac)
     near_lower = (
-        pl.col("low").cast(pl.Float64) - pl.col("val").cast(pl.Float64)
+        pl.col("low").cast(pl.Float64) - pl.col("decision_val").cast(pl.Float64)
     ).abs() <= touch * va_w
     near_upper = (
-        pl.col("high").cast(pl.Float64) - pl.col("vah").cast(pl.Float64)
+        pl.col("high").cast(pl.Float64) - pl.col("decision_vah").cast(pl.Float64)
     ).abs() <= touch * va_w
     # امتصاص شرائي عند VAL: بيع عدواني كثيف بلا كسر الإغلاق تحت القيمة.
     absorb_buy = near_lower & (pl.col("sell_volume") > pl.col("buy_volume")) & closed_in_value
     # امتصاص بيعي عند VAH: شراء عدواني كثيف بلا إغلاق فوق القيمة.
     absorb_sell = near_upper & (pl.col("buy_volume") > pl.col("sell_volume")) & closed_in_value
     # Look above/below and fail (ورقة VP): اختراق المدى ثم إغلاق داخل + ضغط معاكس.
-    look_fail_up = (pl.col("high") > pl.col("vah")) & closed_in_value & (pl.col("delta") < 0)
-    look_fail_dn = (pl.col("low") < pl.col("val")) & closed_in_value & (pl.col("delta") > 0)
+    look_fail_up = (
+        (pl.col("high") > pl.col("decision_vah")) & closed_in_value & (pl.col("delta") < 0)
+    )
+    look_fail_dn = (
+        (pl.col("low") < pl.col("decision_val")) & closed_in_value & (pl.col("delta") > 0)
+    )
 
     base = (
         merged.sort(BUCKET_START)
@@ -604,9 +623,13 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
 
     balanced = states["is_balanced"].to_numpy()
     close = states["close"].to_numpy().astype(np.float64)
-    vah = states["vah"].to_numpy().astype(np.float64)
-    poc = states["poc"].to_numpy().astype(np.float64)
-    val = states["val"].to_numpy().astype(np.float64)
+    # الـFSM يقرر على آخر ملف مكتمل، لا على VA الحالية التي تضم حجم البرميل نفسه.
+    vah_col = "decision_vah" if "decision_vah" in states.columns else "vah"
+    poc_col = "decision_poc" if "decision_poc" in states.columns else "poc"
+    val_col = "decision_val" if "decision_val" in states.columns else "val"
+    vah = states[vah_col].to_numpy().astype(np.float64)
+    poc = states[poc_col].to_numpy().astype(np.float64)
+    val = states[val_col].to_numpy().astype(np.float64)
     vol = states["bucket_volume"].to_numpy().astype(np.float64)
     expansion = states["is_expansion"].to_numpy()
     pullback = states["pullback_defended"].to_numpy()
@@ -876,6 +899,14 @@ def auction_signals_from_states(
         return pl.DataFrame(schema=base_schema)
 
     ordered = states.sort(BUCKET_START)
+    if "decision_vah" not in ordered.columns:
+        # توافق اختبارات/مستهلكين يبنون states يدويًا. مسار الإنتاج يمر دائمًا
+        # بـauction_states ويملك الحدود المتأخرة صراحةً.
+        ordered = ordered.with_columns(
+            pl.col("vah").alias("decision_vah"),
+            pl.col("poc").alias("decision_poc"),
+            pl.col("val").alias("decision_val"),
+        )
     if "order_accel_rate" not in ordered.columns or "early_imbalance" not in ordered.columns:
         # حالات مركّبة يدويًا (اختبارات FSM): صفّر الأداة دون كسر المخطط.
         ordered = ordered.with_columns(
@@ -907,20 +938,20 @@ def auction_signals_from_states(
     )
     classic = (
         ordered.with_columns(
-            (pl.col("vah").cast(pl.Float64) * scale).alias("vp_upper"),
-            (pl.col("poc").cast(pl.Float64) * scale).alias("vp_mid"),
-            (pl.col("val").cast(pl.Float64) * scale).alias("vp_lower"),
+            (pl.col("decision_vah").cast(pl.Float64) * scale).alias("vp_upper"),
+            (pl.col("decision_poc").cast(pl.Float64) * scale).alias("vp_mid"),
+            (pl.col("decision_val").cast(pl.Float64) * scale).alias("vp_lower"),
             pl.max_horizontal(
-                pl.col("vah").cast(pl.Float64) - pl.col("val").cast(pl.Float64),
+                pl.col("decision_vah").cast(pl.Float64) - pl.col("decision_val").cast(pl.Float64),
                 pl.lit(1.0),
             ).alias("_va_w"),
             pl.col("close").cast(pl.Float64).alias("_close"),
             pl.col("bucket_volume").cast(pl.Float64).alias("_bvol"),
         )
         .with_columns(
-            ((pl.col("_close") - pl.col("vah")) / pl.col("_va_w")).alias("vp_rel_upper"),
-            ((pl.col("_close") - pl.col("poc")) / pl.col("_va_w")).alias("vp_rel_mid"),
-            ((pl.col("_close") - pl.col("val")) / pl.col("_va_w")).alias("vp_rel_lower"),
+            ((pl.col("_close") - pl.col("decision_vah")) / pl.col("_va_w")).alias("vp_rel_upper"),
+            ((pl.col("_close") - pl.col("decision_poc")) / pl.col("_va_w")).alias("vp_rel_mid"),
+            ((pl.col("_close") - pl.col("decision_val")) / pl.col("_va_w")).alias("vp_rel_lower"),
             (pl.col("excess_upper").cast(pl.Float64) / pl.col("_va_w")).alias("vp_excess_upper"),
             (pl.col("excess_lower").cast(pl.Float64) / pl.col("_va_w")).alias("vp_excess_lower"),
             pl.when(pl.col("_bvol") > 0)

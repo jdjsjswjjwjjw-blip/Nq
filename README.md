@@ -81,7 +81,7 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 |-----------------|----------|
 | `.parquet` / `.arrow` / `.ipc` | افتراضي |
 | `.csv` | مدعوم |
-| `.zst` | يحتاج `pip install -e ".[data]"` |
+| `.zst` | يحتاج `pip install -e ".[data]"`؛ مع `--max-rows` فكّه مرة إلى صيغة عمودية لضمان الذاكرة المحدودة |
 | Databento columns | تُطبَّع تلقائيًا عبر `normalize_databento_frame` |
 
 ---
@@ -125,11 +125,11 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 
 | قاعدة | التطبيق في المشروع |
 |-------|---------------------|
-| عيّنة محدودة | `--max-rows 500000` أو `configs/lean.toml` (`max_rows=500000`) |
+| عيّنة محدودة | `--max-rows 500000` أو `configs/lean.toml`؛ القارئ يحتفظ بأقدم N سببيًا بذاكرة محدودة ولا يجسّد الملف كاملًا |
 | شبكة مضغوطة | FB: نواة+تعزيزات (افتراضي) · FVG: `core_fvg_grid` (~16) |
 | فلاتر lean | كمّية عمق/تعزيز `0.7` فقط (عطّل بـ `--no-lean-filters`) |
 | ترتيب رخيص | walk-forward يرتّب بـ Spearman IC فقط (بلا تبديل لكل مرشّح) |
-| دلالة مرة واحدة | permutation على **OOS المجمّع** (`--n-permutations` افتراضي 100) |
+| دلالة مرة واحدة | temporal block permutation على **OOS المجمّع** (`--n-permutations` افتراضي 100) |
 | استكشاف اختياري | `--exploratory` مغلق افتراضيًا (ليس أساس `best`) |
 | فهم بعد الاختيار | `--understand` بـ 50 تبديلًا فقط — لا يغيّر الاختيار |
 
@@ -430,7 +430,11 @@ python scripts/run_fail_breakout_days.py \
 | فلتر تضليل | إسقاط أوامر وهمية قبل بناء الميزات (TRADE لا تُمس) |
 | `entry_gate` / `market_true` | هولد سيولة حقيقية + حكم صدق السوق |
 | `vp_*_gated` | نفس إشارة VP × بوابة الهولد |
-| `edge_*` | وقف/هدف هيكلي VAL/VAH أو مضاعف R (بحث OOS) |
+| `edge_*` | وقف/هدف من `decision_VAL/VAH/POC` المكتملة فقط؛ اختيار داخلي وملخص نهائي من outer holdout المختوم |
+
+`absorb` و`look_fail` والـFSM ومسافات VP التنفيذية كلها تقرأ حدود
+`decision_vah/decision_poc/decision_val` السابقة المكتملة. تبقى `vah/poc/val`
+الحالية وصفية فقط ولا تدخل قرار البرميل أو مستويات الوقف/الهدف.
 
 ```bash
 # المسار الكامل المتصل (افتراضي سريع: batch — بدون tick_stream الثقيل)

@@ -1,6 +1,6 @@
 """إعادة المعاينة: دلالة وفترات ثقة (Resampling-Based Inference).
 
-* ``permutation_test``          — اختبار تبديل لا معلمي لفرق بين مجموعتين.
+* ``permutation_test``          — اختبار تبديل كتلي زمني لفرق بين مجموعتين.
 * ``bootstrap_ci``              — فترة ثقة bootstrap (عيّنات مستقلة).
 * ``moving_block_bootstrap_ci`` — فترة ثقة block-bootstrap للسلاسل الزمنية
   المترابطة (يحافظ على البنية الزمنية للارتباط الذاتي).
@@ -76,11 +76,12 @@ def permutation_test(
     alternative: Alternative = "two-sided",
     progress: ProgressLike | None = None,
     progress_label: str = "perm_test",
+    block_size: int | None = None,
 ) -> TestResult:
-    """اختبار تبديل لفرضية عدم وجود فرق بين ``a`` و ``b``.
+    """اختبار تبديل زمني كتلي لفرضية عدم وجود فرق بين ``a`` و ``b``.
 
-    يخلط التسميات ``n_permutations`` مرّة لبناء التوزيع الصفري، ويحسب p-value
-    بتصحيح ``(hits + 1)/(n + 1)`` (غير متحيّز ولا يعطي صفرًا).
+    يعيد ترتيب كتل متجاورة من السلسلة المجمّعة بدل خلط الصفوف IID، فيحافظ على
+    الارتباط الذاتي القصير. يحسب p-value بتصحيح ``(hits + 1)/(n + 1)``.
     """
     if n_permutations < 1:
         raise ValueError(f"n_permutations must be >= 1, got {n_permutations}")
@@ -93,7 +94,7 @@ def permutation_test(
     n_a = arr_a.shape[0]
     null = np.empty(n_permutations, dtype=np.float64)
     for i in range(n_permutations):
-        perm = generator.permutation(pooled)
+        perm = temporal_block_permutation(pooled, rng=generator, block_size=block_size)
         null[i] = statistic(perm[:n_a], perm[n_a:])
         if progress is not None:
             progress.heartbeat(i + 1, n_permutations, label=progress_label)

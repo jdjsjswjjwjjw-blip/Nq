@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import nq.statistics.resampling as resampling_module
 from nq.core.determinism import make_generator
 from nq.statistics import (
     benjamini_hochberg,
@@ -68,6 +69,20 @@ def test_temporal_block_permutation_preserves_local_order() -> None:
     permuted_blocks = {tuple(permuted[i : i + 3]) for i in range(0, 12, 3)}
     assert permuted_blocks == original_blocks
     assert not np.array_equal(permuted, series)
+
+
+def test_general_permutation_uses_temporal_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    original = resampling_module.temporal_block_permutation
+
+    def counted(*args: object, **kwargs: object) -> np.ndarray:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(resampling_module, "temporal_block_permutation", counted)
+    permutation_test([1.0, 2.0, 3.0], [0.0, 0.5, 1.0], n_permutations=11)
+    assert calls == 11
 
 
 # --- multiple testing -------------------------------------------------------

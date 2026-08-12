@@ -105,6 +105,25 @@ def test_iter_file_batches_does_not_materialize_with_full_loader(
     assert [batch.height for batch in iter_mbo_batches(path, batch_size=2)] == [2, 2, 2]
 
 
+def test_bounded_loader_keeps_global_earliest_without_full_materialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "unordered.parquet"
+    frame = make_stream(
+        [("A", "B", 100, 1, i) for i in range(1, 13)],
+        event_ts=[8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3],
+    )
+    frame.write_parquet(path, row_group_size=4)
+
+    def fail_full_load(*args: object, **kwargs: object) -> pl.DataFrame:
+        del args, kwargs
+        raise AssertionError("bounded loader must not call the full reader")
+
+    monkeypatch.setattr("nq.ingestion.reader._read_columnar", fail_full_load)
+    loaded = load_mbo_frame(path, max_rows=5)
+    assert loaded["event_ts"].to_list() == [0, 1, 2, 3, 4]
+
+
 def test_iter_csv_normalizes_inferred_dtypes(tmp_path: Path) -> None:
     path = tmp_path / "mbo.csv"
     make_stream([("A", "B", 100, 1, i) for i in range(1, 6)]).write_csv(path)

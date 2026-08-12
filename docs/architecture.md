@@ -128,6 +128,6 @@ Novel Alpha Signals
 ## مبادئ ملزمة
 
 1. **صفر تسريب زمني** — PIT / causal / purged WF / asof backward / purge ≥ horizon
-2. **صرامة كمية** — IC + permutation؛ للشبكات الكبيرة selection-under-null
+2. **صرامة كمية** — IC + temporal block permutation؛ للشبكات الكبيرة selection-under-null
 3. **أداء** — Polars + مرور دفتر موحّد متعدد الفواصل؛ فلترة ضوضاء قبل المسار
 4. **MBO فقط** — لا مصادر أسعار خارج عقد MBO
