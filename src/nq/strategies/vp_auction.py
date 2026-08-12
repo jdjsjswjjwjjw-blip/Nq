@@ -20,7 +20,8 @@ import numpy as np
 import polars as pl
 
 from nq.alpha.discovery import AlphaDiscovery
-from nq.contracts.temporal import AVAILABILITY_TS
+from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
+from nq.core.session import session_date_from_ns
 from nq.core.temporal_policy import TemporalPolicy
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult
@@ -32,7 +33,7 @@ from nq.research.orchestrator import (
     run_research_pipeline,
 )
 from nq.research.progress import ProgressLike, resolve_progress
-from nq.research.unified import UnifiedResearchReport
+from nq.research.unified import UnifiedResearchReport, build_unified_report
 from nq.simulation.auction import (
     VP_PROFILE_INTERVAL_NS,
     VP_SIGNAL_INTERVAL_NS,
@@ -56,6 +57,10 @@ from nq.simulation.edge_execution_plan import (
 from nq.simulation.market_truth import MARKET_TRUTH_COLUMNS
 from nq.strategies.fvg_hypothesis import walk_forward_select_hypotheses
 
+# 10 × 30ث = 5 دقائق: أفق أطروحة يقع داخل نافذة التنفيذ (حتى 15د)، لا عائد 30ث
+# كان منفصلًا زمنيًا عن الوقف/الهدف والهولد.
+VP_DEFAULT_SELECTION_HORIZON = 10
+
 #: مرشّحو IC = متنبّئات اتجاهية موقّعة فقط.
 #: مسافات/حدود VP (``vp_rel_*`` / excess / حدود مطلقة) وأعلام نظام
 #: (balance/imbalance/session) تبقى في الإطار للسياق/FSM لكنها **ليست** ألفا IC.
@@ -65,13 +70,10 @@ _VP_AUCTION_FOCUS = (
     "vp_look_fail",
     "vp_order_accel",
     "vp_early_imbalance",
-    "vp_flip_to_imbalance",
-    "vp_pullback_defense",
     "vp_fr_accepted_expansion",
     "vp_fr_exit",
     "vp_auction_setup",
     "vp_fsm_break",
-    "vp_fsm_build",
     "vp_fsm_retest",
     "nq_delta",
 )
@@ -91,6 +93,9 @@ _VP_LEVEL_DISTANCE_FEATURES = (
     "vp_fr_lower",
     "vp_fr_start_ts",
     "vp_fr_end_ts",
+    "vp_prior_upper",
+    "vp_prior_mid",
+    "vp_prior_lower",
 )
 
 #: أعلام حالة/نظام — ليست متنبّئ اتجاه سعري.
@@ -149,6 +154,7 @@ class VpAuctionResearchResult:
     #: علامة التوظيف الإجماع لـ ``best_signal`` (``+1``/``-1`` من طيّات الفوز).
     employed_sign: float
     exploratory_only: bool
+    sample_complete_session: bool
     # طبقة التنفيذ (متصلة — ليست مسارًا بديلًا)
     with_execution: bool
     raw_mbo_rows: int
@@ -165,8 +171,19 @@ def _load_nq(
     *,
     max_rows: int | None,
     progress: ProgressLike | None,
-) -> pl.DataFrame:
-    return load_mbo_frame(nq, max_rows=max_rows, progress=progress)
+) -> tuple[pl.DataFrame, bool]:
+    """حمّل العينة وبيّن هل ``max_rows`` قطع جلسة CME من المنتصف."""
+    if max_rows is not None and max_rows < 1:
+        raise ValueError(f"max_rows must be >= 1, got {max_rows}")
+    # load_mbo_frame يقرأ الملف ثم يرتبه قبل القص أصلًا؛ نحتفظ بصف واحد بعد
+    # الحد حتى نعرف إن كان الحد جلسيًا بدل افتراض أن 500k = يوم كامل.
+    full = load_mbo_frame(nq, max_rows=None, progress=progress)
+    if max_rows is None or full.height <= max_rows:
+        return full, True
+    limited = full.head(max_rows)
+    last_date = session_date_from_ns(int(full[EVENT_TS][max_rows - 1]))
+    next_date = session_date_from_ns(int(full[EVENT_TS][max_rows]))
+    return limited, last_date != next_date
 
 
 def _attach_execution_layer(
@@ -237,13 +254,58 @@ def _with_gated_vp_columns(edge_frame: pl.DataFrame, features: pl.DataFrame) -> 
     return work.with_columns(exprs)
 
 
+def _attach_oos_employed_signal(
+    features: pl.DataFrame,
+    fold_df: pl.DataFrame,
+) -> pl.DataFrame:
+    """يجسّد اختيار كل طيّة على صفوف اختبارها فقط مع lineage صريح.
+
+    صفوف التدريب تبقى صفراً، فلا يستطيع محرك التنفيذ استخدام اختيار مبني
+    على المستقبل أو استخدام الإشارة الإجماعية على كامل العينة.
+    """
+    work = features.sort(AVAILABILITY_TS)
+    n = work.height
+    values = np.zeros(n, dtype=np.float64)
+    fold_ids = np.full(n, -1, dtype=np.int64)
+    employed_signs = np.zeros(n, dtype=np.float64)
+    selected = np.full(n, "", dtype=object)
+    if n == 0 or fold_df.height == 0:
+        return work.with_columns(
+            pl.Series("vp_ic_employed", values),
+            pl.Series("vp_ic_fold", fold_ids),
+            pl.Series("vp_ic_employed_sign", employed_signs),
+            pl.Series("vp_ic_selected", selected, dtype=pl.Utf8),
+        )
+
+    times = work[AVAILABILITY_TS].to_numpy().astype(np.int64)
+    for row in fold_df.iter_rows(named=True):
+        signal_name = str(row["selected"])
+        if signal_name not in work.columns:
+            continue
+        start = int(row["test_start_ts"])
+        end = int(row["test_end_ts"])
+        mask = (times >= start) & (times <= end)
+        sign = float(row["employed_sign"])
+        raw = work[signal_name].cast(pl.Float64).fill_null(0.0).to_numpy()
+        values[mask] = sign * raw[mask]
+        fold_ids[mask] = int(row["fold"])
+        employed_signs[mask] = sign
+        selected[mask] = signal_name
+    return work.with_columns(
+        pl.Series("vp_ic_employed", values),
+        pl.Series("vp_ic_fold", fold_ids),
+        pl.Series("vp_ic_employed_sign", employed_signs),
+        pl.Series("vp_ic_selected", selected, dtype=pl.Utf8),
+    )
+
+
 def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     nq: pl.DataFrame | str | Path,
     mnq: pl.DataFrame | str | Path | None = None,
     *,
     ssl_window: int = 5,
     ssl_components: int = 4,
-    horizon: int = 1,
+    horizon: int = VP_DEFAULT_SELECTION_HORIZON,
     alpha: float = 0.05,
     n_permutations: int = 2000,
     n_splits: int = 3,
@@ -279,8 +341,14 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     )
 
     log.step("VP: تحميل MBO")
-    raw = _load_nq(nq, max_rows=max_rows, progress=log)
+    raw, sample_complete_session = _load_nq(nq, max_rows=max_rows, progress=log)
     raw_n = raw.height
+    effective_exploratory = exploratory_full_sample or not sample_complete_session
+    if not sample_complete_session:
+        log.note(
+            "تحذير كمي: max_rows قطع جلسة CME من المنتصف؛ النتائج تشغيلية/استكشافية "
+            "ولا تُعتمد كإثبات edge"
+        )
     # تسجيل التضليل مرة واحدة لليوم — يُعاد استخدامه للفلتر + براميل الإدج.
     scored_raw: pl.DataFrame | None = None
     deco_by_bucket: pl.DataFrame | None = None
@@ -312,12 +380,14 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     if mnq is None:
         partner = cleaned
     elif isinstance(mnq, (str, Path)):
-        partner = _load_nq(mnq, max_rows=max_rows, progress=log)
+        partner, _partner_complete = _load_nq(mnq, max_rows=max_rows, progress=log)
     else:
         partner = mnq.head(max_rows) if max_rows is not None else mnq
 
     cfg = PipelineConfig(
-        include_auction_vp=False,
+        # يجب أن تمر إشارات VP داخل القنوات الموحّدة نفسها؛ لا تشغّل SSL/M9/Alpha
+        # على إطار يخلو منها ثم تلصقها بعد انتهاء التقرير.
+        include_auction_vp=True,
         include_failed_fvg=False,
         include_failed_breakout=False,
         cross_market_mode="nq_only" if mnq is None else "dual",
@@ -390,21 +460,21 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         rng=generator,
         progress=log,
     )
-    # إجماع علامة التوظيف لأشيع إشارة فائزة — أي استخدام لاحق يجب أن يضرب بها.
+    # الإشارة القابلة للتنفيذ تُجسّد اختيار كل طيّة على OOS الخاصة بها فقط.
+    features = _attach_oos_employed_signal(features, fold_df)
+    # الإجماع وصفي فقط؛ التنفيذ لا يستخدمه.
     employed_sign = 1.0
     if best is not None and fold_df.height > 0 and "employed_sign" in fold_df.columns:
         win = fold_df.filter(pl.col("selected") == best)
         if win.height > 0:
             signs = win["employed_sign"].to_numpy()
             employed_sign = 1.0 if float(np.mean(signs)) >= 0.0 else -1.0
-        if best in features.columns:
-            features = features.with_columns(
-                (pl.col(best).cast(pl.Float64) * employed_sign).alias("vp_ic_employed")
-            )
-            log.note(
-                f"IC employment: best={best!r} · sign={employed_sign:+.0f} · "
-                "عمود vp_ic_employed = sign·signal"
-            )
+        log.note(
+            f"IC employment: modal={best!r} · consensus_sign={employed_sign:+.0f} · "
+            "vp_ic_employed مجسّد per-fold على OOS فقط"
+        )
+
+    thesis_frame = features.select(AVAILABILITY_TS, "vp_ic_employed")
 
     edge_table = pl.DataFrame()
     best_edge: EdgeSearchSpec | None = None
@@ -438,6 +508,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
             auction=auction_day,
             deceptive_frame=deco_by_bucket,
             scored=scored_raw,
+            thesis_frame=thesis_frame,
         )
         if best_edge is not None:
             edge_trades = run_edge_plan(
@@ -450,6 +521,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 progress=log,
                 auction=auction_day,
                 deceptive_frame=deco_by_bucket,
+                thesis_frame=thesis_frame,
             )
         else:
             edge_trades = run_edge_plan(
@@ -460,6 +532,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 progress=log,
                 auction=auction_day,
                 deceptive_frame=deco_by_bucket,
+                thesis_frame=thesis_frame,
             )
         edge_summary = summarize_edge_trades(edge_trades)
         edge_trades = _with_gated_vp_columns(edge_trades, features)
@@ -529,16 +602,24 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 category="vp_auction_execution",
             )
         )
-    if exploratory_full_sample:
+    if effective_exploratory:
         findings.append(
             assistant.generate_hypothesis(
-                "شاشة العيّنة الكاملة استكشافية فقط — ليست أساس الاختيار.",
+                (
+                    "النتائج استكشافية فقط — ليست إثبات edge."
+                    if sample_complete_session
+                    else "العينة مقطوعة داخل جلسة CME؛ كل النتائج استكشافية فقط."
+                ),
                 Evidence(
                     id="vp_search:exploratory_note",
                     source="vp_auction_walk_forward",
                     metric="note",
                     value=0.0,
-                    detail="full-sample alpha screen is exploratory",
+                    detail=(
+                        "full-sample alpha screen is exploratory"
+                        if sample_complete_session
+                        else "max_rows cut through a CME trade date"
+                    ),
                 ),
                 requires_significance=False,
                 category="vp_auction_search",
@@ -547,6 +628,16 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     report = assistant.write_report(
         findings,
         title="Volume Profile / Auction — Signal WF then Execution (Connected)",
+    )
+    connected_unified = build_unified_report(
+        ssl_report=result.ssl.report,
+        coverage_report=result.coverage.report,
+        alpha_report=report,
+        title="Volume Profile / Auction — Unified Edge Report",
+        narrative=(
+            "إشارات VP مرّت داخل إطار الميزات الموحّد؛ اختيار الفرضية تم قبل "
+            "طبقة التنفيذ، والتنفيذ مُقاس على OOS معزول."
+        ),
     )
     if with_execution:
         report_md = report.to_markdown() + "\n".join(
@@ -570,6 +661,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
     if output_dir is not None:
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
+        (out / "report.md").write_text(connected_unified.to_markdown(), encoding="utf-8")
         fold_df.write_parquet(out / "vp_fold_selections.parquet")
         (out / "vp_walk_forward_report.md").write_text(report_md, encoding="utf-8")
         summary = pl.DataFrame(
@@ -580,6 +672,8 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 "oos_pvalue": [oos_p],
                 "oos_n": [oos_n],
                 "exploratory_full_sample": [exploratory_full_sample],
+                "exploratory_only": [effective_exploratory],
+                "sample_complete_session": [sample_complete_session],
                 "with_execution": [with_execution],
                 "raw_mbo_rows": [raw_n],
                 "cleaned_mbo_rows": [cleaned_n],
@@ -604,7 +698,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         alpha=result.alpha,
         ssl=result.ssl,
         report=report,
-        unified=result.report,
+        unified=connected_unified,
         signal_columns=_VP_AUCTION_FOCUS,
         fold_df=fold_df,
         oos_ic=oos_ic,
@@ -612,7 +706,8 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
         oos_n=oos_n,
         best_signal=best,
         employed_sign=employed_sign,
-        exploratory_only=exploratory_full_sample,
+        exploratory_only=effective_exploratory,
+        sample_complete_session=sample_complete_session,
         with_execution=with_execution,
         raw_mbo_rows=raw_n,
         cleaned_mbo_rows=cleaned_n,
@@ -625,6 +720,7 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
 
 
 __all__ = [
+    "VP_DEFAULT_SELECTION_HORIZON",
     "_VP_AUCTION_FOCUS",
     "_VP_LEVEL_DISTANCE_FEATURES",
     "_VP_REGIME_STATE_FEATURES",

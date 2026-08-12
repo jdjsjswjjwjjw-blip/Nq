@@ -50,6 +50,9 @@ VP_SIGNAL_INTERVAL_NS: int = 30 * _NS
 
 _DEFAULT_BALANCE_THRESHOLD = 0.6
 _DEFAULT_EXPANSION_THRESHOLD = 1.5
+_DEFAULT_RANGE_BASELINE_WINDOW = 6
+_DEFAULT_BALANCE_CONFIRM_WINDOW = 3
+_DEFAULT_BALANCE_CONFIRM_FRACTION = 2.0 / 3.0
 #: نافذة ريتست الكلاسيكي بعد الكسر (براميل إشارة 30ث) — لا تُستخدم لقتل البناء.
 _DEFAULT_RETEST_WINDOW = 8
 #: أقصى عمر لسياق ما بعد الكسر قبل إعادة الضبط (≈ 30ث×48 ≈ 24د).
@@ -154,6 +157,18 @@ def auction_states(
             pl.lit(0, dtype=pl.Int64).alias("excess_lower"),
         )
 
+    # حدود القرار = آخر VA مكتملة قبل الشمعة الحالية. إدخال حجم الشمعة ثم
+    # سؤال هل عادت داخل القيمة يجعل القبول/التوازن ذاتي المرجع.
+    dva = dva.with_columns(
+        (pl.col(VP_LIQUIDITY_SESSION) != pl.col(VP_LIQUIDITY_SESSION).shift(1).fill_null(-1))
+        .cast(pl.Int64)
+        .cum_sum()
+        .alias("_liq_run")
+    ).with_columns(
+        pl.col("vah").shift(1).over("_liq_run").alias("decision_vah"),
+        pl.col("val").shift(1).over("_liq_run").alias("decision_val"),
+    )
+
     trades = extract_trades(add_time_bucket(sort_causal(frame), interval_ns=interval_ns))
 
     stats = (
@@ -167,11 +182,14 @@ def auction_states(
         )
     )
 
-    # حجم صفقات النافذة الحالية داخل منطقة القيمة الجلسية المتطوّرة
-    va_bounds = dva.select(BUCKET_START, "vah", "val")
+    # حجم النافذة داخل منطقة القيمة التي كانت معروفة قبل بدايتها.
+    va_bounds = dva.select(BUCKET_START, "decision_vah", "decision_val")
     in_value = (
         trades.join(va_bounds, on=BUCKET_START, how="left")
-        .filter((pl.col("price") >= pl.col("val")) & (pl.col("price") <= pl.col("vah")))
+        .filter(
+            (pl.col("price") >= pl.col("decision_val"))
+            & (pl.col("price") <= pl.col("decision_vah"))
+        )
         .group_by(BUCKET_START)
         .agg(pl.col("size").cast(pl.Int64).sum().alias("in_value_volume"))
     )
@@ -183,10 +201,18 @@ def auction_states(
         .sort(BUCKET_START)
     )
 
-    price_range = pl.col("high") - pl.col("low")
-    prev_range = price_range.shift(1)
-    prev_high = pl.col("high").shift(1)
-    prev_low = pl.col("low").shift(1)
+    # run متصل لجلسة السيولة؛ يمنع rolling من عبور حد آسيا/لندن/نيويورك.
+    merged = merged.with_columns((pl.col("high") - pl.col("low")).alias("range"))
+    price_range = pl.col("range")
+    # خط أساس سببي متين بدل قسمة المدى على شمعة سابقة واحدة قد تكون شاذة الصغر.
+    prev_range = (
+        pl.col("range")
+        .shift(1)
+        .rolling_median(window_size=_DEFAULT_RANGE_BASELINE_WINDOW, min_samples=1)
+        .over("_liq_run")
+    )
+    prev_high = pl.col("high").shift(1).over("_liq_run")
+    prev_low = pl.col("low").shift(1).over("_liq_run")
     in_value_fraction = (
         pl.when(pl.col("bucket_volume") > 0)
         .then(pl.col("in_value_volume") / pl.col("bucket_volume"))
@@ -199,11 +225,16 @@ def auction_states(
     )
     made_new_high = (prev_high.is_not_null()) & (pl.col("high") > prev_high)
     made_new_low = (prev_low.is_not_null()) & (pl.col("low") < prev_low)
-    closed_in_value = (pl.col("close") >= pl.col("val")) & (pl.col("close") <= pl.col("vah"))
-    is_expansion = expansion_ratio.is_not_null() & (expansion_ratio >= expansion_threshold)
+    closed_in_value = (pl.col("close") >= pl.col("decision_val")) & (
+        pl.col("close") <= pl.col("decision_vah")
+    )
+    is_expansion = (
+        expansion_ratio.is_not_null()
+        & (expansion_ratio >= expansion_threshold)
+        & (made_new_high | made_new_low)
+    )
 
-    return merged.with_columns(
-        price_range.alias("range"),
+    classified = merged.with_columns(
         in_value_fraction.alias("in_value_fraction"),
         expansion_ratio.alias("expansion_ratio"),
         made_new_high.alias("made_new_high"),
@@ -211,18 +242,36 @@ def auction_states(
         closed_in_value.alias("close_in_value"),
         is_expansion.alias("is_expansion"),
         # Excess: تطرف فوق VAH / تحت VAL (ورقة VP)
-        (pl.col("high") - pl.col("vah")).clip(lower_bound=0).alias("excess_upper"),
-        (pl.col("val") - pl.col("low")).clip(lower_bound=0).alias("excess_lower"),
+        (pl.col("high") - pl.col("decision_vah"))
+        .clip(lower_bound=0)
+        .fill_null(0)
+        .alias("excess_upper"),
+        (pl.col("decision_val") - pl.col("low"))
+        .clip(lower_bound=0)
+        .fill_null(0)
+        .alias("excess_lower"),
     ).with_columns(
         (
             pl.col("close_in_value")
             & ~pl.col("is_expansion")
             & (pl.col("in_value_fraction") >= balance_threshold)
-        ).alias("is_balanced"),
+        ).alias("_balance_raw"),
         ((pl.col("made_new_high") | pl.col("made_new_low")) & pl.col("close_in_value")).alias(
             "pullback_defended"
         ),
     )
+    balance_confidence = (
+        pl.col("_balance_raw")
+        .cast(pl.Float64)
+        .rolling_mean(window_size=_DEFAULT_BALANCE_CONFIRM_WINDOW, min_samples=1)
+        .over("_liq_run")
+    )
+    return classified.with_columns(
+        (pl.col("_balance_raw") & (balance_confidence >= _DEFAULT_BALANCE_CONFIRM_FRACTION)).alias(
+            "is_balanced"
+        ),
+        balance_confidence.alias("balance_confidence"),
+    ).drop("_balance_raw", "_liq_run")
 
 
 def auction_action_states(
@@ -293,11 +342,23 @@ def auction_action_states(
                         "vp_fr_upper",
                         "vp_fr_mid",
                         "vp_fr_lower",
+                        "vp_prior_upper",
+                        "vp_prior_mid",
+                        "vp_prior_lower",
                     )
                 },
                 "vp_fr_upper": pl.Series("vp_fr_upper", [None] * profile.height, dtype=pl.Float64),
                 "vp_fr_mid": pl.Series("vp_fr_mid", [None] * profile.height, dtype=pl.Float64),
                 "vp_fr_lower": pl.Series("vp_fr_lower", [None] * profile.height, dtype=pl.Float64),
+                "vp_prior_upper": pl.Series(
+                    "vp_prior_upper", [None] * profile.height, dtype=pl.Float64
+                ),
+                "vp_prior_mid": pl.Series(
+                    "vp_prior_mid", [None] * profile.height, dtype=pl.Float64
+                ),
+                "vp_prior_lower": pl.Series(
+                    "vp_prior_lower", [None] * profile.height, dtype=pl.Float64
+                ),
                 "vp_fr_start_ts": pl.Series("vp_fr_start_ts", [0] * profile.height, dtype=pl.Int64),
                 "vp_fr_end_ts": pl.Series("vp_fr_end_ts", [0] * profile.height, dtype=pl.Int64),
             }
@@ -789,6 +850,9 @@ def auction_signals_from_states(
         "vp_fr_lower",
         "vp_fr_start_ts",
         "vp_fr_end_ts",
+        "vp_prior_upper",
+        "vp_prior_mid",
+        "vp_prior_lower",
     )
     base_schema = {
         AVAILABILITY_TS: pl.Int64(),
@@ -832,6 +896,9 @@ def auction_signals_from_states(
             (pl.col("vp_fr_upper").cast(pl.Float64) * scale).alias("vp_fr_upper"),
             (pl.col("vp_fr_mid").cast(pl.Float64) * scale).alias("vp_fr_mid"),
             (pl.col("vp_fr_lower").cast(pl.Float64) * scale).alias("vp_fr_lower"),
+            (pl.col("vp_prior_upper").cast(pl.Float64) * scale).alias("vp_prior_upper"),
+            (pl.col("vp_prior_mid").cast(pl.Float64) * scale).alias("vp_prior_mid"),
+            (pl.col("vp_prior_lower").cast(pl.Float64) * scale).alias("vp_prior_lower"),
             pl.col("vp_fr_start_ts").fill_null(0).cast(pl.Float64).alias("vp_fr_start_ts"),
             pl.col("vp_fr_end_ts").fill_null(0).cast(pl.Float64).alias("vp_fr_end_ts"),
         ]

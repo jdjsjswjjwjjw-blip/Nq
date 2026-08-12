@@ -26,7 +26,7 @@ _AFTERNOON_END: Final = dt.time(15, 30)
 
 SESSION_PHASE: Final = "session_phase"
 MINUTES_SINCE_RTH_OPEN: Final = "minutes_since_rth_open"
-SESSION_DATE: Final = "session_date"  # تاريخ الجلسة بتوقيت ET (YYYY-MM-DD) — سببي من ts
+SESSION_DATE: Final = "session_date"  # تاريخ تداول CME: يبدأ 18:00 ET وينتهي اليوم التالي
 
 #: جلسة سيولة لملف الحجم (آسيا / لندن / نيويورك).
 VP_LIQUIDITY_SESSION: Final = "vp_liquidity_session"
@@ -110,9 +110,12 @@ def minutes_since_rth_open_from_ns(ts_ns: int) -> int | None:
 
 
 def session_date_from_ns(ts_ns: int) -> str:
-    """تاريخ الجلسة (America/New_York) من طابع نانوثانية — سببي point-in-time."""
+    """تاريخ تداول CME (وليس التاريخ المدني): الافتتاح 18:00 ET لليوم التالي."""
     local = dt.datetime.fromtimestamp(ts_ns / 1e9, tz=_ET)
-    return local.date().isoformat()
+    trade_date = local.date()
+    if local.time() >= _ASIA_START:
+        trade_date += dt.timedelta(days=1)
+    return trade_date.isoformat()
 
 
 def add_session_columns(frame: pl.DataFrame, *, time_col: str) -> pl.DataFrame:

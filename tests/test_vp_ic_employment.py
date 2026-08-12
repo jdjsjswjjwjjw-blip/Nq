@@ -5,11 +5,17 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
+from nq.contracts.mbo import PRICE_SCALE
+from nq.contracts.temporal import AVAILABILITY_TS
+from nq.simulation.common import BUCKET_END, BUCKET_START
+from nq.simulation.deceptive_liquidity import DECEPTIVE_FEATURE_COLUMNS
+from nq.simulation.market_truth import MarketTruthConfig, build_market_truth_frame
 from nq.strategies.fvg_hypothesis import walk_forward_select_hypotheses
 from nq.strategies.vp_auction import (
     _VP_AUCTION_FOCUS,
     _VP_LEVEL_DISTANCE_FEATURES,
     _VP_REGIME_STATE_FEATURES,
+    _attach_oos_employed_signal,
 )
 
 
@@ -59,11 +65,14 @@ def test_wf_abs_ic_employs_sign_of_train_ic() -> None:
     assert folds.height >= 1
     assert "employed_sign" in folds.columns
     # اختيار بـ |IC| يعني train_ic سالب؛ التوظيف يقلب الإشارة
-    assert float(folds["employed_sign"].mean()) < 0.0
-    assert float(folds["train_ic"].mean()) < 0.0
+    employed_mean = float(np.mean(folds["employed_sign"].to_numpy().astype(np.float64)))
+    train_mean = float(np.mean(folds["train_ic"].to_numpy().astype(np.float64)))
+    assert employed_mean < 0.0
+    assert train_mean < 0.0
     # IC الموظَّف خارج العينة يجب أن يكون موجبًا (بعد المحاذاة)
     assert oos_ic > 0.0
-    assert float(folds["test_ic"].mean()) > 0.0
+    test_mean = float(np.mean(folds["test_ic"].to_numpy().astype(np.float64)))
+    assert test_mean > 0.0
     assert oos_n > 0
 
 
@@ -73,3 +82,88 @@ def test_vp_level_features_are_not_directional_ic_candidates() -> None:
     assert "vp_balance" in _VP_REGIME_STATE_FEATURES
     for col in ("vp_rel_upper", "vp_rel_mid", "vp_rel_lower", "vp_balance", "vp_imbalance"):
         assert col not in _VP_AUCTION_FOCUS
+
+
+def test_oos_employed_signal_is_fold_specific_and_train_rows_are_zero() -> None:
+    features = pl.DataFrame(
+        {
+            AVAILABILITY_TS: [10, 20, 30, 40, 50, 60],
+            "sig_a": [1.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            "sig_b": [5.0, 4.0, 3.0, 2.0, 1.0, -1.0],
+        }
+    )
+    folds = pl.DataFrame(
+        {
+            "fold": [0, 1],
+            "selected": ["sig_a", "sig_b"],
+            "train_ic": [0.4, -0.3],
+            "test_ic": [0.2, 0.1],
+            "employed_sign": [1.0, -1.0],
+            "train_end_ts": [20, 40],
+            "test_start_ts": [30, 50],
+            "test_end_ts": [40, 60],
+        }
+    )
+
+    out = _attach_oos_employed_signal(features, folds)
+
+    assert out["vp_ic_employed"].to_list() == [0.0, 0.0, 2.0, 3.0, -1.0, 1.0]
+    assert out["vp_ic_fold"].to_list() == [-1, -1, 0, 0, 1, 1]
+    assert out["vp_ic_selected"].to_list() == ["", "", "sig_a", "sig_a", "sig_b", "sig_b"]
+
+
+def test_market_truth_uses_exact_external_ic_thesis_not_close_vs_poc() -> None:
+    def px(value: float) -> int:
+        return round(value / PRICE_SCALE)
+
+    times = [1, 2, 3, 4]
+    states = pl.DataFrame(
+        {
+            AVAILABILITY_TS: times,
+            BUCKET_START: times,
+            BUCKET_END: times,
+            # close فوق POC دائماً: القاعدة القديمة كانت ستنتج +1.
+            "close": [px(101.0), px(101.0), px(100.0), px(100.0)],
+            "poc": [px(99.0)] * 4,
+            "vah": [px(102.0)] * 4,
+            "val": [px(98.0)] * 4,
+            "is_balanced": [False] * 4,
+            "is_expansion": [True] * 4,
+            "pullback_defended": [False] * 4,
+        }
+    )
+    deco_values = {name: [0.0] * 4 for name in DECEPTIVE_FEATURE_COLUMNS}
+    deco_values["real_liquidity_ratio"] = [1.0] * 4
+    deco = pl.DataFrame(
+        {
+            AVAILABILITY_TS: times,
+            BUCKET_START: times,
+            BUCKET_END: times,
+            **deco_values,
+        }
+    )
+    thesis = pl.DataFrame(
+        {
+            AVAILABILITY_TS: times,
+            # نبضة بيع عند t=2، ثم هبوط خلال الهولد إلى t=3.
+            "vp_ic_employed": [0.0, -1.0, 0.0, 0.0],
+        }
+    )
+
+    out = build_market_truth_frame(
+        pl.DataFrame(),
+        interval_ns=1,
+        truth=MarketTruthConfig(
+            hold_buckets=2,
+            min_real_liquidity=0.0,
+            max_deceptive_score=1.0,
+            min_move_ticks=1.0,
+        ),
+        auction=states,
+        deceptive_frame=deco,
+        thesis_frame=thesis,
+    )
+
+    assert float(out["thesis_dir"][2]) == -1.0
+    assert float(out["market_true"][2]) == 1.0
+    assert float(out["entry_gate"][2]) == 1.0

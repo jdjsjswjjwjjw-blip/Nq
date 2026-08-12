@@ -238,7 +238,6 @@ def test_audit_fr_focus_and_signal_export() -> None:
         "vp_fr_accepted_expansion",
         "vp_fr_exit",
         "vp_auction_setup",
-        "vp_fsm_build",
         "vp_order_accel",
         "vp_early_imbalance",
     }
@@ -248,6 +247,7 @@ def test_audit_fr_focus_and_signal_export() -> None:
         "vp_liquidity_session",
     }
     assert ic_need <= set(_VP_AUCTION_FOCUS)
+    assert "vp_fsm_build" not in _VP_AUCTION_FOCUS
     assert regime_need <= set(_VP_REGIME_STATE_FEATURES)
     assert regime_need.isdisjoint(_VP_AUCTION_FOCUS)
     assert "vp_rel_upper" in _VP_LEVEL_DISTANCE_FEATURES

@@ -12,7 +12,9 @@ from nq.alpha import (
     run_research_pipeline,
     screen_signals,
 )
+from nq.alpha.discovery import _fold_sign_stability
 from nq.core.determinism import make_generator
+from nq.models.splitting import WalkForwardFold
 from tests.mbo_factory import Event, make_stream
 
 
@@ -35,6 +37,43 @@ def test_evaluate_predictive_vs_noise_signal() -> None:
     assert good.ic > bad.ic
     assert good.ic_pvalue < 0.05
     assert bad.ic_pvalue > 0.05
+
+
+def test_sparse_event_evaluation_counts_only_actual_events() -> None:
+    values = np.zeros(100, dtype=np.float64)
+    returns = np.zeros(100, dtype=np.float64)
+    active = np.arange(0, 100, 10)
+    values[active] = np.where(active % 20 == 0, 1.0, -1.0)
+    returns[active] = values[active] * np.linspace(0.1, 1.0, active.size)
+
+    result = evaluate_signal(
+        "event", values, returns, active_only=True, n_permutations=20, rng=make_generator(19)
+    )
+
+    assert result.n == active.size
+
+
+def test_fold_stability_rejects_sign_flips_hidden_by_aggregate() -> None:
+    rng = make_generator(20)
+    forward = rng.normal(size=40)
+    values = forward.copy()
+    folds: list[WalkForwardFold] = []
+    for fold_i, start in enumerate(range(0, 40, 10)):
+        stop = start + 10
+        if fold_i % 2:
+            values[start:stop] *= -1.0
+        folds.append(
+            WalkForwardFold(
+                train_idx=np.arange(0, start, dtype=np.intp),
+                test_idx=np.arange(start, stop, dtype=np.intp),
+            )
+        )
+
+    valid, consistency, stable = _fold_sign_stability(values, forward, folds, active_only=False)
+
+    assert valid == 4
+    assert consistency == 0.5
+    assert stable is False
 
 
 def test_screen_signals_multiple_testing() -> None:

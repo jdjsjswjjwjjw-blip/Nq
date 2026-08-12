@@ -26,7 +26,10 @@ from tests.mbo_factory import Event, make_stream, random_add_cancel_stream
 
 def _paired_streams(n_events: int, *, seed: int = 0) -> tuple[pl.DataFrame, pl.DataFrame]:
     nq = random_add_cancel_stream(n_events, seed=seed)
-    mnq = random_add_cancel_stream(n_events, seed=seed + 1)
+    mnq = random_add_cancel_stream(n_events, seed=seed + 1).with_columns(
+        pl.lit(2, dtype=pl.UInt32).alias("instrument_id"),
+        pl.lit("MNQ").alias("symbol"),
+    )
     return nq, mnq
 
 

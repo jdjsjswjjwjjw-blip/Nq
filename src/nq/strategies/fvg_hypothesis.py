@@ -54,6 +54,7 @@ from nq.simulation.fvg import (
     failed_fvg_from_bars,
 )
 from nq.statistics.metrics import information_coefficient
+from nq.statistics.resampling import temporal_block_permutation
 from nq.strategies.depth_entry_filter import (
     DepthEntrySpec,
     attach_depth_path_to_features,
@@ -375,6 +376,9 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
             "train_ic": pl.Float64(),
             "test_ic": pl.Float64(),
             "employed_sign": pl.Float64(),
+            "train_end_ts": pl.Int64(),
+            "test_start_ts": pl.Int64(),
+            "test_end_ts": pl.Int64(),
         }
     )
     if not cols or work.height < _MIN_ROWS_FOR_SEARCH:
@@ -437,6 +441,9 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
                 "train_ic": float(best_ic),
                 "test_ic": float(test_ic),
                 "employed_sign": float(employed_sign),
+                "train_end_ts": int(times[fold.train_idx[-1]]),
+                "test_start_ts": int(times[fold.test_idx[0]]),
+                "test_end_ts": int(times[fold.test_idx[-1]]),
             }
         )
         if log is not None:
@@ -456,7 +463,7 @@ def walk_forward_select_hypotheses(  # noqa: PLR0912, PLR0915
                 log.op(f"WF selection-under-null: {n_permutations} تبديل · candidates={len(cols)}")
             null_ics = np.empty(n_permutations, dtype=np.float64)
             for p_i in range(n_permutations):
-                perm_fwd = generator.permutation(forward)
+                perm_fwd = temporal_block_permutation(forward, rng=generator)
                 null_oos = np.full(work.height, np.nan, dtype=np.float64)
                 null_y = np.full(work.height, np.nan, dtype=np.float64)
                 for fold in folds:

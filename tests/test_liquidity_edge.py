@@ -10,6 +10,7 @@ import polars as pl
 import pytest
 
 import nq.simulation.deceptive_liquidity as deceptive_module
+import nq.simulation.edge_execution_plan as edge_module
 from nq.contracts.mbo import MBO_SCHEMA, PRICE_SCALE, validate_mbo_frame
 from nq.simulation.auction import auction_action_states
 from nq.simulation.deceptive_liquidity import (
@@ -243,16 +244,35 @@ def test_market_truth_hold_and_verdict_columns() -> None:
 def test_plan_levels_enforces_min_rr() -> None:
     planned = _plan_levels(
         direction=1.0,
-        entry=100.0,
+        entry=101.0,
         vah=100.5,
         val=99.5,
-        cfg=EdgeExecConfig(min_rr=3.0, stop_buffer_ticks=0.0, target_mode="va_opposite"),
+        poc=100.0,
+        cfg=EdgeExecConfig(min_rr=3.0, stop_buffer_ticks=0.0, target_mode="rr_multiple"),
     )
-    # risk=0.5 من VAL؛ الهدف يُوسَّع لـ entry + min_rr*risk إن VAH قريب
+    # initiative long: الوقف خلف VAH المكسور، لا خلف VAL البعيد.
     assert planned is not None
     _stop, target, risk, reward = planned
     assert reward / risk >= 3.0 - 1e-9
-    assert target >= 100.0 + 3.0 * risk - 1e-9
+    assert target >= 101.0 + 3.0 * risk - 1e-9
+
+    responsive = _plan_levels(
+        direction=1.0,
+        entry=99.25,
+        vah=101.0,
+        val=99.5,
+        poc=100.25,
+        cfg=EdgeExecConfig(
+            min_rr=1.0,
+            stop_buffer_ticks=1.0,
+            target_mode="poc",
+            playbook="responsive",
+        ),
+    )
+    assert responsive is not None
+    responsive_stop, responsive_target, _risk, _reward = responsive
+    assert responsive_stop < 99.5
+    assert responsive_target == 100.25
 
 
 def test_simulate_edge_trades_no_chase_every_bar() -> None:
@@ -264,12 +284,12 @@ def test_simulate_edge_trades_no_chase_every_bar() -> None:
             "thesis_dir": [0.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             "market_verdict": [0.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             "close": [
-                _px(100.0),
-                _px(100.0),
-                _px(100.5),
                 _px(101.0),
+                _px(101.25),
                 _px(101.5),
+                _px(101.75),
                 _px(102.0),
+                _px(102.25),
             ],
             "vah": [_px(101.0)] * 6,
             "val": [_px(99.0)] * 6,
@@ -288,6 +308,58 @@ def test_simulate_edge_trades_no_chase_every_bar() -> None:
     n_signals = int((out["edge_signal"] != 0.0).sum())
     assert n_signals == 1
     assert float(out["edge_rr"].drop_nans()[0]) >= 2.0 - 1e-9
+
+
+def test_edge_execution_uses_mbo_first_touch_and_deducts_costs() -> None:
+    truth = pl.DataFrame(
+        {
+            "availability_ts": [10, 20, 30],
+            "entry_gate": [1.0, 0.0, 0.0],
+            "thesis_dir": [1.0, 1.0, 1.0],
+            "market_verdict": [1.0, 1.0, 1.0],
+            "close": [_px(101.25)] * 3,
+            "vah": [_px(101.0)] * 3,
+            "val": [_px(99.0)] * 3,
+        }
+    )
+    # الهدف يُلمس أولاً عند t=11 ثم الوقف عند t=12؛ ترتيب MBO يجب أن يحسم الربح.
+    tape = pl.DataFrame(
+        {
+            "event_ts": [11, 12],
+            "price": [_px(101.75), _px(100.75)],
+        }
+    )
+    free = simulate_edge_trades(
+        truth,
+        exec_cfg=EdgeExecConfig(
+            min_rr=1.0,
+            stop_buffer_ticks=0.0,
+            target_mode="rr_multiple",
+            rr_multiple=1.0,
+            max_hold_buckets=2,
+            slippage_ticks=0.0,
+            commission_bps=0.0,
+        ),
+        trade_path=tape,
+    )
+    costly = simulate_edge_trades(
+        truth,
+        exec_cfg=EdgeExecConfig(
+            min_rr=1.0,
+            stop_buffer_ticks=0.0,
+            target_mode="rr_multiple",
+            rr_multiple=1.0,
+            max_hold_buckets=2,
+            slippage_ticks=0.5,
+            commission_bps=1.0,
+        ),
+        trade_path=tape,
+    )
+
+    assert free["edge_hit"][0] == 1.0
+    assert free["edge_exit_ts"][0] == 11.0
+    assert costly["edge_cost"][0] > 0.0
+    assert costly["edge_pnl"][0] < free["edge_pnl"][0]
 
 
 def test_search_rejects_ineligible_grid() -> None:
@@ -398,3 +470,87 @@ def test_search_and_strategy_smoke() -> None:
     summary = summarize_edge_trades(result.trades)
     assert "expectancy" in summary
     assert np.isfinite(summary["expectancy"]) or summary["n_trades"] == 0.0
+
+
+def test_edge_search_selects_on_train_not_oos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """الـholdout الخارجي لا يُقاس إلا للمواصفة المختارة داخليًا."""
+    grid = (
+        EdgeSearchSpec(
+            name="train_winner",
+            hold_buckets=2,
+            min_rr=2.0,
+            stop_buffer_ticks=1.0,
+            target_mode="rr_multiple",
+        ),
+        EdgeSearchSpec(
+            name="oos_winner",
+            hold_buckets=2,
+            min_rr=2.0,
+            stop_buffer_ticks=1.0,
+            target_mode="rr_multiple",
+        ),
+    )
+
+    monkeypatch.setattr(
+        edge_module,
+        "build_market_truth_frame",
+        lambda *_args, **_kwargs: pl.DataFrame({"dummy": list(range(20))}),
+    )
+
+    def fake_inner(_truth: pl.DataFrame, spec: EdgeSearchSpec, **_kwargs: Any) -> dict[str, Any]:
+        train_expectancy = 0.02 if spec.name == "train_winner" else 0.01
+        return {
+            "name": spec.name,
+            "train_expectancy": train_expectancy,
+            "train_win_rate": 0.6,
+            "train_n": 20.0,
+            "train_avg_rr": 2.5,
+            "train_profit_factor": 1.5,
+            "train_positive_fold_rate": 1.0,
+            "train_fold_count": 3.0,
+            "selection_scope": "inner_walk_forward",
+            "outer_evaluated": 0.0,
+            "oos_expectancy": 0.0,
+            "oos_win_rate": 0.0,
+            "oos_n": 0.0,
+            "oos_avg_rr": 0.0,
+            "oos_profit_factor": 0.0,
+            "oos_start_index": -1.0,
+            "oos_start_ts": -1.0,
+        }
+
+    outer_calls: list[str] = []
+
+    def fake_outer(_truth: pl.DataFrame, spec: EdgeSearchSpec, **_kwargs: Any) -> dict[str, float]:
+        outer_calls.append(spec.name)
+        return {
+            "oos_expectancy": -0.50,
+            "oos_win_rate": 0.4,
+            "oos_n": 10.0,
+            "oos_avg_rr": 2.5,
+            "oos_profit_factor": 0.8,
+            "oos_start_index": 15.0,
+            "oos_start_ts": -1.0,
+            "outer_evaluated": 1.0,
+        }
+
+    monkeypatch.setattr(edge_module, "_inner_walk_forward_summary", fake_inner)
+    monkeypatch.setattr(edge_module, "_outer_holdout_summary", fake_outer)
+    table, best, row = edge_module.search_best_edge_spec(
+        pl.DataFrame(),
+        interval_ns=1,
+        grid=grid,
+        min_oos_trades=1,
+        min_oos_rr=2.0,
+        auction=pl.DataFrame({"dummy": [1]}),
+        deceptive_frame=pl.DataFrame({"dummy": [1]}),
+    )
+
+    assert table.height == 2
+    assert best is not None
+    assert best.name == "train_winner"
+    assert row["oos_expectancy"] == -0.50
+    assert outer_calls == ["train_winner"]
+    unselected = table.filter(pl.col("name") == "oos_winner").row(0, named=True)
+    assert unselected["oos_n"] == 0.0
+    assert unselected["outer_evaluated"] == 0.0

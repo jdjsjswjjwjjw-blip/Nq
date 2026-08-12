@@ -35,6 +35,9 @@ VP_FIXED_RANGE_COLUMNS = (
     "vp_fr_lower",
     "vp_fr_start_ts",
     "vp_fr_end_ts",
+    "vp_prior_upper",
+    "vp_prior_mid",
+    "vp_prior_lower",
 )
 
 
@@ -61,6 +64,9 @@ def _empty_fr(n: int) -> dict[str, pl.Series]:
         "vp_fr_lower": pl.Series("vp_fr_lower", [None] * n, dtype=pl.Float64),
         "vp_fr_start_ts": pl.Series("vp_fr_start_ts", zi, dtype=pl.Int64),
         "vp_fr_end_ts": pl.Series("vp_fr_end_ts", zi, dtype=pl.Int64),
+        "vp_prior_upper": pl.Series("vp_prior_upper", [None] * n, dtype=pl.Float64),
+        "vp_prior_mid": pl.Series("vp_prior_mid", [None] * n, dtype=pl.Float64),
+        "vp_prior_lower": pl.Series("vp_prior_lower", [None] * n, dtype=pl.Float64),
     }
 
 
@@ -124,6 +130,10 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
     lower = np.full(n, np.nan)
     start_ts = np.zeros(n, dtype=np.int64)
     end_ts = np.zeros(n, dtype=np.int64)
+    prior_upper = np.full(n, np.nan)
+    prior_mid = np.full(n, np.nan)
+    prior_lower = np.full(n, np.nan)
+    prior_vah = prior_poc = prior_val = np.nan
 
     running = DevelopingVolumeProfile(fraction=cfg.value_fraction)
     range_open = False
@@ -161,10 +171,20 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
 
     for i in range(n):
         # انتقال جلسة: اقفل بلا قرار
-        if range_open and i > 0 and int(sessions[i]) != int(sessions[i - 1]):
-            _close_range()
+        session_changed = i > 0 and int(sessions[i]) != int(sessions[i - 1])
+        if session_changed:
+            # حدود الجلسة المكتملة أصبحت معلومة الآن وتبقى مرجعًا سببيًا للجلسة الجديدة.
+            if {"vah", "poc", "val"}.issubset(ordered.columns):
+                prior_vah = float(ordered["vah"][i - 1])
+                prior_poc = float(ordered["poc"][i - 1])
+                prior_val = float(ordered["val"][i - 1])
+            elif fr_vah is not None and fr_poc is not None and fr_val is not None:
+                prior_vah, prior_poc, prior_val = fr_vah, fr_poc, fr_val
+            if range_open:
+                _close_range()
         if pending_exp_i >= 0 and int(sessions[i]) != int(sessions[pending_exp_i]):
             pending_exp_i = -1
+        prior_upper[i], prior_mid[i], prior_lower[i] = prior_vah, prior_poc, prior_val
 
         # آخر expansion مرشّح (ليس الأول فقط) بانتظار قبول عرضي
         if not range_open and bool(is_exp[i]) and not bool(is_bal[i]):
@@ -260,12 +280,22 @@ def attach_vp_fixed_range(  # noqa: PLR0912, PLR0915
         "vp_fr_lower": pl.Series("vp_fr_lower", lower),
         "vp_fr_start_ts": pl.Series("vp_fr_start_ts", start_ts),
         "vp_fr_end_ts": pl.Series("vp_fr_end_ts", end_ts),
+        "vp_prior_upper": pl.Series("vp_prior_upper", prior_upper),
+        "vp_prior_mid": pl.Series("vp_prior_mid", prior_mid),
+        "vp_prior_lower": pl.Series("vp_prior_lower", prior_lower),
     }
     out = ordered.hstack(list(cols.values()))
     return out.with_columns(
         [
             pl.when(pl.col(c).is_nan()).then(None).otherwise(pl.col(c)).alias(c)
-            for c in ("vp_fr_upper", "vp_fr_mid", "vp_fr_lower")
+            for c in (
+                "vp_fr_upper",
+                "vp_fr_mid",
+                "vp_fr_lower",
+                "vp_prior_upper",
+                "vp_prior_mid",
+                "vp_prior_lower",
+            )
         ]
     )
 

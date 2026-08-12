@@ -26,10 +26,7 @@ from nq.core.determinism import seed_everything
 from nq.core.temporal_policy import TemporalPolicy
 from nq.coverage.monitor import run_coverage_on_features
 from nq.coverage.types import CoverageReport
-from nq.features.streaming import (
-    STREAMING_SIGNAL_COLUMNS,
-    build_streaming_research_features,
-)
+from nq.features.streaming import build_streaming_research_features
 from nq.ingestion.reader import load_mbo_frame
 from nq.models.ssl_pipeline import SSLPipelineResult, run_ssl_pipeline, run_ssl_tick_pipeline
 from nq.models.tick_stream import TickStream
@@ -67,16 +64,8 @@ _DEFAULT_SIGNAL_COLUMNS = (
     "nq_delta",
     "mnq_delta",
     "trap_setup",
-    "phase_balance",
-    "phase_expansion",
-    "session_phase",
     "fail_fvg",
     "fail_breakout",
-    "vp_balance",
-    "vp_imbalance",
-    "vp_expansion",
-    "vp_close_in_value",
-    "vp_flip_to_imbalance",
 )
 
 _BATCH_SIGNAL_COLUMNS = (
@@ -85,14 +74,19 @@ _BATCH_SIGNAL_COLUMNS = (
     "lead_lag",
     "trap_setup",
     "divergence",
-    "session_phase",
     "fail_fvg",
     "fail_breakout",
-    "vp_balance",
-    "vp_imbalance",
-    "vp_expansion",
-    "vp_close_in_value",
-    "vp_flip_to_imbalance",
+)
+
+# المرشّح الخام يجب أن يحمل اتجاهًا. حالات النظام/السيولة تبقى ميزات سياق
+# للبوابات والنماذج المركبة، لكنها لا تدخل IC منفردة كأن +1 يعني LONG.
+_STREAMING_DIRECTIONAL_COLUMNS = (
+    "trap_setup",
+    "mnq_delta",
+    "nq_delta",
+    "nq_return",
+    "mnq_return",
+    "depth_imbalance",
 )
 
 _VP_AUCTION_SIGNAL_COLUMNS = (
@@ -133,6 +127,26 @@ _VP_AUCTION_SIGNAL_COLUMNS = (
     "vp_fsm_retest",
     "vp_fsm_expand",
     "vp_auction_setup",
+)
+
+# أحداث/تدفقات تخص البرميل نفسه: غياب التطابق = لا حدث، لا يجوز asof sticky.
+_VP_AUCTION_PULSE_COLUMNS = frozenset(
+    {
+        "vp_of_delta",
+        "vp_absorb",
+        "vp_look_fail",
+        "vp_order_accel",
+        "vp_early_imbalance",
+        "vp_pullback_defense",
+        "vp_flip_to_imbalance",
+        "vp_fr_accepted_expansion",
+        "vp_fr_exit",
+        "vp_fsm_break",
+        "vp_fsm_accel",
+        "vp_fsm_retest",
+        "vp_fsm_expand",
+        "vp_auction_setup",
+    }
 )
 
 _FB_SIGNAL_COLUMNS = (
@@ -323,12 +337,12 @@ def _resolve_signal_columns(
         return [c for c in signal_columns if c in features.columns]
     if config_columns is not None:
         return [c for c in config_columns if c in features.columns]
-    # افتراضي: لا تخلط streaming VA مع vp_* في شاشة الألفا
-    streaming_va = frozenset({"in_value_area", "near_vah", "near_val", "poc_dist_norm"})
     ordered = list(
-        dict.fromkeys([*_DEFAULT_SIGNAL_COLUMNS, *_BATCH_SIGNAL_COLUMNS, *STREAMING_SIGNAL_COLUMNS])
+        dict.fromkeys(
+            [*_DEFAULT_SIGNAL_COLUMNS, *_BATCH_SIGNAL_COLUMNS, *_STREAMING_DIRECTIONAL_COLUMNS]
+        )
     )
-    return [c for c in ordered if c in features.columns and c not in streaming_va]
+    return [c for c in ordered if c in features.columns]
 
 
 def _attach_failed_fvg(
@@ -393,19 +407,26 @@ def _attach_auction_vp_signals(
     features: pl.DataFrame,
     signals: pl.DataFrame,
 ) -> pl.DataFrame:
-    """يلحق إشارات مزاد محسوبة مسبقًا بـ asof خلفي."""
+    """يلحق حالة المزاد بـasof، والنبضات بتطابق زمني فقط."""
     zero_exprs = [pl.lit(0.0).alias(c) for c in _VP_AUCTION_SIGNAL_COLUMNS]
     if signals.height == 0 or features.height == 0:
         return features.with_columns(zero_exprs)
 
-    keep = [c for c in (AVAILABILITY_TS, *_VP_AUCTION_SIGNAL_COLUMNS) if c in signals.columns]
-    right = signals.select(keep).sort(AVAILABILITY_TS)
+    present = [c for c in _VP_AUCTION_SIGNAL_COLUMNS if c in signals.columns]
+    pulse_cols = [c for c in present if c in _VP_AUCTION_PULSE_COLUMNS]
+    state_cols = [c for c in present if c not in _VP_AUCTION_PULSE_COLUMNS]
     left = features.sort(AVAILABILITY_TS)
-    drop_existing = [c for c in keep if c != AVAILABILITY_TS and c in left.columns]
+    drop_existing = [c for c in present if c in left.columns]
     if drop_existing:
         left = left.drop(drop_existing)
-    joined = left.join_asof(right, on=AVAILABILITY_TS, strategy="backward")
-    fills = [pl.col(c).fill_null(0.0) for c in _VP_AUCTION_SIGNAL_COLUMNS if c in joined.columns]
+    joined = left
+    if state_cols:
+        state_right = signals.select(AVAILABILITY_TS, *state_cols).sort(AVAILABILITY_TS)
+        joined = joined.join_asof(state_right, on=AVAILABILITY_TS, strategy="backward")
+    if pulse_cols:
+        pulse_right = signals.select(AVAILABILITY_TS, *pulse_cols).sort(AVAILABILITY_TS)
+        joined = joined.join(pulse_right, on=AVAILABILITY_TS, how="left")
+    fills = [pl.col(c).fill_null(0.0) for c in present if c in joined.columns]
     return joined.with_columns(fills) if fills else joined
 
 
@@ -998,9 +1019,19 @@ def _load_pipeline_frames(
     if isinstance(nq, pl.DataFrame) and cfg.max_rows is not None:
         log.op(f"قص NQ DataFrame إلى max_rows={cfg.max_rows:,}")
         nq_frame = nq_frame.head(cfg.max_rows)
+    _validate_contract_input(nq_frame, expected_family="NQ", role="NQ")
     if cfg.cross_market_mode == "nq_only":
         log.op("وضع nq_only — سوق NQ فقط (بدون تحميل/إعادة بناء MNQ)")
         return nq_frame, nq_frame
+    if nq is mnq or (
+        isinstance(nq, (str, Path))
+        and isinstance(mnq, (str, Path))
+        and Path(nq).resolve() == Path(mnq).resolve()
+    ):
+        raise ValueError(
+            "dual mode requires separate NQ and MNQ sources; use cross_market_mode='nq_only' "
+            "when only NQ is available"
+        )
     log.op("تحميل MNQ")
     mnq_frame = (
         mnq
@@ -1009,7 +1040,39 @@ def _load_pipeline_frames(
     )
     if isinstance(mnq, pl.DataFrame) and cfg.max_rows is not None:
         mnq_frame = mnq_frame.head(cfg.max_rows)
+    _validate_contract_input(mnq_frame, expected_family="MNQ", role="MNQ")
     return nq_frame, mnq_frame
+
+
+def _validate_contract_input(
+    frame: pl.DataFrame,
+    *,
+    expected_family: str,
+    role: str,
+) -> None:
+    """امنع خلط عقود/أسواق مختلفة في دفتر حي واحد.
+
+    إعادة بناء MBO حالة متصلة للأداة الواحدة. دمج عقدين عند rollover أو تمرير
+    NQ مكان MNQ يخلق قفزة سعرية ودفترًا وهميًا؛ لذلك يكون الفصل شرط تشغيل لا تحذيرًا.
+    """
+    if frame.height == 0:
+        return
+    instrument_count = int(frame["instrument_id"].n_unique())
+    if instrument_count != 1:
+        raise ValueError(
+            f"{role} input contains {instrument_count} instrument_id values; "
+            "run each futures contract independently (no rollover stitching inside one book)"
+        )
+    symbols = {str(value).upper() for value in frame["symbol"].unique().to_list()}
+    if expected_family == "MNQ":
+        valid = all(symbol.startswith("MNQ") for symbol in symbols)
+    else:
+        valid = all(symbol.startswith("NQ") and not symbol.startswith("MNQ") for symbol in symbols)
+    if not valid:
+        raise ValueError(
+            f"{role} input has symbols {sorted(symbols)!r}, "
+            f"expected {expected_family} contract family"
+        )
 
 
 def run_research_pipeline(

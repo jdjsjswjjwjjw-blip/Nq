@@ -2,13 +2,45 @@
 
 from __future__ import annotations
 
+import polars as pl
+import pytest
+
 from nq.core.determinism import make_generator
 from nq.models.ssl_pipeline import run_ssl_pipeline
 from nq.research.assistant import ResearchAssistant
-from nq.research.orchestrator import run_research_pipeline
+from nq.research.orchestrator import (
+    PipelineConfig,
+    _load_pipeline_frames,
+    _validate_contract_input,
+    run_research_pipeline,
+)
 from nq.research.unified import build_unified_report
 from nq.simulation.cross_market import cross_market_features
 from tests.test_coverage import _paired_streams
+
+
+def test_contract_guard_rejects_rollover_stitching() -> None:
+    nq, _ = _paired_streams(20, seed=900)
+    mixed = pl.concat(
+        [
+            nq.head(10),
+            nq.tail(10).with_columns(pl.lit(99, dtype=pl.UInt32).alias("instrument_id")),
+        ]
+    )
+    with pytest.raises(ValueError, match="run each futures contract independently"):
+        _validate_contract_input(mixed, expected_family="NQ", role="NQ")
+
+
+def test_contract_guard_rejects_nq_as_mnq() -> None:
+    nq, _ = _paired_streams(20, seed=901)
+    with pytest.raises(ValueError, match="expected MNQ"):
+        _validate_contract_input(nq, expected_family="MNQ", role="MNQ")
+
+
+def test_dual_mode_rejects_reusing_same_source() -> None:
+    nq, _ = _paired_streams(20, seed=902)
+    with pytest.raises(ValueError, match="requires separate NQ and MNQ"):
+        _load_pipeline_frames(nq, nq, PipelineConfig(cross_market_mode="dual"))
 
 
 def test_run_ssl_pipeline_produces_report() -> None:

@@ -10,7 +10,8 @@ global_seed = 20260719
 interval_ns = 30_000_000_000
 # رينج Volume Profile / حدود VA الثلاثة
 profile_interval_ns = 300_000_000_000
-horizon = 1
+# 10 × 30ث = 5د: أطروحة IC متسقة مع هولد/تنفيذ 2–15د، لا سكالب 30ث منفصل.
+horizon = 10
 embargo_ns = 30_000_000_000
 
 [cross_market]
@@ -41,8 +42,6 @@ columns = [
   "vp_of_delta",
   "vp_absorb",
   "vp_look_fail",
-  "vp_flip_to_imbalance",
-  "vp_pullback_defense",
   "vp_fr_accepted_expansion",
   "vp_fr_exit",
   "vp_auction_setup",

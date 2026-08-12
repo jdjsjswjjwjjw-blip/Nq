@@ -21,19 +21,24 @@ import numpy.typing as npt
 import polars as pl
 
 from nq.contracts.mbo import PRICE_SCALE
+from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
+from nq.models.splitting import purged_walk_forward_split
 from nq.research.progress import ProgressLike
 from nq.simulation.auction import (
     VP_PROFILE_INTERVAL_NS,
     auction_action_states,
 )
+from nq.simulation.common import extract_trades
 from nq.simulation.deceptive_liquidity import (
     DeceptiveLiquidityConfig,
     deceptive_features_by_bucket,
 )
+from nq.simulation.execution.costs import commission_rate
 from nq.simulation.market_truth import MarketTruthConfig, build_market_truth_frame
 
 FloatArray = npt.NDArray[np.float64]
-TargetMode = Literal["va_opposite", "rr_multiple"]
+TargetMode = Literal["poc", "va_opposite", "rr_multiple"]
+Playbook = Literal["responsive", "initiative"]
 
 EDGE_TRADE_COLUMNS: Final[tuple[str, ...]] = (
     "edge_signal",
@@ -44,6 +49,10 @@ EDGE_TRADE_COLUMNS: Final[tuple[str, ...]] = (
     "edge_risk",
     "edge_reward",
     "edge_pnl",
+    "edge_gross_pnl",
+    "edge_cost",
+    "edge_exit",
+    "edge_exit_ts",
     "edge_hit",  # +1 target / -1 stop / 0 timeout
 )
 
@@ -62,6 +71,9 @@ class EdgeExecConfig:
     rr_multiple: float = 3.0
     max_hold_buckets: int = 30
     tick_size: float = 0.25
+    slippage_ticks: float = 0.5
+    commission_bps: float = 0.5
+    playbook: Playbook = "initiative"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +86,7 @@ class EdgeSearchSpec:
     stop_buffer_ticks: float
     target_mode: TargetMode
     rr_multiple: float = 3.0
+    playbook: Playbook = "initiative"
 
     def exec_config(self) -> EdgeExecConfig:
         return EdgeExecConfig(
@@ -81,6 +94,7 @@ class EdgeSearchSpec:
             stop_buffer_ticks=self.stop_buffer_ticks,
             target_mode=self.target_mode,
             rr_multiple=self.rr_multiple,
+            playbook=self.playbook,
         )
 
     def truth_config(self) -> MarketTruthConfig:
@@ -90,11 +104,15 @@ class EdgeSearchSpec:
 def default_edge_search_grid() -> tuple[EdgeSearchSpec, ...]:
     """شبكة بحث محافظة — R:R قوي، هولد يمنع ملاحقة كل أمر."""
     specs: list[EdgeSearchSpec] = []
+    playbooks: tuple[tuple[Playbook, TargetMode], ...] = (
+        ("responsive", "poc"),
+        ("initiative", "rr_multiple"),
+    )
     for hold in (2, 3, 5):
         for min_rr in (2.0, 2.5, 3.0, 4.0):
             for buf in (1.0, 2.0, 4.0):
-                for mode in ("va_opposite", "rr_multiple"):
-                    name = f"hold{hold}_rr{min_rr:g}_buf{buf:g}_{mode}"
+                for playbook, mode in playbooks:
+                    name = f"{playbook}_hold{hold}_rr{min_rr:g}_buf{buf:g}_{mode}"
                     specs.append(
                         EdgeSearchSpec(
                             name=name,
@@ -103,9 +121,22 @@ def default_edge_search_grid() -> tuple[EdgeSearchSpec, ...]:
                             stop_buffer_ticks=buf,
                             target_mode=mode,
                             rr_multiple=max(min_rr, 3.0),
+                            playbook=playbook,
                         )
                     )
     return tuple(specs)
+
+
+def _execution_trade_path(mbo: pl.DataFrame) -> pl.DataFrame:
+    """شريط صفقات MBO المرتب زمنيًا لمسح الوقف/الهدف بالترتيب الحقيقي."""
+    if mbo.height == 0:
+        return pl.DataFrame(
+            {
+                EVENT_TS: pl.Series([], dtype=pl.Int64),
+                "price": pl.Series([], dtype=pl.Int64),
+            }
+        )
+    return extract_trades(mbo).select(EVENT_TS, "price").sort(EVENT_TS)
 
 
 def _plan_levels(
@@ -115,26 +146,34 @@ def _plan_levels(
     vah: float,
     val: float,
     cfg: EdgeExecConfig,
+    poc: float | None = None,
 ) -> tuple[float, float, float, float] | None:
     """يُعيد (stop, target, risk, reward) بالسعر الحقيقي أو None إن R:R ضعيف."""
     tick = cfg.tick_size
     buf = cfg.stop_buffer_ticks * tick
+    mid = float(poc) if poc is not None and np.isfinite(poc) else (vah + val) / 2.0
     if direction > 0:
-        stop = min(val, entry) - buf
+        boundary = val if cfg.playbook == "responsive" else vah
+        stop = min(boundary, entry) - buf
         risk = entry - stop
         if risk <= 0:
             return None
-        if cfg.target_mode == "va_opposite":
+        if cfg.playbook == "responsive" or cfg.target_mode == "poc":
+            target = mid
+        elif cfg.target_mode == "va_opposite":
             target = max(vah, entry + cfg.min_rr * risk)
         else:
             target = entry + cfg.rr_multiple * risk
         reward = target - entry
     elif direction < 0:
-        stop = max(vah, entry) + buf
+        boundary = vah if cfg.playbook == "responsive" else val
+        stop = max(boundary, entry) + buf
         risk = stop - entry
         if risk <= 0:
             return None
-        if cfg.target_mode == "va_opposite":
+        if cfg.playbook == "responsive" or cfg.target_mode == "poc":
+            target = mid
+        elif cfg.target_mode == "va_opposite":
             target = min(val, entry - cfg.min_rr * risk)
         else:
             target = entry - cfg.rr_multiple * risk
@@ -146,10 +185,11 @@ def _plan_levels(
     return stop, target, risk, reward
 
 
-def simulate_edge_trades(  # noqa: PLR0915
+def simulate_edge_trades(  # noqa: PLR0912, PLR0915
     truth: pl.DataFrame,
     *,
     exec_cfg: EdgeExecConfig | None = None,
+    trade_path: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """يبني إشارات تنفيذ + يحاكي المسار حتى وقف/هدف/انتهاء الهولد الأقصى."""
     cfg = exec_cfg if exec_cfg is not None else EdgeExecConfig()
@@ -165,7 +205,37 @@ def simulate_edge_trades(  # noqa: PLR0915
     close = truth["close"].to_numpy().astype(np.float64) * PRICE_SCALE
     vah = truth["vah"].to_numpy().astype(np.float64) * PRICE_SCALE
     val = truth["val"].to_numpy().astype(np.float64) * PRICE_SCALE
+    poc = (
+        truth["poc"].to_numpy().astype(np.float64) * PRICE_SCALE
+        if "poc" in truth.columns
+        else (vah + val) / 2.0
+    )
+    balanced = (
+        truth["is_balanced"].to_numpy().astype(bool)
+        if "is_balanced" in truth.columns
+        else np.full(n, cfg.playbook == "responsive")
+    )
+    expansion = (
+        truth["is_expansion"].to_numpy().astype(bool)
+        if "is_expansion" in truth.columns
+        else np.full(n, cfg.playbook == "initiative")
+    )
     verdict = truth["market_verdict"].to_numpy().astype(np.float64)
+    truth_ts = (
+        truth[AVAILABILITY_TS].to_numpy().astype(np.int64)
+        if AVAILABILITY_TS in truth.columns
+        else np.arange(n, dtype=np.int64)
+    )
+    path_ts = np.asarray([], dtype=np.int64)
+    path_px = np.asarray([], dtype=np.float64)
+    if trade_path is not None and trade_path.height:
+        required = {EVENT_TS, "price"}
+        missing = required.difference(trade_path.columns)
+        if missing:
+            raise ValueError(f"trade_path missing required columns: {sorted(missing)}")
+        tape = trade_path.select(EVENT_TS, "price").sort(EVENT_TS)
+        path_ts = tape[EVENT_TS].to_numpy().astype(np.int64)
+        path_px = tape["price"].to_numpy().astype(np.float64) * PRICE_SCALE
 
     signal = np.zeros(n, dtype=np.float64)
     entry_a = np.full(n, np.nan)
@@ -175,6 +245,10 @@ def simulate_edge_trades(  # noqa: PLR0915
     risk_a = np.full(n, np.nan)
     reward_a = np.full(n, np.nan)
     pnl_a = np.full(n, np.nan)
+    gross_a = np.full(n, np.nan)
+    cost_a = np.full(n, np.nan)
+    exit_a = np.full(n, np.nan)
+    exit_ts_a = np.full(n, np.nan)
     hit_a = np.zeros(n, dtype=np.float64)
 
     i = 0
@@ -182,20 +256,29 @@ def simulate_edge_trades(  # noqa: PLR0915
         if gate[i] < 1.0 or verdict[i] < 0.0 or thesis[i] == 0.0:
             i += 1
             continue
+        if cfg.playbook == "responsive" and not balanced[i]:
+            i += 1
+            continue
+        if cfg.playbook == "initiative" and not expansion[i]:
+            i += 1
+            continue
+        direction = float(thesis[i])
+        slip = cfg.slippage_ticks * cfg.tick_size
+        entry_fill = float(close[i]) + direction * slip
         planned = _plan_levels(
-            direction=float(thesis[i]),
-            entry=float(close[i]),
+            direction=direction,
+            entry=entry_fill,
             vah=float(vah[i]),
             val=float(val[i]),
+            poc=float(poc[i]),
             cfg=cfg,
         )
         if planned is None:
             i += 1
             continue
         stop, target, risk, reward = planned
-        direction = float(thesis[i])
         signal[i] = direction
-        entry_a[i] = close[i]
+        entry_a[i] = entry_fill
         stop_a[i] = stop
         target_a[i] = target
         risk_a[i] = risk
@@ -204,37 +287,52 @@ def simulate_edge_trades(  # noqa: PLR0915
 
         # محاكاة مسار لاحق سببيًا
         hit = 0.0
-        pnl = 0.0
+        exit_px = entry_fill
+        exit_ts = int(truth_ts[i])
+        exit_row = i
         last = min(n - 1, i + cfg.max_hold_buckets)
-        for j in range(i + 1, last + 1):
-            px = close[j]
+        if path_ts.size:
+            lo = int(np.searchsorted(path_ts, truth_ts[i], side="right"))
+            hi = int(np.searchsorted(path_ts, truth_ts[last], side="right"))
+            path = zip(path_ts[lo:hi], path_px[lo:hi], strict=True)
+        else:
+            path = zip(truth_ts[i + 1 : last + 1], close[i + 1 : last + 1], strict=True)
+        for _event_time, px in path:
             if direction > 0:
                 if px <= stop:
                     hit = -1.0
-                    pnl = (stop - close[i]) / close[i]
+                    exit_px = stop - slip
                     break
                 if px >= target:
                     hit = 1.0
-                    pnl = (target - close[i]) / close[i]
+                    exit_px = target - slip
                     break
             else:
                 if px >= stop:
                     hit = -1.0
-                    pnl = (close[i] - stop) / close[i]
+                    exit_px = stop + slip
                     break
                 if px <= target:
                     hit = 1.0
-                    pnl = (close[i] - target) / close[i]
+                    exit_px = target + slip
                     break
         else:
-            # انتهاء الوقت عند آخر إغلاق
-            px = close[last]
-            pnl = direction * (px - close[i]) / close[i]
-            hit = 0.0
+            _event_time = int(truth_ts[last])
+            px = float(path_px[hi - 1]) if path_ts.size and hi > lo else float(close[last])
+            exit_px = px - direction * slip
+        exit_ts = int(_event_time)
+        exit_row = int(np.searchsorted(truth_ts, exit_ts, side="right") - 1)
+        gross = direction * (exit_px - entry_fill) / entry_fill
+        cost = commission_rate(commission_bps=cfg.commission_bps)
+        pnl = gross - cost
         hit_a[i] = hit
         pnl_a[i] = pnl
-        # لا تداخل صفقات — انتقل بعد نافذة الصفقة
-        i = last + 1
+        gross_a[i] = gross
+        cost_a[i] = cost
+        exit_a[i] = exit_px
+        exit_ts_a[i] = float(exit_ts)
+        # لا تداخل، لكن الخروج المبكر لا يحجب بقية نافذة max_hold.
+        i = max(i + 1, exit_row + 1)
 
     return truth.with_columns(
         pl.Series("edge_signal", signal),
@@ -245,6 +343,10 @@ def simulate_edge_trades(  # noqa: PLR0915
         pl.Series("edge_risk", risk_a),
         pl.Series("edge_reward", reward_a),
         pl.Series("edge_pnl", pnl_a),
+        pl.Series("edge_gross_pnl", gross_a),
+        pl.Series("edge_cost", cost_a),
+        pl.Series("edge_exit", exit_a),
+        pl.Series("edge_exit_ts", exit_ts_a),
         pl.Series("edge_hit", hit_a),
     )
 
@@ -298,6 +400,8 @@ def run_edge_plan(
     progress: ProgressLike | None = None,
     auction: pl.DataFrame | None = None,
     deceptive_frame: pl.DataFrame | None = None,
+    thesis_frame: pl.DataFrame | None = None,
+    thesis_col: str = "vp_ic_employed",
 ) -> pl.DataFrame:
     """خط واحد: حقيقة السوق → خطة تنفيذ → محاكاة.
 
@@ -313,8 +417,14 @@ def run_edge_plan(
         progress=progress,
         auction=auction,
         deceptive_frame=deceptive_frame,
+        thesis_frame=thesis_frame,
+        thesis_col=thesis_col,
     )
-    return simulate_edge_trades(truth, exec_cfg=exec_cfg)
+    return simulate_edge_trades(
+        truth,
+        exec_cfg=exec_cfg,
+        trade_path=_execution_trade_path(mbo),
+    )
 
 
 def score_edge_spec_oos(
@@ -328,6 +438,9 @@ def score_edge_spec_oos(
     truth_frame: pl.DataFrame | None = None,
     auction: pl.DataFrame | None = None,
     deceptive_frame: pl.DataFrame | None = None,
+    thesis_frame: pl.DataFrame | None = None,
+    thesis_col: str = "vp_ic_employed",
+    trade_path: pl.DataFrame | None = None,
 ) -> dict[str, float | str]:
     """تقييم فرضية بمحاكاة مستقلة على التدريب ثم الاختبار (بلا تسرّب عبر القطع)."""
     if not _TRAIN_FRAC_MIN < train_frac < _TRAIN_FRAC_MAX:
@@ -337,6 +450,10 @@ def score_edge_spec_oos(
     empty: dict[str, float | str] = {
         "name": spec.name,
         "train_expectancy": 0.0,
+        "train_win_rate": 0.0,
+        "train_n": 0.0,
+        "train_avg_rr": 0.0,
+        "train_profit_factor": 0.0,
         "oos_expectancy": 0.0,
         "oos_win_rate": 0.0,
         "oos_n": 0.0,
@@ -353,6 +470,8 @@ def score_edge_spec_oos(
             score_mbo=score_mbo,
             auction=auction,
             deceptive_frame=deceptive_frame,
+            thesis_frame=thesis_frame,
+            thesis_col=thesis_col,
         )
     if truth.height < _MIN_TRUTH_ROWS_FOR_OOS:
         return empty
@@ -361,16 +480,128 @@ def score_edge_spec_oos(
     train_truth = truth.head(cut)
     test_start = min(truth.height, cut + purge)
     test_truth = truth.slice(test_start)
-    train = summarize_edge_trades(simulate_edge_trades(train_truth, exec_cfg=spec.exec_config()))
-    test = summarize_edge_trades(simulate_edge_trades(test_truth, exec_cfg=spec.exec_config()))
+    tape = trade_path if trade_path is not None else _execution_trade_path(mbo)
+    train = summarize_edge_trades(
+        simulate_edge_trades(train_truth, exec_cfg=spec.exec_config(), trade_path=tape)
+    )
+    test = summarize_edge_trades(
+        simulate_edge_trades(test_truth, exec_cfg=spec.exec_config(), trade_path=tape)
+    )
     return {
         "name": spec.name,
         "train_expectancy": train["expectancy"],
+        "train_win_rate": train["win_rate"],
+        "train_n": train["n_trades"],
+        "train_avg_rr": train["avg_rr_planned"],
+        "train_profit_factor": train["profit_factor"],
         "oos_expectancy": test["expectancy"],
         "oos_win_rate": test["win_rate"],
         "oos_n": test["n_trades"],
         "oos_avg_rr": test["avg_rr_planned"],
         "oos_profit_factor": test["profit_factor"],
+    }
+
+
+def _inner_walk_forward_summary(
+    truth: pl.DataFrame,
+    spec: EdgeSearchSpec,
+    *,
+    n_splits: int = 3,
+    trade_path: pl.DataFrame | None = None,
+) -> dict[str, float | str]:
+    """يلخّص OOS الداخلي داخل جزء التدريب فقط لاختيار مواصفة التنفيذ."""
+    empty: dict[str, float | str] = {
+        "name": spec.name,
+        "train_expectancy": 0.0,
+        "train_win_rate": 0.0,
+        "train_n": 0.0,
+        "train_avg_rr": 0.0,
+        "train_profit_factor": 0.0,
+        "train_positive_fold_rate": 0.0,
+        "train_fold_count": 0.0,
+        "selection_scope": "inner_walk_forward",
+        "outer_evaluated": 0.0,
+        "oos_expectancy": 0.0,
+        "oos_win_rate": 0.0,
+        "oos_n": 0.0,
+        "oos_avg_rr": 0.0,
+        "oos_profit_factor": 0.0,
+        "oos_start_index": -1.0,
+        "oos_start_ts": -1.0,
+    }
+    if truth.height < _MIN_TRUTH_ROWS_FOR_OOS:
+        return empty
+    if AVAILABILITY_TS in truth.columns:
+        times = truth[AVAILABILITY_TS].to_numpy().astype(np.int64)
+    else:
+        times = np.arange(truth.height, dtype=np.int64)
+    purge = int(spec.exec_config().max_hold_buckets)
+    folds = purged_walk_forward_split(
+        times,
+        n_splits=max(1, min(int(n_splits), truth.height - 1)),
+        purge_samples=purge,
+        min_train_size=max(_MIN_TRUTH_ROWS_FOR_OOS // 2, purge + 1),
+    )
+    active_frames: list[pl.DataFrame] = []
+    fold_expectancies: list[float] = []
+    for fold in folds:
+        start = int(fold.test_idx[0])
+        stop = int(fold.test_idx[-1]) + 1
+        simulated = simulate_edge_trades(
+            truth.slice(start, stop - start),
+            exec_cfg=spec.exec_config(),
+            trade_path=trade_path,
+        )
+        summary = summarize_edge_trades(simulated)
+        fold_expectancies.append(float(summary["expectancy"]))
+        active = simulated.filter(pl.col("edge_signal") != 0.0)
+        if active.height:
+            active_frames.append(active)
+    if not folds:
+        return empty
+    combined = pl.concat(active_frames, how="vertical") if active_frames else pl.DataFrame()
+    summary = summarize_edge_trades(combined)
+    positive_rate = float(np.mean(np.asarray(fold_expectancies) > 0.0))
+    return {
+        **empty,
+        "train_expectancy": summary["expectancy"],
+        "train_win_rate": summary["win_rate"],
+        "train_n": summary["n_trades"],
+        "train_avg_rr": summary["avg_rr_planned"],
+        "train_profit_factor": summary["profit_factor"],
+        "train_positive_fold_rate": positive_rate,
+        "train_fold_count": float(len(folds)),
+    }
+
+
+def _outer_holdout_summary(
+    truth: pl.DataFrame,
+    spec: EdgeSearchSpec,
+    *,
+    train_frac: float,
+    trade_path: pl.DataFrame | None = None,
+) -> dict[str, float]:
+    """يقيس المواصفة المختارة وحدها على الـholdout الخارجي النهائي."""
+    cut = int(truth.height * train_frac)
+    start = min(truth.height, cut + int(spec.exec_config().max_hold_buckets))
+    simulated = simulate_edge_trades(
+        truth.slice(start),
+        exec_cfg=spec.exec_config(),
+        trade_path=trade_path,
+    )
+    summary = summarize_edge_trades(simulated)
+    start_ts = -1.0
+    if start < truth.height and AVAILABILITY_TS in truth.columns:
+        start_ts = float(truth[AVAILABILITY_TS][start])
+    return {
+        "oos_expectancy": summary["expectancy"],
+        "oos_win_rate": summary["win_rate"],
+        "oos_n": summary["n_trades"],
+        "oos_avg_rr": summary["avg_rr_planned"],
+        "oos_profit_factor": summary["profit_factor"],
+        "oos_start_index": float(start),
+        "oos_start_ts": start_ts,
+        "outer_evaluated": 1.0,
     }
 
 
@@ -388,13 +619,20 @@ def search_best_edge_spec(  # noqa: PLR0912
     auction: pl.DataFrame | None = None,
     deceptive_frame: pl.DataFrame | None = None,
     scored: pl.DataFrame | None = None,
+    thesis_frame: pl.DataFrame | None = None,
+    thesis_col: str = "vp_ic_employed",
     profile_interval_ns: int = VP_PROFILE_INTERVAL_NS,
 ) -> tuple[pl.DataFrame, EdgeSearchSpec | None, dict[str, float | str]]:
     """يبحث عن أفضل دخول/خروج؛ يعيد ``best=None`` إن لم تُحقَّق القيود.
 
     ``auction`` / ``deceptive_frame`` / ``scored`` اختياريان لإعادة استخدام
-    بناء اليوم. الرينج الافتراضي 5د على ساعة فعل ``interval_ns`` (30ث).
+    بناء اليوم. الاختيار من OOS داخلي داخل train، ثم تُقاس المواصفة الفائزة
+    وحدها على holdout خارجي لم يُستعمل في الشبكة.
     """
+    if not _TRAIN_FRAC_MIN < train_frac < _TRAIN_FRAC_MAX:
+        raise ValueError(
+            f"train_frac must be in ({_TRAIN_FRAC_MIN}, {_TRAIN_FRAC_MAX}), got {train_frac}"
+        )
     specs = grid if grid is not None else default_edge_search_grid()
     rows: list[dict[str, float | str]] = []
     if progress is not None:
@@ -430,6 +668,7 @@ def search_best_edge_spec(  # noqa: PLR0912
         progress.op(f"edge search: جاهز · auction={states.height:,} · deco={deco.height:,}")
     # hold_buckets هو الفرق الوحيد في MarketTruthConfig عبر الشبكة الافتراضية.
     truth_by_hold: dict[int, pl.DataFrame] = {}
+    trade_path = _execution_trade_path(mbo)
     for i, spec in enumerate(specs):
         hold = int(spec.hold_buckets)
         if hold not in truth_by_hold:
@@ -441,13 +680,15 @@ def search_best_edge_spec(  # noqa: PLR0912
                 truth=spec.truth_config(),
                 auction=states,
                 deceptive_frame=deco,
+                thesis_frame=thesis_frame,
+                thesis_col=thesis_col,
             )
-        row = score_edge_spec_oos(
-            mbo,
+        truth = truth_by_hold[hold]
+        outer_train = truth.head(int(truth.height * train_frac))
+        row = _inner_walk_forward_summary(
+            outer_train,
             spec,
-            interval_ns=interval_ns,
-            train_frac=train_frac,
-            truth_frame=truth_by_hold[hold],
+            trade_path=trade_path,
         )
         rows.append(row)
         if progress is not None:
@@ -455,14 +696,32 @@ def search_best_edge_spec(  # noqa: PLR0912
     table = pl.DataFrame(rows) if rows else pl.DataFrame()
     if table.height == 0:
         return table, None, {}
+    # الاسمان min_oos_* محفوظان توافقياً للـ CLI القديم؛ المقاييس train_ هنا
+    # هي OOS داخلي walk-forward داخل التدريب الخارجي، لا ملاءمة داخل العينة.
     eligible = table.filter(
-        (pl.col("oos_n") >= float(min_oos_trades)) & (pl.col("oos_avg_rr") >= float(min_oos_rr))
+        (pl.col("train_n") >= float(min_oos_trades)) & (pl.col("train_avg_rr") >= float(min_oos_rr))
     )
     if eligible.height == 0:
         return table, None, {}
-    best_row = eligible.sort("oos_expectancy", descending=True).row(0, named=True)
+    best_row = eligible.sort(
+        ["train_positive_fold_rate", "train_expectancy", "train_n", "name"],
+        descending=[True, True, True, False],
+    ).row(0, named=True)
     best_spec = next((s for s in specs if s.name == best_row["name"]), None)
-    return table, best_spec, dict(best_row)
+    if best_spec is None:
+        return table, None, {}
+    outer = _outer_holdout_summary(
+        truth_by_hold[int(best_spec.hold_buckets)],
+        best_spec,
+        train_frac=train_frac,
+        trade_path=trade_path,
+    )
+    updated_rows: list[dict[str, float | str]] = []
+    for row in rows:
+        updated_rows.append({**row, **outer} if row["name"] == best_spec.name else row)
+    table = pl.DataFrame(updated_rows)
+    selected = next(row for row in updated_rows if row["name"] == best_spec.name)
+    return table, best_spec, dict(selected)
 
 
 __all__ = [

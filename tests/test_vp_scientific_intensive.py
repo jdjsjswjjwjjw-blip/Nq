@@ -294,15 +294,14 @@ def test_fsm_never_expands_without_is_expansion_flag() -> None:
 
 
 def test_focus_columns_include_build_and_setup_for_daily_ontology() -> None:
-    """بركة IC الاتجاهية تشمل FSM/setup؛ مسافات VP تبقى وصفيّة خارج الفرز."""
+    """بركة IC تشمل النبضات الموقعة فقط؛ الحالات الأحادية تبقى سياقًا."""
     directional = {
         "vp_fsm_break",
-        "vp_fsm_build",
         "vp_fsm_retest",
         "vp_auction_setup",
-        "vp_flip_to_imbalance",
     }
     assert directional <= set(_VP_AUCTION_FOCUS)
+    assert {"vp_fsm_build", "vp_flip_to_imbalance"}.isdisjoint(_VP_AUCTION_FOCUS)
     level = {"vp_rel_upper", "vp_rel_mid", "vp_rel_lower"}
     assert level <= set(_VP_LEVEL_DISTANCE_FEATURES)
     assert level.isdisjoint(_VP_AUCTION_FOCUS)
@@ -442,7 +441,12 @@ def test_edge_search_grid_structural_rr_specs_nonempty() -> None:
     for spec in grid:
         assert spec.min_rr >= 2.0
         assert spec.hold_buckets >= 1
-        assert spec.target_mode in ("va_opposite", "rr_multiple")
+        assert spec.target_mode in ("poc", "va_opposite", "rr_multiple")
+        assert spec.playbook in ("responsive", "initiative")
+        if spec.playbook == "responsive":
+            assert spec.target_mode == "poc"
+        else:
+            assert spec.target_mode == "rr_multiple"
 
 
 def test_edge_search_reuses_auction_and_deceptive_frames() -> None:
