@@ -417,6 +417,38 @@ def test_oos_simulations_are_independent() -> None:
     assert "train_expectancy" in row
 
 
+def test_execution_levels_use_lagged_value_area() -> None:
+    truth = pl.DataFrame(
+        {
+            "availability_ts": [1, 2, 3],
+            "entry_gate": [1.0, 0.0, 0.0],
+            "thesis_dir": [1.0, 1.0, 1.0],
+            "market_verdict": [1.0, 1.0, 1.0],
+            "close": [_px(104.0)] * 3,
+            "decision_val": [_px(99.0)] * 3,
+            "decision_poc": [_px(101.0)] * 3,
+            "decision_vah": [_px(103.0)] * 3,
+            # حدود حالية متباعدة عمدًا؛ لا يجوز أن تدخل الوقف.
+            "val": [_px(50.0)] * 3,
+            "vah": [_px(150.0)] * 3,
+            "is_expansion": [True] * 3,
+        }
+    )
+    out = simulate_edge_trades(
+        truth,
+        exec_cfg=EdgeExecConfig(
+            min_rr=1.0,
+            stop_buffer_ticks=1.0,
+            target_mode="rr_multiple",
+            rr_multiple=1.0,
+            playbook="initiative",
+            slippage_ticks=0.0,
+            commission_bps=0.0,
+        ),
+    )
+    assert out["edge_stop"][0] == pytest.approx(102.75)
+
+
 def test_search_and_strategy_smoke() -> None:
     mbo = _session_with_imbalance(50)
     grid = (

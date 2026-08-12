@@ -122,8 +122,9 @@ def test_empty_stream() -> None:
 def test_auction_signal_frame_exports_vp_columns() -> None:
     balanced = [("T", "B", 100 + d, 2, 0) for d in (0, 0, 1, -1, 0)]
     trend = [("T", "B", 100 + j, 2, 0) for j in range(10)]
-    events = balanced + trend
-    ts = list(range(len(balanced))) + list(range(100, 100 + len(trend)))
+    # برميل فعل بعد اكتمال الرينج الثاني؛ لا توجد إشارة قانونية قبل توفر VA سابقة.
+    events = balanced + trend + [("T", "A", 105, 2, 0)]
+    ts = list(range(len(balanced))) + list(range(100, 100 + len(trend))) + [200]
     seq = list(range(1, len(events) + 1))
     frame = make_stream(events, event_ts=ts, sequence=seq)
 
@@ -167,6 +168,27 @@ def test_auction_signal_frame_exports_vp_columns() -> None:
     # ثلاث حدود VP: علوي ≥ متوسط ≥ سفلي
     assert signals["vp_upper"].to_list()[0] >= signals["vp_mid"].to_list()[0]
     assert signals["vp_mid"].to_list()[0] >= signals["vp_lower"].to_list()[0]
+
+
+def test_action_and_exported_bounds_use_completed_profile() -> None:
+    events = [
+        ("T", "B", 100, 5, 0),
+        ("T", "A", 101, 5, 0),
+        ("T", "B", 120, 20, 0),
+        ("T", "A", 121, 20, 0),
+        ("T", "A", 101, 5, 0),
+    ]
+    frame = make_stream(events, event_ts=[0, 1, 100, 101, 200], sequence=[1, 2, 3, 4, 5])
+    states = auction_action_states(
+        frame,
+        profile_interval_ns=100,
+        signal_interval_ns=100,
+        fixed_range=False,
+    ).sort(AVAILABILITY_TS)
+    assert states.height >= 1
+    assert states["decision_vah"][0] != states["vah"][0]
+    signals = auction_signals_from_states(states, fixed_range_decisions=False)
+    assert signals["vp_upper"][0] == pytest.approx(states["decision_vah"][0] * 1e-9)
 
 
 def test_auction_action_states_joins_profile_onto_signal() -> None:

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import polars as pl
 import pytest
 
 from nq.core.determinism import make_generator
@@ -13,6 +15,7 @@ from nq.simulation.edge_execution_plan import EdgeSearchSpec
 from nq.strategies.vp_auction import (
     VP_DEFAULT_SELECTION_HORIZON,
     _load_nq,
+    _outer_edge_summary,
     run_vp_auction_research,
 )
 from tests.mbo_factory import make_stream
@@ -56,6 +59,42 @@ def test_vp_loader_rejects_nonpositive_max_rows() -> None:
     frame = make_stream([("T", "B", 100, 1, 0)])
     with pytest.raises(ValueError, match="max_rows must be"):
         _load_nq(frame, max_rows=0, progress=None)
+
+
+def test_vp_path_max_rows_uses_bounded_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frame = make_stream(
+        [("T", "B", 100 + i, 1, 0) for i in range(20)],
+        event_ts=list(range(20)),
+    )
+    path = tmp_path / "mbo.parquet"
+    frame.write_parquet(path, row_group_size=4)
+
+    def reject_full_load(*_args: object, **_kwargs: object) -> pl.DataFrame:
+        raise AssertionError("bounded VP load must not materialize the full file")
+
+    monkeypatch.setattr("nq.ingestion.reader._read_columnar", reject_full_load)
+    limited, _complete = _load_nq(path, max_rows=5, progress=None)
+    assert limited.height == 5
+
+
+def test_edge_summary_is_outer_holdout_only() -> None:
+    summary = _outer_edge_summary(
+        {
+            "outer_evaluated": 1.0,
+            "oos_n": 7.0,
+            "oos_win_rate": 0.4,
+            "oos_avg_rr": 2.5,
+            "oos_expectancy": -0.01,
+            "oos_profit_factor": 0.8,
+            # مقاييس الاختيار الداخلية مختلفة عمدًا.
+            "train_n": 99.0,
+            "train_expectancy": 0.5,
+        }
+    )
+    assert summary["n_trades"] == 7.0
+    assert summary["expectancy"] == -0.01
 
 
 def test_run_vp_auction_research_uses_unified_features() -> None:

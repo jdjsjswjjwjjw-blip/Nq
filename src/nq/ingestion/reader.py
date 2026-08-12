@@ -152,6 +152,49 @@ def _causal_key(frame: pl.DataFrame, row: int) -> tuple[int, int]:
     return int(frame["event_ts"][row]), int(frame["sequence"][row])
 
 
+def _read_bounded_causal(path: Path, *, max_rows: int) -> pl.DataFrame:
+    """امسح الملف بذاكرة O(max_rows) واحتفظ بأقدم أحداث سببيًا.
+
+    لا نفترض أن صفوف الملف مرتبة: كل دفعة تُدمج مع مرشحي top-N الحاليين ثم
+    تُقص بعد ترتيب ``(event_ts, sequence)``. هكذا تبقى دلالة ``max_rows``
+    القديمة (أقدم N عالميًا) من دون تجسيد الملف كاملًا.
+    """
+    batch_size = min(max(max_rows, 10_000), 1_000_000)
+    selected: pl.DataFrame | None = None
+    generated_sequence_offset = 0
+    identities: set[tuple[int, str]] = set()
+    for raw in _iter_columnar_batches(path, batch_size):
+        if raw.is_empty():
+            continue
+        generated_sequence = is_databento_frame(raw) and "sequence" not in raw.columns
+        frame = _prepare_frame(raw)
+        if generated_sequence:
+            frame = frame.with_columns(
+                (pl.col("sequence") + generated_sequence_offset).alias("sequence")
+            )
+            generated_sequence_offset += raw.height
+        identities.update(
+            (int(row[0]), str(row[1]))
+            for row in frame.select("instrument_id", "symbol").unique().iter_rows()
+        )
+        if len(identities) > 1:
+            raise ValueError(
+                "MBO source must contain exactly one instrument contract; "
+                f"found identities={sorted(identities)}"
+            )
+        selected = (
+            frame
+            if selected is None
+            else pl.concat((selected, frame), how="vertical", rechunk=False)
+        )
+        selected = sort_causal(selected).head(max_rows)
+    if selected is None:
+        # احصل على مخطط/خطأ العقد المعتاد للملف الفارغ.
+        return _prepare_frame(_read_columnar(path))
+    validate_mbo_frame(selected)
+    return sort_causal(selected)
+
+
 def load_mbo_frame(
     source: pl.DataFrame | str | Path,
     *,
@@ -175,13 +218,22 @@ def load_mbo_frame(
         path = Path(source)
         if log is not None:
             log.op(f"قراءة ملف MBO: {path.resolve()}")
-        frame = _read_columnar(path)
+        frame = (
+            _read_bounded_causal(path, max_rows=max_rows)
+            if max_rows is not None
+            else _read_columnar(path)
+        )
         if log is not None:
             log.op(f"قُرئ الخام: {frame.height:,} صف × {frame.width} عمود")
 
     if log is not None:
         log.op("تطبيع Databento / التحقق من MBO_SCHEMA / ترتيب سببي")
-    frame = _prepare_frame(frame)
+    # المسار المحدود حضّر/تحقق ورتّب كل دفعة أصلًا.
+    frame = (
+        frame
+        if not isinstance(source, pl.DataFrame) and max_rows is not None
+        else _prepare_frame(frame)
+    )
     if max_rows is not None and frame.height > max_rows:
         if log is not None:
             log.op(f"قص سببي بعد الترتيب إلى max_rows={max_rows:,} (أقدم {max_rows:,})")

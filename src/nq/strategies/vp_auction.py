@@ -52,7 +52,6 @@ from nq.simulation.edge_execution_plan import (
     default_edge_search_grid,
     run_edge_plan,
     search_best_edge_spec,
-    summarize_edge_trades,
 )
 from nq.simulation.market_truth import MARKET_TRUTH_COLUMNS
 from nq.strategies.fvg_hypothesis import walk_forward_select_hypotheses
@@ -175,15 +174,39 @@ def _load_nq(
     """حمّل العينة وبيّن هل ``max_rows`` قطع جلسة CME من المنتصف."""
     if max_rows is not None and max_rows < 1:
         raise ValueError(f"max_rows must be >= 1, got {max_rows}")
-    # load_mbo_frame يقرأ الملف ثم يرتبه قبل القص أصلًا؛ نحتفظ بصف واحد بعد
-    # الحد حتى نعرف إن كان الحد جلسيًا بدل افتراض أن 500k = يوم كامل.
-    full = load_mbo_frame(nq, max_rows=None, progress=progress)
-    if max_rows is None or full.height <= max_rows:
-        return full, True
-    limited = full.head(max_rows)
-    last_date = session_date_from_ns(int(full[EVENT_TS][max_rows - 1]))
-    next_date = session_date_from_ns(int(full[EVENT_TS][max_rows]))
+    if max_rows is None:
+        return load_mbo_frame(nq, max_rows=None, progress=progress), True
+    # احتفظ بصف شاهد بعد الحد لمعرفة هل القطع داخل جلسة. القارئ العام ينفذ
+    # top-N سببيًا بدفعات وبذاكرة محدودة حتى للملفات غير المرتبة.
+    sampled = load_mbo_frame(nq, max_rows=max_rows + 1, progress=progress)
+    if sampled.height <= max_rows:
+        return sampled, True
+    limited = sampled.head(max_rows)
+    last_date = session_date_from_ns(int(sampled[EVENT_TS][max_rows - 1]))
+    next_date = session_date_from_ns(int(sampled[EVENT_TS][max_rows]))
     return limited, last_date != next_date
+
+
+def _outer_edge_summary(best_edge_row: dict[str, float | str]) -> dict[str, float]:
+    """حوّل قياس الـouter holdout المستقل إلى ملخص الإدج النهائي."""
+    if float(best_edge_row.get("outer_evaluated", 0.0)) != 1.0:
+        return {
+            "n_trades": 0.0,
+            "win_rate": 0.0,
+            "avg_rr_planned": 0.0,
+            "expectancy": 0.0,
+            "avg_pnl": 0.0,
+            "profit_factor": 0.0,
+        }
+    expectancy = float(best_edge_row.get("oos_expectancy", 0.0))
+    return {
+        "n_trades": float(best_edge_row.get("oos_n", 0.0)),
+        "win_rate": float(best_edge_row.get("oos_win_rate", 0.0)),
+        "avg_rr_planned": float(best_edge_row.get("oos_avg_rr", 0.0)),
+        "expectancy": expectancy,
+        "avg_pnl": expectancy,
+        "profit_factor": float(best_edge_row.get("oos_profit_factor", 0.0)),
+    }
 
 
 def _attach_execution_layer(
@@ -534,7 +557,9 @@ def run_vp_auction_research(  # noqa: PLR0912, PLR0915
                 deceptive_frame=deco_by_bucket,
                 thesis_frame=thesis_frame,
             )
-        edge_summary = summarize_edge_trades(edge_trades)
+        # القياس النهائي يأتي من محاكاة outer holdout المستقلة التي نفذها البحث
+        # للفائز وحده. تشغيل الخطة الكامل أدناه تشخيصي لإلحاق الأعمدة فقط.
+        edge_summary = _outer_edge_summary(best_edge_row)
         edge_trades = _with_gated_vp_columns(edge_trades, features)
         if (
             "deceptive_score" not in edge_trades.columns
