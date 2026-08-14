@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
+from nq.auction_behavior.projection import PROJECTION_NUMERIC_COLUMNS
 from nq.auction_behavior.types import BehaviorStateSnapshot
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.session import VP_LIQUIDITY_SESSION
@@ -24,6 +25,7 @@ STATE_FEATURE_COLUMNS = (
     "deceptive_score",
     "real_liquidity_ratio",
     "signal_quality",
+    *PROJECTION_NUMERIC_COLUMNS,
 )
 
 
@@ -57,6 +59,11 @@ def latest_state_snapshot(frame: pl.DataFrame) -> BehaviorStateSnapshot | None:
         val = row[name][0]
         return 0.0 if val is None else float(val)
 
+    def _s(name: str) -> str:
+        if name not in row.columns or row[name][0] is None:
+            return ""
+        return str(row[name][0])
+
     return BehaviorStateSnapshot(
         availability_ts=int(row[AVAILABILITY_TS][0]),
         liquidity_session=sess,
@@ -72,6 +79,16 @@ def latest_state_snapshot(frame: pl.DataFrame) -> BehaviorStateSnapshot | None:
         deceptive_score=_v("deceptive_score"),
         real_liquidity_ratio=_v("real_liquidity_ratio"),
         signal_quality=_v("signal_quality"),
+        auction_phase=_s("auction_phase"),
+        asia_poc=_v("asia_poc"),
+        asia_vah=_v("asia_vah"),
+        asia_val=_v("asia_val"),
+        composite_poc=_v("composite_poc"),
+        composite_vah=_v("composite_vah"),
+        composite_val=_v("composite_val"),
+        projection_anchor_complete=_v("proj_anchor_complete"),
+        projection_expansion_active=_v("proj_expansion_active"),
+        projection_value_transferred=_v("proj_value_transferred"),
     )
 
 

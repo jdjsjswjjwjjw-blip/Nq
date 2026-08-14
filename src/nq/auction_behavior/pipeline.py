@@ -19,6 +19,11 @@ import polars as pl
 from nq.auction_behavior.events import BEHAVIOR_EVENT_COLUMNS, build_behavior_events
 from nq.auction_behavior.memory import attach_causal_memory
 from nq.auction_behavior.model import estimate_behavior_probabilities
+from nq.auction_behavior.projection import (
+    PROJECTION_NUMERIC_COLUMNS,
+    AsiaLondonProjectionConfig,
+    build_asia_london_projection,
+)
 from nq.auction_behavior.quality import attach_signal_quality
 from nq.auction_behavior.state import STATE_FEATURE_COLUMNS, attach_state_vector
 from nq.auction_behavior.types import BehaviorProbabilities
@@ -28,7 +33,12 @@ from nq.auction_behavior.validate import (
     validate_behavior_frame,
 )
 from nq.contracts.temporal import AVAILABILITY_TS
-from nq.core.session import VP_LIQUIDITY_SESSION, VpLiquiditySession, vp_liquidity_session_label
+from nq.core.session import (
+    VP_LIQUIDITY_SESSION,
+    VpLiquiditySession,
+    session_date_from_ns,
+    vp_liquidity_session_label,
+)
 from nq.simulation.auction import (
     VP_PROFILE_INTERVAL_NS,
     VP_SIGNAL_INTERVAL_NS,
@@ -55,6 +65,7 @@ _MEMORY_BASE_COLS = (
     "signal_quality",
     "deceptive_score",
     "real_liquidity_ratio",
+    *PROJECTION_NUMERIC_COLUMNS,
 )
 
 
@@ -72,6 +83,10 @@ class BehaviorConfig:
     min_train_size: int = 8
     memory_lags: tuple[int, ...] = (1, 2, 3, 5)
     outcome_window: int = 8
+    include_asia_london_projection: bool = True
+    projection_config: AsiaLondonProjectionConfig = field(
+        default_factory=AsiaLondonProjectionConfig
+    )
 
     def __post_init__(self) -> None:
         if self.profile_interval_ns < 1 or self.signal_interval_ns < 1:
@@ -99,6 +114,7 @@ class AuctionBehaviorResult:
     fold_metrics: pl.DataFrame
     session_profiles: pl.DataFrame
     london_scenarios: pl.DataFrame
+    projection: pl.DataFrame = field(default_factory=pl.DataFrame)
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -152,6 +168,91 @@ def _with_session_runs(frame: pl.DataFrame) -> pl.DataFrame:
     return frame.sort(AVAILABILITY_TS).with_columns(
         (session != session.shift(1).fill_null(-2)).cast(pl.Int64).cum_sum().alias("_liquidity_run")
     )
+
+
+def _with_behavior_story_runs(frame: pl.DataFrame) -> pl.DataFrame:
+    """يجمع آسيا+لندن في قصة واحدة، ويعيد الضبط عند نيويورك/يوم جديد."""
+    if frame.height == 0 or VP_LIQUIDITY_SESSION not in frame.columns:
+        return frame
+    ordered = frame.sort(AVAILABILITY_TS)
+    times = [int(x) for x in ordered[AVAILABILITY_TS].to_list()]
+    sessions = [int(x) for x in ordered[VP_LIQUIDITY_SESSION].fill_null(-1).to_list()]
+    asia_london = {int(VpLiquiditySession.ASIA), int(VpLiquiditySession.LONDON)}
+    keys = [
+        f"{session_date_from_ns(ts)}:{'asia_london' if sess in asia_london else sess}"
+        for ts, sess in zip(times, sessions, strict=True)
+    ]
+    runs: list[int] = []
+    run = 0
+    previous: str | None = None
+    for key in keys:
+        if key != previous:
+            run += 1
+        runs.append(run)
+        previous = key
+    return ordered.with_columns(pl.Series("_behavior_story_run", runs, dtype=pl.Int64))
+
+
+def _attach_projection(blended: pl.DataFrame, projection: pl.DataFrame) -> pl.DataFrame:
+    """يلحق آخر إسقاط لندن المكتمل داخل يوم التداول نفسه (asof خلفي)."""
+    if blended.height == 0 or projection.height == 0:
+        return blended.with_columns(pl.lit(0.0).alias(c) for c in PROJECTION_NUMERIC_COLUMNS)
+    ordered = blended.sort(AVAILABILITY_TS)
+    story_dates = [session_date_from_ns(int(ts)) for ts in ordered[AVAILABILITY_TS].to_list()]
+    left = ordered.with_columns(pl.Series("_projection_story_date", story_dates, dtype=pl.Utf8))
+    projection_cols = [
+        AVAILABILITY_TS,
+        "projection_story_date",
+        "auction_phase",
+        "asia_poc",
+        "asia_vah",
+        "asia_val",
+        "asia_primary_hvn",
+        "composite_poc",
+        "composite_vah",
+        "composite_val",
+        "composite_primary_hvn",
+        *PROJECTION_NUMERIC_COLUMNS,
+    ]
+    right = (
+        projection.filter(pl.col("projection_stage") == "london_extend")
+        .select(c for c in projection_cols if c in projection.columns)
+        .sort(AVAILABILITY_TS)
+    )
+    if right.height == 0:
+        return ordered.with_columns(pl.lit(0.0).alias(c) for c in PROJECTION_NUMERIC_COLUMNS)
+    joined = left.join_asof(
+        right,
+        left_on=AVAILABILITY_TS,
+        right_on=AVAILABILITY_TS,
+        by_left="_projection_story_date",
+        by_right="projection_story_date",
+        strategy="backward",
+        check_sortedness=False,
+    )
+    london = pl.col(VP_LIQUIDITY_SESSION).cast(pl.Int64) == int(VpLiquiditySession.LONDON)
+    numeric = [c for c in PROJECTION_NUMERIC_COLUMNS if c in joined.columns]
+    joined = joined.with_columns(
+        pl.when(london).then(pl.col(c).fill_null(0.0)).otherwise(0.0).alias(c) for c in numeric
+    )
+    contextual = [
+        c
+        for c in (
+            "auction_phase",
+            "asia_poc",
+            "asia_vah",
+            "asia_val",
+            "asia_primary_hvn",
+            "composite_poc",
+            "composite_vah",
+            "composite_val",
+            "composite_primary_hvn",
+        )
+        if c in joined.columns
+    ]
+    return joined.with_columns(
+        pl.when(london).then(pl.col(c)).otherwise(None).alias(c) for c in contextual
+    ).drop("_projection_story_date")
 
 
 def _session_vp_summary(states: pl.DataFrame) -> pl.DataFrame:
@@ -320,6 +421,11 @@ def run_auction_behavior_analysis(
     ``score_mbo``: اختياري — خام قبل أي تنظيف لتسجيل نية التضليل (درجات فقط).
     """
     cfg = config or BehaviorConfig()
+    projection = (
+        build_asia_london_projection(mbo, config=cfg.projection_config)
+        if mbo is not None and mbo.height > 0 and cfg.include_asia_london_projection
+        else pl.DataFrame()
+    )
     if mbo is None or mbo.height == 0:
         empty_probs = BehaviorProbabilities(
             p_balanced=0.0,
@@ -343,6 +449,7 @@ def run_auction_behavior_analysis(
             fold_metrics=pl.DataFrame(),
             session_profiles=pl.DataFrame(),
             london_scenarios=pl.DataFrame(),
+            projection=projection,
             diagnostics={"empty": True, "deceptive_filtered": False},
         )
 
@@ -375,6 +482,7 @@ def run_auction_behavior_analysis(
             fold_metrics=pl.DataFrame(),
             session_profiles=pl.DataFrame(),
             london_scenarios=pl.DataFrame(),
+            projection=projection,
             diagnostics={
                 "empty": True,
                 "reason": "no_trade_derived_auction_bars",
@@ -444,11 +552,13 @@ def run_auction_behavior_analysis(
     state_decision = states.select(AVAILABILITY_TS, *decision_cols)
     blended = blended.join(state_decision, on=AVAILABILITY_TS, how="left")
     blended = _with_session_runs(blended)
+    blended = _attach_projection(blended, projection)
+    blended = _with_behavior_story_runs(blended)
 
     events = build_behavior_events(
         blended,
         outcome_window=cfg.outcome_window,
-        group_col="_liquidity_run",
+        group_col="_behavior_story_run",
     )
 
     # Layers 7–9: quality → memory → state vector
@@ -458,7 +568,7 @@ def run_auction_behavior_analysis(
         blended,
         columns=mem_cols,
         lags=cfg.memory_lags,
-        group_col="_liquidity_run",
+        group_col="_behavior_story_run",
     )
     blended = attach_state_vector(blended)
     _assert_no_trade_columns(blended)
@@ -482,6 +592,7 @@ def run_auction_behavior_analysis(
         "n_events": int(events.height),
         "n_behavior_event_cols": len(BEHAVIOR_EVENT_COLUMNS),
         "n_state_feature_cols": len(STATE_FEATURE_COLUMNS),
+        "n_projection_bars": int(projection.height),
         "deceptive_scored_rows": scored_rows,
         "deceptive_filtered": False,
         "causality": {
@@ -500,7 +611,9 @@ def run_auction_behavior_analysis(
             "embargo": cfg.embargo,
             "purge_samples": cfg.purge_samples,
             "outcome_window": cfg.outcome_window,
-            "memory_resets_at_session": True,
+            "include_asia_london_projection": cfg.include_asia_london_projection,
+            "projection_interval_ns": cfg.projection_config.interval_ns,
+            "memory_scope": "asia_london_story_then_reset_at_new_york_or_new_day",
         },
     }
 
@@ -512,6 +625,7 @@ def run_auction_behavior_analysis(
         fold_metrics=fold_metrics,
         session_profiles=session_profiles,
         london_scenarios=london_scenarios,
+        projection=projection,
         diagnostics=diagnostics,
     )
 
@@ -533,6 +647,14 @@ def behavior_state_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
         "decision_poc",
         "decision_vah",
         "decision_val",
+        "auction_phase",
+        "asia_poc",
+        "asia_vah",
+        "asia_val",
+        "composite_poc",
+        "composite_vah",
+        "composite_val",
+        *PROJECTION_NUMERIC_COLUMNS,
     ]
     frame = result.blended
     keep = [c for c in cols if c in frame.columns]

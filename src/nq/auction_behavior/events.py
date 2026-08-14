@@ -15,11 +15,17 @@ BEHAVIOR_EVENT_COLUMNS = (
     "evt_retest_success",
     "evt_retest_fail",
     "evt_accept_expansion",
+    "evt_expansion_continue",
     "evt_reject_value",
+    "evt_return_to_value",
     "evt_absorb_buy",
     "evt_absorb_sell",
     "evt_reload_bid",
     "evt_reload_ask",
+    "evt_asia_anchor_hold",
+    "evt_expansion_accepting",
+    "evt_value_transfer",
+    "evt_rejection_to_asia",
 )
 
 #: عتبة اعتبار عمود ثنائي/علم «نشط» (أعمدة VP ∈ {0,1} تقريبًا).
@@ -68,6 +74,24 @@ def build_behavior_events(  # noqa: PLR0912, PLR0915
         if group_col is not None
         else np.zeros(work.height, dtype=np.int64)
     )
+
+    def _rising_pulse(name: str) -> np.ndarray:
+        active = _array(name) > _ACTIVE_FLAG
+        pulse = np.zeros(work.height, dtype=np.float64)
+        for idx in range(work.height):
+            new_group = idx == 0 or groups[idx] != groups[idx - 1]
+            was_active = False if new_group else bool(active[idx - 1])
+            pulse[idx] = float(bool(active[idx]) and not was_active)
+        return pulse
+
+    anchor_hold = _rising_pulse("proj_anchor_stable")
+    expansion_accepting = _rising_pulse("proj_expansion_accepting")
+    value_transfer = _rising_pulse("proj_value_transferred")
+    rejection_to_asia = _rising_pulse("proj_rejection_to_asia")
+    accepted_expansion = ((np.abs(fr_accept_a) > 0.0) | (np.abs(fr_exit_a) > 0.0)).astype(
+        np.float64
+    )
+    expansion_continue = np.maximum(accepted_expansion, expansion_accepting)
 
     # النتائج تُنبض عند الصف الذي أصبحت فيه معروفة، لا عند صف الكسر/الريتست القديم.
     true_break = np.zeros(work.height, dtype=np.float64)
@@ -128,12 +152,21 @@ def build_behavior_events(  # noqa: PLR0912, PLR0915
         pl.Series("evt_retest_success", retest_ok),
         pl.Series("evt_retest_fail", retest_bad),
         (fr_accept | fr_exit).cast(pl.Float64).alias("evt_accept_expansion"),
+        pl.Series("evt_expansion_continue", expansion_continue),
         ((look_fail.abs() > 0.0) & close_in).cast(pl.Float64).alias("evt_reject_value"),
+        pl.max_horizontal(
+            ((look_fail.abs() > 0.0) & close_in).cast(pl.Float64),
+            pl.Series("_rejection_to_asia", rejection_to_asia),
+        ).alias("evt_return_to_value"),
         (absorb > 0.0).cast(pl.Float64).alias("evt_absorb_buy"),
         (absorb < 0.0).cast(pl.Float64).alias("evt_absorb_sell"),
         # إعادة تحميل: امتصاص مع بقاء داخل القيمة (سيولة تُعاد عند الحد).
         ((absorb > 0.0) & close_in).cast(pl.Float64).alias("evt_reload_bid"),
         ((absorb < 0.0) & close_in).cast(pl.Float64).alias("evt_reload_ask"),
+        pl.Series("evt_asia_anchor_hold", anchor_hold),
+        pl.Series("evt_expansion_accepting", expansion_accepting),
+        pl.Series("evt_value_transfer", value_transfer),
+        pl.Series("evt_rejection_to_asia", rejection_to_asia),
     )
 
 

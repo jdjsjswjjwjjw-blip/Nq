@@ -149,6 +149,18 @@ def test_intensive_session_and_london_summaries() -> None:
     assert "asia" in names or "london" in names
     # سيناريو لندن قد يُملأ عند توفر decision_* آسيا
     assert "scenario" in result.london_scenarios.columns or result.london_scenarios.height == 0
+    assert result.projection.height > 0
+    assert "london_extend" in set(result.projection["projection_stage"].to_list())
+    assert "proj_va_overlap" in result.blended.columns
+    london_state = result.blended.filter(
+        pl.col("vp_liquidity_session") == float(VpLiquiditySession.LONDON)
+    )
+    if london_state.height and "vp_balance__lag1" in london_state.columns:
+        # ذاكرة قصة المزاد تعبر آسيا→لندن؛ الملف المركب نفسه لا يُصفّر.
+        assert london_state["vp_balance__lag1"][0] is not None
+    snapshot = latest_state_snapshot(result.blended)
+    assert snapshot is not None
+    assert snapshot.auction_phase in {"", "incomplete_asia_anchor"}
     for col in ("decision_poc", "decision_vah", "decision_val"):
         assert col in result.blended.columns
 

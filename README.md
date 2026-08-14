@@ -487,16 +487,17 @@ python scripts/run_week.py \
 
 | طبقة | الوظيفة | قيد التسريب |
 |------|---------|-------------|
-| 1–2 | حالات مزاد + ملخص كل دورة جلسة منفصلة (لا دمج عبر الأيام) | القرار داخل الجلسة = `decision_*`؛ الملخص النهائي = `completed_*` |
+| 1–2 | حالات مزاد + منظوران للملف: جلسة مستقلة وAsia→London ممتد | القرار المحلي = `decision_*`؛ مرساة آسيا ثابتة والملف المركب لا يُصفّر في لندن |
 | 3 | سيناريو لندن مقابل ملف آسيا المكتمل (وصفي) | نتيجة مدى لندن تحمل `outcome_available_ts` عند نهاية الجلسة |
 | 4 | نية أوردرفلو (درجات تضليل) | **درجات فقط** — لا `filter_deceptive_liquidity` |
 | 5–6 | دمج إشارات VP/FSM + أحداث سلوكية | نتيجة الكسر/الريتست تُنبض حين تصبح معروفة؛ `vp_fr_exit` قبول لا فشل |
-| 7 | ذاكرة سوقية | `shift(k)` خلفي فقط (`k≥1`) مع تصفير عند انتقال جلسة السيولة |
+| 7 | ذاكرة سوقية | `shift(k)` خلفي فقط (`k≥1`)؛ قصة آسيا+لندن متصلة، والتصفير عند نيويورك/يوم جديد |
 | 8–9 | جودة إشارة + متجه حالة | بلا تحجيم صفقة |
 | 10–11 | توقعات base-rate تجريبية + تحقق | الاحتمال من train فقط؛ OOS للمعايرة/Brier فقط · بلا `edge_*` |
 
 ```python
 from nq.auction_behavior import (
+    AsiaLondonProjectionConfig,
     BehaviorConfig,
     behavior_probability_summary,
     behavior_state_frame,
@@ -510,6 +511,7 @@ result = run_auction_behavior_analysis(
 print(result.probabilities)          # p_true_break / p_false_break / …
 print(behavior_probability_summary(result))  # صف واحد + available_after_ts
 states = behavior_state_frame(result)        # حالة زمنية؛ ليست احتمالات per-row
+projection = result.projection               # Asia build → London extend كل 3 دقائق
 assert result.validation.ok
 assert result.diagnostics["deceptive_filtered"] is False
 assert "entry_gate" not in result.blended.columns
@@ -519,6 +521,24 @@ assert "entry_gate" not in result.blended.columns
 > لقرارات التداول، فوق نفس `decision_*` و`join_asof(..., backward)`.
 > والاحتمالات الحالية **baseline مجمّع وليست نموذجًا شرطيًا لكل حالة**؛ لا تُستخدم
 > مباشرة كمكافأة RL أو كقرار تداول قبل إضافة نموذج معاير على مستوى الحالة.
+
+**إسقاط آسيا→لندن:** يبني `build_asia_london_projection` ملف آسيا تراكميًا بلا
+تصفير، ويجمّده عند أول برميل لندن كـ`asia_poc/vah/val/HVN`. بعد ذلك يضيف كل
+برميل لندن المكتمل إلى **نفس** الملف ويقيس `proj_poc_shift_ticks`، انتقال HVN،
+تداخل مناطق القيمة، حصة الحجم خارج قيمة آسيا، وسرعة الهجرة. الحالة الوصفية تكون:
+
+| الحالة | المعنى |
+|--------|--------|
+| `expansion_testing` | كسر/اختبار بينما POC/HVN وVA ما زالت مثبتة بآسيا |
+| `expansion_accepting` | الحجم خارج قيمة آسيا وهجرة القيمة يتفقان مع اتجاه التوسع |
+| `rejection_return_to_asia` | عاد السعر إلى قيمة آسيا قبل انتقال القيمة |
+| `repriced_balance` | انتقل POC/HVN، انخفض تداخل VA، ثم استقر الملف الجديد |
+| `incomplete_asia_anchor` | تغطية آسيا غير كافية؛ لا يُسمح باستنتاج قبول/انتقال |
+
+كل حالة تُنشر عند `bucket_end` فقط. الافتراضي ثلاث دقائق ويمكن تغييره عبر
+`BehaviorConfig(projection_config=AsiaLondonProjectionConfig(interval_ns=...))`.
+المرساة لا تُعد مكتملة افتراضيًا إلا عند تغطية 80% على الأقل من براميل آسيا؛
+تظهر النسبة في `proj_asia_coverage_ratio` والعلم في `proj_anchor_complete`.
 
 ---
 

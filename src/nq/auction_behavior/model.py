@@ -51,8 +51,8 @@ _TARGETS: tuple[tuple[str, str, Callable[[pl.DataFrame, str], float]], ...] = (
     ("false_break", "evt_failed_breakout", event_rate),
     ("retest_success", "evt_retest_success", event_rate),
     ("retest_fail", "evt_retest_fail", event_rate),
-    ("expansion_continue", "evt_accept_expansion", event_rate),
-    ("return_to_value", "evt_reject_value", event_rate),
+    ("expansion_continue", "evt_expansion_continue", event_rate),
+    ("return_to_value", "evt_return_to_value", event_rate),
 )
 
 

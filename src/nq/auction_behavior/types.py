@@ -40,3 +40,13 @@ class BehaviorStateSnapshot:
     deceptive_score: float
     real_liquidity_ratio: float
     signal_quality: float
+    auction_phase: str = ""
+    asia_poc: float = 0.0
+    asia_vah: float = 0.0
+    asia_val: float = 0.0
+    composite_poc: float = 0.0
+    composite_vah: float = 0.0
+    composite_val: float = 0.0
+    projection_anchor_complete: float = 0.0
+    projection_expansion_active: float = 0.0
+    projection_value_transferred: float = 0.0
