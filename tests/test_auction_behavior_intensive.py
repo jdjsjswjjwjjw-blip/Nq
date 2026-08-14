@@ -190,7 +190,9 @@ def test_intensive_deceptive_scores_without_deletion() -> None:
     book = random_add_cancel_stream(120, seed=7)
     trades = _dense_trade_stream(n_bars=40, bar_ns=50)
     # محاذاة زمنية بسيطة: الصفقات بعد أوامر الدفتر
-    t0 = int(book["event_ts"].max()) + 1
+    max_ts = book["event_ts"].max()
+    assert max_ts is not None
+    t0 = int(np.asarray(max_ts).item()) + 1
     trades = trades.with_columns(
         (pl.col("event_ts") + t0).alias("event_ts"),
         (pl.col("ingest_ts") + t0).alias("ingest_ts"),

@@ -114,7 +114,7 @@ def test_behavior_path_never_calls_filter_deceptive(monkeypatch: pytest.MonkeyPa
     """مسار السلوك يسجّل درجات فقط — لا يحذف أحداثًا."""
     called = {"n": 0}
 
-    def _boom(*_a, **_k):
+    def _boom(*_a: object, **_k: object) -> None:
         called["n"] += 1
         raise AssertionError("filter_deceptive_liquidity must not run on behavior path")
 

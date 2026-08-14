@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import polars as pl
 
 from nq.auction_behavior.events import BEHAVIOR_EVENT_COLUMNS, build_behavior_events
@@ -99,6 +100,32 @@ class AuctionBehaviorResult:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+def _as_float(value: object) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, np.generic):
+        return float(value.item())
+    return float(str(value))
+
+
+def _as_optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    return _as_float(value)
+
+
+def _as_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return int(value)
+    if isinstance(value, np.generic):
+        return int(value.item())
+    return int(str(value))
+
+
 def _require_decision_columns(states: pl.DataFrame) -> None:
     need = ("decision_poc", "decision_vah", "decision_val")
     missing = [c for c in need if c not in states.columns]
@@ -133,20 +160,20 @@ def _session_vp_summary(states: pl.DataFrame) -> pl.DataFrame:
     work = states.sort(AVAILABILITY_TS)
     rows: list[dict[str, Any]] = []
     for sess_id, g in work.group_by(VP_LIQUIDITY_SESSION, maintain_order=True):
-        sid = int(sess_id[0]) if isinstance(sess_id, tuple) else int(sess_id)
+        sid = _as_int(sess_id[0] if isinstance(sess_id, tuple) else sess_id)
         last = g.tail(1)
         vah = last["decision_vah"][0] if "decision_vah" in last.columns else None
         val = last["decision_val"][0] if "decision_val" in last.columns else None
         poc = last["decision_poc"][0] if "decision_poc" in last.columns else None
-        va_w = float(vah) - float(val) if vah is not None and val is not None else None
+        va_w = _as_float(vah) - _as_float(val) if vah is not None and val is not None else None
         rows.append(
             {
                 "liquidity_session": sid,
                 "session_name": vp_liquidity_session_label(sid),
                 "n_bars": int(g.height),
-                "decision_poc": float(poc) if poc is not None else None,
-                "decision_vah": float(vah) if vah is not None else None,
-                "decision_val": float(val) if val is not None else None,
+                "decision_poc": _as_optional_float(poc),
+                "decision_vah": _as_optional_float(vah),
+                "decision_val": _as_optional_float(val),
                 "va_width": va_w,
             }
         )
@@ -214,9 +241,9 @@ def _london_scenario_summary(states: pl.DataFrame) -> pl.DataFrame:
             asia_last = None
             continue
 
-        open_f = float(open_px)
-        vah_f = float(a_vah)
-        val_f = float(a_val)
+        open_f = _as_float(open_px)
+        vah_f = _as_float(a_vah)
+        val_f = _as_float(a_val)
         inside = bool(val_f <= open_f <= vah_f)
         if open_f > vah_f:
             scenario = "open_above_asia_vah"
@@ -227,16 +254,16 @@ def _london_scenario_summary(states: pl.DataFrame) -> pl.DataFrame:
 
         hi = g["high"].max() if "high" in g.columns else None
         lo = g["low"].min() if "low" in g.columns else None
-        broke_vah = bool(hi is not None and float(hi) > vah_f)
-        broke_val = bool(lo is not None and float(lo) < val_f)
+        broke_vah = bool(hi is not None and _as_float(hi) > vah_f)
+        broke_val = bool(lo is not None and _as_float(lo) < val_f)
 
         rows.append(
             {
-                "asia_end_ts": int(asia_last[AVAILABILITY_TS][0]),
-                "london_open_ts": int(lon0[AVAILABILITY_TS][0]),
+                "asia_end_ts": _as_int(asia_last[AVAILABILITY_TS][0]),
+                "london_open_ts": _as_int(lon0[AVAILABILITY_TS][0]),
                 "scenario": scenario,
                 "london_open": open_f,
-                "asia_decision_poc": float(a_poc) if a_poc is not None else None,
+                "asia_decision_poc": _as_optional_float(a_poc),
                 "asia_decision_vah": vah_f,
                 "asia_decision_val": val_f,
                 "open_inside_asia_va": inside,
