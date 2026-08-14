@@ -1,6 +1,8 @@
-"""نموذج احتمالي تجريبي لسلوك المزاد (بدون RL وبدون هدف PnL)."""
+"""تقدير احتمالات سلوك المزاد بلا تداول أو هدف PnL."""
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 import numpy as np
 import polars as pl
@@ -26,6 +28,51 @@ def _rate(frame: pl.DataFrame, col: str) -> float:
     return float(np.mean(vals > _ACTIVE_FLAG)) if vals.size else 0.0
 
 
+def _brier(frame: pl.DataFrame, column: str, prediction: float) -> float:
+    if frame.height == 0 or column not in frame.columns:
+        return 0.0
+    y = (frame[column].fill_null(0.0).to_numpy().astype(np.float64) > _ACTIVE_FLAG).astype(
+        np.float64
+    )
+    return float(np.mean(np.square(y - prediction))) if y.size else 0.0
+
+
+def _weighted_mean(values: list[tuple[float, int]]) -> float:
+    total = sum(weight for _, weight in values)
+    if total <= 0:
+        return 0.0
+    return float(sum(value * weight for value, weight in values) / total)
+
+
+_TARGETS: tuple[tuple[str, str, Callable[[pl.DataFrame, str], float]], ...] = (
+    ("balanced", "vp_balance", _rate),
+    ("imbalanced", "vp_imbalance", _rate),
+    ("true_break", "evt_true_break", event_rate),
+    ("false_break", "evt_failed_breakout", event_rate),
+    ("retest_success", "evt_retest_success", event_rate),
+    ("retest_fail", "evt_retest_fail", event_rate),
+    ("expansion_continue", "evt_accept_expansion", event_rate),
+    ("return_to_value", "evt_reject_value", event_rate),
+)
+
+
+def _descriptive_probabilities(work: pl.DataFrame) -> BehaviorProbabilities:
+    rates = {name: fn(work, column) for name, column, fn in _TARGETS}
+    return BehaviorProbabilities(
+        p_balanced=_clip01(rates["balanced"]),
+        p_imbalanced=_clip01(rates["imbalanced"]),
+        p_true_break=_clip01(rates["true_break"]),
+        p_false_break=_clip01(rates["false_break"]),
+        p_retest_success=_clip01(rates["retest_success"]),
+        p_retest_fail=_clip01(rates["retest_fail"]),
+        p_expansion_continue=_clip01(rates["expansion_continue"]),
+        p_return_to_value=_clip01(rates["return_to_value"]),
+        confidence=_clip01(mean_confidence(work) * 0.25),
+        n_samples=int(work.height),
+        detail="insufficient folds — descriptive rates only (not OOS forecasts)",
+    )
+
+
 def estimate_behavior_probabilities(
     blended: pl.DataFrame,
     events: pl.DataFrame,
@@ -35,10 +82,11 @@ def estimate_behavior_probabilities(
     purge_samples: int = 1,
     min_train_size: int = 8,
 ) -> tuple[BehaviorProbabilities, pl.DataFrame]:
-    """يقدّر احتمالات السلوك على طيّات purged؛ القياس من OOS فقط.
+    """يعيد توقعات base-rate من التدريب فقط ومقاييس تحقق OOS منفصلة.
 
-    التدريب يجمع معدّلات الأحداث شرطيًا على توازن/اختلال؛ الاختبار يقيس
-    توافق المعدّلات مع تحقّق الأحداث خارج العينة.
+    هذه المرحلة لا تدّعي نموذجًا شرطيًا لكل حالة. لكل طيّة يُقدَّر المعدّل من
+    ``train`` فقط، ثم يُقارن بنتيجة ``test``. لذلك لا تدخل نتيجة الاختبار في
+    الاحتمال المعلن، وتبقى معدلات OOS أعمدة تحقق لا تنبؤات.
     """
     if blended.height == 0 or AVAILABILITY_TS not in blended.columns:
         empty = BehaviorProbabilities(
@@ -57,9 +105,9 @@ def estimate_behavior_probabilities(
         return empty, pl.DataFrame()
 
     work = blended.join(events, on=AVAILABILITY_TS, how="left").sort(AVAILABILITY_TS)
-    for c in events.columns:
-        if c != AVAILABILITY_TS and c in work.columns:
-            work = work.with_columns(pl.col(c).fill_null(0.0))
+    event_cols = [c for c in events.columns if c != AVAILABILITY_TS and c in work.columns]
+    if event_cols:
+        work = work.with_columns(pl.col(c).fill_null(0.0) for c in event_cols)
 
     times = work[AVAILABILITY_TS].to_numpy().astype(np.int64)
     try:
@@ -72,78 +120,77 @@ def estimate_behavior_probabilities(
         )
     except ValueError:
         folds = []
+    if not folds:
+        return _descriptive_probabilities(work), pl.DataFrame()
 
     fold_rows: list[dict[str, float | int]] = []
-    oos_true_break: list[float] = []
-    oos_false_break: list[float] = []
-    oos_retest_ok: list[float] = []
-    oos_retest_bad: list[float] = []
-    oos_expand: list[float] = []
-    oos_return: list[float] = []
-    oos_bal: list[float] = []
-    oos_imb: list[float] = []
-
+    forecasts: dict[str, list[tuple[float, int]]] = {name: [] for name, _, _ in _TARGETS}
+    total_oos = 0
     for fold_i, fold in enumerate(folds):
-        assert_temporal_split(
-            times[fold.train_idx],
-            times[fold.test_idx],
-            embargo=float(embargo),
-        )
+        assert_temporal_split(times[fold.train_idx], times[fold.test_idx], embargo=float(embargo))
         train = work[fold.train_idx]
         test = work[fold.test_idx]
-        # احتمالات تجريبية من التدريب فقط (تُقارن بمعدّل OOS للمعايرة)
-        train_p_true = event_rate(train, "evt_breakout") * (
-            1.0 - event_rate(train, "evt_failed_breakout")
-        )
-        # تحقّق OOS
-        fold_rows.append(
-            {
-                "fold": fold_i,
-                "train_n": int(train.height),
-                "test_n": int(test.height),
-                "train_p_true_break": train_p_true,
-                "oos_break_rate": event_rate(test, "evt_breakout"),
-                "oos_failed_break_rate": event_rate(test, "evt_failed_breakout"),
-            }
-        )
-        oos_true_break.append(event_rate(test, "evt_breakout"))
-        oos_false_break.append(event_rate(test, "evt_failed_breakout"))
-        oos_retest_ok.append(event_rate(test, "evt_retest_success"))
-        oos_retest_bad.append(event_rate(test, "evt_retest_fail"))
-        oos_expand.append(event_rate(test, "evt_accept_expansion"))
-        oos_return.append(event_rate(test, "evt_reject_value"))
-        oos_bal.append(_rate(test, "vp_balance"))
-        oos_imb.append(_rate(test, "vp_imbalance"))
+        test_n = int(test.height)
+        total_oos += test_n
+        row: dict[str, float | int] = {
+            "fold": fold_i,
+            "train_n": int(train.height),
+            "test_n": test_n,
+            "train_end_ts": int(times[fold.train_idx].max()),
+            "test_start_ts": int(times[fold.test_idx].min()),
+            "test_end_ts": int(times[fold.test_idx].max()),
+        }
+        calibration: list[float] = []
+        briers: list[float] = []
+        for name, column, fn in _TARGETS:
+            predicted_rate = _clip01(fn(train, column))
+            realized = _clip01(fn(test, column))
+            forecasts[name].append((predicted_rate, test_n))
+            row[f"train_p_{name}"] = predicted_rate
+            row[f"oos_{name}_rate"] = realized
+            row[f"oos_{name}_brier"] = _brier(test, column, predicted_rate)
+            calibration.append(abs(predicted_rate - realized))
+            briers.append(float(row[f"oos_{name}_brier"]))
+        row["calibration_mae"] = float(np.mean(calibration))
+        row["brier_mean"] = float(np.mean(briers))
+        fold_rows.append(row)
 
-    if not folds:
-        # عيّنة صغيرة: تقدير وصفي كامل مع وسم صريح — ليس ادّعاء OOS.
-        probs = BehaviorProbabilities(
-            p_balanced=_clip01(_rate(work, "vp_balance")),
-            p_imbalanced=_clip01(_rate(work, "vp_imbalance")),
-            p_true_break=_clip01(event_rate(work, "evt_breakout")),
-            p_false_break=_clip01(event_rate(work, "evt_failed_breakout")),
-            p_retest_success=_clip01(event_rate(work, "evt_retest_success")),
-            p_retest_fail=_clip01(event_rate(work, "evt_retest_fail")),
-            p_expansion_continue=_clip01(event_rate(work, "evt_accept_expansion")),
-            p_return_to_value=_clip01(event_rate(work, "evt_reject_value")),
-            confidence=_clip01(mean_confidence(work) * 0.5),
-            n_samples=int(work.height),
-            detail="insufficient folds — descriptive rates only (not OOS claims)",
-        )
-        return probs, pl.DataFrame(fold_rows)
-
-    conf = mean_confidence(work)
+    aggregate_predictions = {name: _weighted_mean(values) for name, values in forecasts.items()}
+    calibration_mae = _weighted_mean(
+        [(float(row["calibration_mae"]), int(row["test_n"])) for row in fold_rows]
+    )
+    support = min(1.0, total_oos / float(max(30, min_train_size * max(1, len(folds)))))
+    oos_evidence = _weighted_mean(
+        [
+            (
+                max(
+                    float(row["oos_true_break_rate"]),
+                    float(row["oos_false_break_rate"]),
+                    float(row["oos_retest_success_rate"]),
+                    float(row["oos_retest_fail_rate"]),
+                    float(row["oos_expansion_continue_rate"]),
+                    float(row["oos_return_to_value_rate"]),
+                ),
+                int(row["test_n"]),
+            )
+            for row in fold_rows
+        ]
+    )
+    confidence = _clip01((1.0 - calibration_mae) * support * np.sqrt(oos_evidence))
     probs = BehaviorProbabilities(
-        p_balanced=_clip01(float(np.mean(oos_bal))),
-        p_imbalanced=_clip01(float(np.mean(oos_imb))),
-        p_true_break=_clip01(float(np.mean(oos_true_break))),
-        p_false_break=_clip01(float(np.mean(oos_false_break))),
-        p_retest_success=_clip01(float(np.mean(oos_retest_ok))),
-        p_retest_fail=_clip01(float(np.mean(oos_retest_bad))),
-        p_expansion_continue=_clip01(float(np.mean(oos_expand))),
-        p_return_to_value=_clip01(float(np.mean(oos_return))),
-        confidence=_clip01(conf),
-        n_samples=int(work.height),
-        detail=f"purged OOS folds={len(folds)} · confidence=mean(signal_quality)",
+        p_balanced=_clip01(aggregate_predictions["balanced"]),
+        p_imbalanced=_clip01(aggregate_predictions["imbalanced"]),
+        p_true_break=_clip01(aggregate_predictions["true_break"]),
+        p_false_break=_clip01(aggregate_predictions["false_break"]),
+        p_retest_success=_clip01(aggregate_predictions["retest_success"]),
+        p_retest_fail=_clip01(aggregate_predictions["retest_fail"]),
+        p_expansion_continue=_clip01(aggregate_predictions["expansion_continue"]),
+        p_return_to_value=_clip01(aggregate_predictions["return_to_value"]),
+        confidence=confidence,
+        n_samples=total_oos,
+        detail=(
+            f"purged walk-forward train-only base-rate forecasts; folds={len(folds)}; "
+            "OOS outcomes used for calibration only; not state-conditional"
+        ),
     )
     return probs, pl.DataFrame(fold_rows)

@@ -15,8 +15,9 @@ def attach_causal_memory(
     *,
     columns: tuple[str, ...] | list[str],
     lags: tuple[int, ...] = _DEFAULT_LAGS,
+    group_col: str | None = None,
 ) -> pl.DataFrame:
-    """يضيف أعمدة ``col__lag{k}`` بـ ``shift(k)`` سببي داخل الإطار المرتّب زمنياً."""
+    """يضيف ``shift(k)`` سببيًا، مع إعادة ضبط اختيارية عند حدود الجلسة/المجموعة."""
     if frame.height == 0:
         return frame
     work = frame.sort(AVAILABILITY_TS)
@@ -28,7 +29,12 @@ def attach_causal_memory(
         for lag in lags:
             if lag < 1:
                 raise ValueError(f"lag must be >= 1, got {lag}")
-            exprs.append(base.shift(lag).alias(f"{col}__lag{lag}"))
+            shifted = base.shift(lag)
+            if group_col is not None:
+                if group_col not in work.columns:
+                    raise ValueError(f"group_col is missing: {group_col}")
+                shifted = shifted.over(group_col)
+            exprs.append(shifted.alias(f"{col}__lag{lag}"))
     if not exprs:
         return work
     return work.with_columns(exprs)

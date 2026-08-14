@@ -24,14 +24,23 @@ class BehaviorValidationReport:
     detail: str
 
 
-_TRADE_FORBIDDEN = (
+TRADE_FORBIDDEN_COLUMNS = (
     "edge_pnl",
     "entry_gate",
     "edge_entry",
     "edge_stop",
     "edge_target",
     "position_size",
+    "responsive_long",
+    "responsive_short",
+    "initiative_long",
+    "initiative_short",
+    "stop_price",
+    "target_price",
+    "mfe",
+    "mae",
 )
+_TRADE_FORBIDDEN_PREFIXES = ("edge_", "position_")
 
 
 def validate_behavior_frame(
@@ -75,14 +84,23 @@ def validate_behavior_frame(
         c in frame.columns for c in ("decision_vah", "decision_val", "decision_poc")
     ) or all(c in frame.columns for c in ("vp_upper", "vp_lower", "vp_mid"))
     # vp_* من auction_signals مبنية على decision_* داخليًا.
+    if not decision_ok:
+        detail_parts.append("missing_decision_bounds")
 
-    trade_leak = [c for c in _TRADE_FORBIDDEN if c in frame.columns]
+    trade_leak = sorted(
+        {
+            c
+            for c in frame.columns
+            if c in TRADE_FORBIDDEN_COLUMNS
+            or any(c.startswith(prefix) for prefix in _TRADE_FORBIDDEN_PREFIXES)
+        }
+    )
     no_trade = len(trade_leak) == 0
     if not no_trade:
         detail_parts.append(f"forbidden_trade_cols={trade_leak}")
 
     n_folds = 0 if fold_df is None else int(fold_df.height)
-    ok = causal_ok and no_trade
+    ok = causal_ok and decision_ok and no_trade
     if ok:
         detail_parts.append("behavior_validation_passed")
     return BehaviorValidationReport(
@@ -108,8 +126,8 @@ def mean_absolute_calibration(fold_df: pl.DataFrame) -> float:
     """متوسط |train_p − oos_rate| إن وُجدت الأعمدة."""
     if fold_df.height == 0:
         return 0.0
-    if "train_p_true_break" not in fold_df.columns or "oos_break_rate" not in fold_df.columns:
+    if "train_p_true_break" not in fold_df.columns or "oos_true_break_rate" not in fold_df.columns:
         return 0.0
     a = fold_df["train_p_true_break"].to_numpy().astype(np.float64)
-    b = fold_df["oos_break_rate"].to_numpy().astype(np.float64)
+    b = fold_df["oos_true_break_rate"].to_numpy().astype(np.float64)
     return float(np.mean(np.abs(a - b)))

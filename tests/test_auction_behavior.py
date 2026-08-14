@@ -8,6 +8,7 @@ import pytest
 
 from nq.auction_behavior import (
     BehaviorConfig,
+    behavior_probability_summary,
     run_auction_behavior_analysis,
 )
 from nq.auction_behavior.events import BEHAVIOR_EVENT_COLUMNS, build_behavior_events
@@ -65,6 +66,10 @@ def test_behavior_pipeline_runs_without_trade_outputs() -> None:
     light = behavior_probabilities_frame(result)
     assert AVAILABILITY_TS in light.columns
     assert "signal_quality" in light.columns
+    summary = behavior_probability_summary(result)
+    assert summary.height == 1
+    assert "available_after_ts" in summary.columns
+    assert summary["available_after_ts"][0] >= result.blended[AVAILABILITY_TS][0]
 
 
 def test_behavior_requires_decision_columns_on_states_path() -> None:

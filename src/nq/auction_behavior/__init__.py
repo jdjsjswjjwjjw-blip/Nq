@@ -13,8 +13,11 @@ from nq.auction_behavior.pipeline import (
     AuctionBehaviorResult,
     BehaviorConfig,
     behavior_probabilities_frame,
+    behavior_probability_summary,
+    behavior_state_frame,
     run_auction_behavior_analysis,
 )
+from nq.auction_behavior.state import latest_state_snapshot, state_matrix
 from nq.auction_behavior.types import BehaviorProbabilities, BehaviorStateSnapshot
 from nq.auction_behavior.validate import BehaviorValidationReport
 
@@ -25,5 +28,9 @@ __all__ = [
     "BehaviorStateSnapshot",
     "BehaviorValidationReport",
     "behavior_probabilities_frame",
+    "behavior_probability_summary",
+    "behavior_state_frame",
+    "latest_state_snapshot",
     "run_auction_behavior_analysis",
+    "state_matrix",
 ]

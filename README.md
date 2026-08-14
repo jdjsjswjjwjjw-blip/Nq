@@ -487,22 +487,29 @@ python scripts/run_week.py \
 
 | طبقة | الوظيفة | قيد التسريب |
 |------|---------|-------------|
-| 1–2 | حالات مزاد + ملخص جلسات السيولة (آسيا/لندن/نيويورك) | `decision_*` متأخرة فقط |
-| 3 | سيناريو لندن مقابل قيمة آسيا المكتملة (وصفي) | حدود آسيا = `decision_*` سابقة |
+| 1–2 | حالات مزاد + ملخص كل دورة جلسة منفصلة (لا دمج عبر الأيام) | القرار داخل الجلسة = `decision_*`؛ الملخص النهائي = `completed_*` |
+| 3 | سيناريو لندن مقابل ملف آسيا المكتمل (وصفي) | نتيجة مدى لندن تحمل `outcome_available_ts` عند نهاية الجلسة |
 | 4 | نية أوردرفلو (درجات تضليل) | **درجات فقط** — لا `filter_deceptive_liquidity` |
-| 5–6 | دمج إشارات VP/FSM + أحداث سلوكية | نبضات من أعمدة سببية جاهزة |
-| 7 | ذاكرة سوقية | `shift(k)` خلفي فقط (`k≥1`) |
+| 5–6 | دمج إشارات VP/FSM + أحداث سلوكية | نتيجة الكسر/الريتست تُنبض حين تصبح معروفة؛ `vp_fr_exit` قبول لا فشل |
+| 7 | ذاكرة سوقية | `shift(k)` خلفي فقط (`k≥1`) مع تصفير عند انتقال جلسة السيولة |
 | 8–9 | جودة إشارة + متجه حالة | بلا تحجيم صفقة |
-| 10–11 | احتمالات تجريبية + تحقق | purged walk‑forward · بلا مخرجات `edge_*` |
+| 10–11 | توقعات base-rate تجريبية + تحقق | الاحتمال من train فقط؛ OOS للمعايرة/Brier فقط · بلا `edge_*` |
 
 ```python
-from nq.auction_behavior import BehaviorConfig, run_auction_behavior_analysis
+from nq.auction_behavior import (
+    BehaviorConfig,
+    behavior_probability_summary,
+    behavior_state_frame,
+    run_auction_behavior_analysis,
+)
 
 result = run_auction_behavior_analysis(
     mbo_frame,
     config=BehaviorConfig(include_deceptive_scores=True),  # درجات فقط، بلا حذف
 )
 print(result.probabilities)          # p_true_break / p_false_break / …
+print(behavior_probability_summary(result))  # صف واحد + available_after_ts
+states = behavior_state_frame(result)        # حالة زمنية؛ ليست احتمالات per-row
 assert result.validation.ok
 assert result.diagnostics["deceptive_filtered"] is False
 assert "entry_gate" not in result.blended.columns
@@ -510,6 +517,8 @@ assert "entry_gate" not in result.blended.columns
 
 > هذه الطبقة **لا تستبدل** `run_vp_auction` (مسار التنفيذ/R:R). هي مسار فهم سابق
 > لقرارات التداول، فوق نفس `decision_*` و`join_asof(..., backward)`.
+> والاحتمالات الحالية **baseline مجمّع وليست نموذجًا شرطيًا لكل حالة**؛ لا تُستخدم
+> مباشرة كمكافأة RL أو كقرار تداول قبل إضافة نموذج معاير على مستوى الحالة.
 
 ---
 
