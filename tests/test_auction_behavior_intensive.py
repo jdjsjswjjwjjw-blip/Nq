@@ -118,9 +118,7 @@ def test_intensive_purged_folds_respect_temporal_order() -> None:
 def test_intensive_session_and_london_summaries() -> None:
     frame = _session_crossing_stream()
     # تأكد أن الطوابع تعبر الجلسات كما نتوقع
-    assert vp_liquidity_session_from_ns(int(frame["event_ts"][0])) == int(
-        VpLiquiditySession.ASIA
-    )
+    assert vp_liquidity_session_from_ns(int(frame["event_ts"][0])) == int(VpLiquiditySession.ASIA)
     assert vp_liquidity_session_from_ns(int(frame["event_ts"][-1])) == int(
         VpLiquiditySession.LONDON
     )
