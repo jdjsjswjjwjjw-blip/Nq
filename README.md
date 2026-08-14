@@ -53,6 +53,7 @@ MBO Raw (Parquet / Arrow / CSV / .zst / Databento)
    → ┌─ SSL (tick/event أو bucket)
       ├─ M9 Coverage Monitor
       └─ Alpha Screen (trap_setup, phase_*, fail_fvg, vp_*, …)
+   → (اختياري) Auction Behavior Phase‑1 — فهم سلوك المزاد بلا قرارات تداول
    → ResearchAssistant (فرضيات بأدلّة قابلة للتتبع)
    → Unified Report (Markdown + Parquet metrics)
 ```
@@ -107,6 +108,7 @@ pip install -e ".[dev,data]"     # + zstandard لقراءة .zst
 | `run_vp_auction` + `configs/vp_auction.toml` | VP + توازن/اختلال + تضليل + هولد + R:R | نعم — مسار واحد متصل داخل الاستراتيجية | كاملة + edge_* |
 | `run_vp_auction_days` | نفس VP على أيام متوازية (شهر) | نعم — كل يوم كون مغلق؛ stream=snapshots | `manifest.json` + مجلد/يوم |
 | `run_liquidity_edge` | غلاف توافق → نفس `run_vp_auction` | نعم — ليس تشعّبًا منفصلًا | نفس مخرجات VP |
+| API `nq.auction_behavior` | فهم سلوك المزاد Phase‑1 (احتمالات بلا تداول) | نعم — طبقة فوق VP السببي؛ لا تحل محل التنفيذ | probabilities + events + validation |
 
 > لو عايز الكل شغّال → `run_week`.  
 > لو عايز فرضية واحدة للفرز → الأمر المنفصل المناسب (نفس المعالجة والمخرجات).  
@@ -477,7 +479,41 @@ python scripts/run_week.py \
 
 ---
 
-### 4) من بايثون (API)
+### 4b) فهم سلوك المزاد — المرحلة 1 (`nq.auction_behavior`)
+
+طبقة **منفصلة** فوق نفس البنية السببية لـ VP/المزاد: هدفها فهم احتمالي لسلوك المزاد
+(توازن / كسر حقيقي·كاذب / ريتست / توسّع / عودة للقيمة) **بدون** توصيات دخول/خروج
+وبدون RL وبدون إعادة تصميم دفتر الأوامر.
+
+| طبقة | الوظيفة | قيد التسريب |
+|------|---------|-------------|
+| 1–2 | حالات مزاد + ملخص جلسات السيولة (آسيا/لندن/نيويورك) | `decision_*` متأخرة فقط |
+| 3 | سيناريو لندن مقابل قيمة آسيا المكتملة (وصفي) | حدود آسيا = `decision_*` سابقة |
+| 4 | نية أوردرفلو (درجات تضليل) | **درجات فقط** — لا `filter_deceptive_liquidity` |
+| 5–6 | دمج إشارات VP/FSM + أحداث سلوكية | نبضات من أعمدة سببية جاهزة |
+| 7 | ذاكرة سوقية | `shift(k)` خلفي فقط (`k≥1`) |
+| 8–9 | جودة إشارة + متجه حالة | بلا تحجيم صفقة |
+| 10–11 | احتمالات تجريبية + تحقق | purged walk‑forward · بلا مخرجات `edge_*` |
+
+```python
+from nq.auction_behavior import BehaviorConfig, run_auction_behavior_analysis
+
+result = run_auction_behavior_analysis(
+    mbo_frame,
+    config=BehaviorConfig(include_deceptive_scores=True),  # درجات فقط، بلا حذف
+)
+print(result.probabilities)          # p_true_break / p_false_break / …
+assert result.validation.ok
+assert result.diagnostics["deceptive_filtered"] is False
+assert "entry_gate" not in result.blended.columns
+```
+
+> هذه الطبقة **لا تستبدل** `run_vp_auction` (مسار التنفيذ/R:R). هي مسار فهم سابق
+> لقرارات التداول، فوق نفس `decision_*` و`join_asof(..., backward)`.
+
+---
+
+### 4c) من بايثون (API)
 
 ```python
 from pathlib import Path
@@ -658,6 +694,7 @@ Nq/
 │   ├── research/              # orchestrator + assistant + progress + understanding
 │   ├── alpha/                 # اكتشاف/فرز (intraday أو depth-walk)
 │   ├── strategies/            # fail_fvg + fail_breakout + vp_auction + search + depth filter
+│   ├── auction_behavior/      # مرحلة‑1: فهم سلوك المزاد (احتمالات بلا تداول)
 │   ├── coverage/              # مراقب M9 (+ كتلة order_book_depth)
 │   └── validation/            # leakage tests
 ├── tests/
@@ -685,6 +722,7 @@ Nq/
 | — | تركيب volume-first + hold داخل الكسر (`--compose-hold`) | ✅ |
 | — | فلتر دخول مسار أحداث العمق (`__depth__*`) | ✅ |
 | — | طبقات فهم كمية OOS (`--understand`) | ✅ |
+| — | فهم سلوك المزاد Phase‑1 (`nq.auction_behavior`) | ✅ |
 
 ---
 
@@ -703,6 +741,7 @@ Nq/
 * `nq.strategies` — `run_fail_fvg_research` / `search_fail_fvg_hypotheses` /
   `run_fail_breakout_research` / `search_fail_breakout_hypotheses` /
   `generate_depth_entry_candidates` / `run_vp_auction_research`
+* `nq.auction_behavior` — `run_auction_behavior_analysis` (Phase‑1: احتمالات سلوك بلا تداول)
 * `nq.coverage` — MFIG/CER/PSG/CRS/LORI/QDUF؛ كتل `failed_breakout` + `order_book_depth` + VP
 * `nq.validation` — `detect_leakage_by_perturbation`, `assert_availability_not_before_event`
 
