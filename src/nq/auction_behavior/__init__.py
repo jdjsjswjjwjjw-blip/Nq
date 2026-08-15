@@ -12,6 +12,8 @@ from __future__ import annotations
 from nq.auction_behavior.pipeline import (
     AuctionBehaviorResult,
     BehaviorConfig,
+    behavior_live_prediction_frame,
+    behavior_oof_prediction_frame,
     behavior_prediction_frame,
     behavior_probabilities_frame,
     behavior_probability_summary,
@@ -38,6 +40,8 @@ __all__ = [
     "BehaviorStateSnapshot",
     "BehaviorValidationReport",
     "ScienceConfig",
+    "behavior_live_prediction_frame",
+    "behavior_oof_prediction_frame",
     "behavior_prediction_frame",
     "behavior_probabilities_frame",
     "behavior_probability_summary",

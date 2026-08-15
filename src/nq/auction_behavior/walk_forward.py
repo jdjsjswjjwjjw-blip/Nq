@@ -1,4 +1,4 @@
-"""Walk-forward متعدد الشرائح (زمن / شهر / عقد) مع purge+embargo."""
+"""Walk-forward متعدد الشرائح — التقسيم على setup فريد ثم توسيع للنتائج."""
 
 from __future__ import annotations
 
@@ -27,7 +27,6 @@ class ScienceFold:
 
 
 def _month_key_from_ns(ts_ns: int) -> str:
-    # UTC month bucket — حتمي وبلا منطقة جلسة (مفتاح تقسيم فقط).
     d = dt.datetime.fromtimestamp(ts_ns / 1e9, tz=dt.UTC)
     return f"{d.year:04d}-{d.month:02d}"
 
@@ -51,6 +50,44 @@ def attach_segment_keys(
     return out
 
 
+def _expand_setup_indices_to_rows(
+    frame: pl.DataFrame,
+    *,
+    ts_col: str,
+    setup_times: np.ndarray,
+    train_setup_idx: np.ndarray,
+    test_setup_idx: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """يوسّع مؤشرات setup الفريدة إلى كل صفوف outcomes التابعة لنفس الطابع."""
+    times = frame[ts_col].to_numpy().astype(np.int64)
+    train_ts = set(int(x) for x in setup_times[train_setup_idx].tolist())
+    test_ts = set(int(x) for x in setup_times[test_setup_idx].tolist())
+    # لا تداخل زمني بين القطار والاختبار على مستوى setup
+    overlap = train_ts & test_ts
+    if overlap:
+        raise AssertionError(
+            f"setup timestamp assigned to both train and test: {sorted(overlap)[:5]}"
+        )
+    train_rows = np.flatnonzero(np.isin(times, list(train_ts)))
+    test_rows = np.flatnonzero(np.isin(times, list(test_ts)))
+    return train_rows.astype(np.intp), test_rows.astype(np.intp)
+
+
+def unique_setup_timestamps(
+    frame: pl.DataFrame, *, ts_col: str = SETUP_AVAILABILITY_TS
+) -> np.ndarray:
+    """طوابع إعداد فريدة مرتبة (وحدة التقسيم الصحيحة)."""
+    if frame.height == 0 or ts_col not in frame.columns:
+        return np.zeros(0, dtype=np.int64)
+    return (
+        frame.select(ts_col)
+        .unique(maintain_order=True)
+        .sort(ts_col)[ts_col]
+        .to_numpy()
+        .astype(np.int64)
+    )
+
+
 def build_time_folds(
     times: np.ndarray,
     *,
@@ -59,14 +96,16 @@ def build_time_folds(
     purge_samples: int = 1,
     min_train_size: int = 12,
 ) -> list[ScienceFold]:
-    """طيّات زمنية purged على طوابع الإعداد."""
+    """طيّات زمنية purged على طوابع إعداد فريدة (وليس صفوف outcomes مكررة)."""
     times = np.asarray(times, dtype=np.int64)
-    if times.size == 0:
+    # فريد + مرتب
+    setup_times = np.unique(times)
+    if setup_times.size == 0:
         return []
-    assert_causal_order(times)
+    assert_causal_order(setup_times)
     try:
         raw = purged_walk_forward_split(
-            times,
+            setup_times,
             n_splits=n_splits,
             embargo=embargo,
             purge_samples=purge_samples,
@@ -76,19 +115,73 @@ def build_time_folds(
         return []
     folds: list[ScienceFold] = []
     for i, wf in enumerate(raw):
-        assert_temporal_split(times[wf.train_idx], times[wf.test_idx], embargo=float(embargo))
+        assert_temporal_split(
+            setup_times[wf.train_idx], setup_times[wf.test_idx], embargo=float(embargo)
+        )
+        # هنا المؤشرات على setup_times؛ المُستدعي يوسّعها لصفوف الإطار إن لزم
         folds.append(
             ScienceFold(
                 fold=i,
                 train_idx=wf.train_idx,
                 test_idx=wf.test_idx,
-                train_end_ts=int(times[wf.train_idx].max()),
-                test_start_ts=int(times[wf.test_idx].min()),
-                test_end_ts=int(times[wf.test_idx].max()),
+                train_end_ts=int(setup_times[wf.train_idx].max()),
+                test_start_ts=int(setup_times[wf.test_idx].min()),
+                test_end_ts=int(setup_times[wf.test_idx].max()),
                 segment="time",
             )
         )
     return folds
+
+
+def build_time_folds_for_frame(
+    frame: pl.DataFrame,
+    *,
+    ts_col: str = SETUP_AVAILABILITY_TS,
+    n_splits: int = 3,
+    embargo: int = 0,
+    purge_samples: int = 1,
+    min_train_size: int = 12,
+) -> list[ScienceFold]:
+    """طيّات على setup فريد ثم توسيع لكل صفوف النتائج التابعة."""
+    if frame.height == 0 or ts_col not in frame.columns:
+        return []
+    work = frame.sort(ts_col)
+    setup_times = unique_setup_timestamps(work, ts_col=ts_col)
+    setup_folds = build_time_folds(
+        setup_times,
+        n_splits=n_splits,
+        embargo=embargo,
+        purge_samples=purge_samples,
+        min_train_size=min_train_size,
+    )
+    out: list[ScienceFold] = []
+    for sf in setup_folds:
+        train_idx, test_idx = _expand_setup_indices_to_rows(
+            work,
+            ts_col=ts_col,
+            setup_times=setup_times,
+            train_setup_idx=sf.train_idx,
+            test_setup_idx=sf.test_idx,
+        )
+        if train_idx.size == 0 or test_idx.size == 0:
+            continue
+        # ضمان: لا setup_ts مشترك بين train و test
+        train_ts = set(work[ts_col].to_numpy()[train_idx].tolist())
+        test_ts = set(work[ts_col].to_numpy()[test_idx].tolist())
+        if train_ts & test_ts:
+            raise AssertionError("duplicate setup_ts across train/test after expansion")
+        out.append(
+            ScienceFold(
+                fold=sf.fold,
+                train_idx=train_idx,
+                test_idx=test_idx,
+                train_end_ts=sf.train_end_ts,
+                test_start_ts=sf.test_start_ts,
+                test_end_ts=sf.test_end_ts,
+                segment=sf.segment,
+            )
+        )
+    return out
 
 
 def build_expanding_month_folds(
@@ -97,42 +190,69 @@ def build_expanding_month_folds(
     ts_col: str = SETUP_AVAILABILITY_TS,
     min_train_months: int = 1,
     embargo_ns: int = 0,
+    purge_samples: int = 1,
 ) -> list[ScienceFold]:
-    """تدريب متوسّع شهرًا فشهرًا؛ الاختبار = الشهر التالي فقط."""
+    """تدريب متوسّع شهرًا فشهرًا على setup فريد؛ الاختبار = الشهر التالي."""
     if frame.height == 0 or ts_col not in frame.columns:
         return []
+    if purge_samples < 0:
+        raise ValueError("purge_samples must be non-negative")
     work = attach_segment_keys(frame.sort(ts_col), ts_col=ts_col)
-    months = work["segment_month"].unique(maintain_order=True).to_list()
+    # جدول setup فريد لحساب الشهور
+    setups = (
+        work.select(ts_col, "segment_month")
+        .unique(subset=[ts_col], maintain_order=True)
+        .sort(ts_col)
+    )
+    months = setups["segment_month"].unique(maintain_order=True).to_list()
     if len(months) < min_train_months + 1:
         return []
-    times = work[ts_col].to_numpy().astype(np.int64)
+    setup_times = setups[ts_col].to_numpy().astype(np.int64)
     folds: list[ScienceFold] = []
     fold_i = 0
     for k in range(min_train_months, len(months)):
         train_months = set(months[:k])
         test_month = months[k]
-        train_idx = np.flatnonzero(work["segment_month"].is_in(list(train_months)).to_numpy())
-        test_idx = np.flatnonzero((work["segment_month"] == test_month).to_numpy())
+        train_setup_idx = np.flatnonzero(
+            setups["segment_month"].is_in(list(train_months)).to_numpy()
+        )
+        test_setup_idx = np.flatnonzero((setups["segment_month"] == test_month).to_numpy())
+        if train_setup_idx.size == 0 or test_setup_idx.size == 0:
+            continue
+        train_end = int(setup_times[train_setup_idx].max())
+        test_start = int(setup_times[test_setup_idx].min())
+        if test_start < train_end + int(embargo_ns):
+            cutoff = test_start - int(embargo_ns)
+            train_setup_idx = train_setup_idx[setup_times[train_setup_idx] <= cutoff]
+            if train_setup_idx.size == 0:
+                continue
+            train_end = int(setup_times[train_setup_idx].max())
+        if purge_samples > 0:
+            # احذف آخر setups من التدريب على مستوى الطابع الفريد، لا outcome rows.
+            train_setup_idx = train_setup_idx[: max(0, train_setup_idx.size - purge_samples)]
+            if train_setup_idx.size == 0:
+                continue
+            train_end = int(setup_times[train_setup_idx].max())
+        assert_temporal_split(
+            setup_times[train_setup_idx], setup_times[test_setup_idx], embargo=float(embargo_ns)
+        )
+        train_idx, test_idx = _expand_setup_indices_to_rows(
+            work,
+            ts_col=ts_col,
+            setup_times=setup_times,
+            train_setup_idx=train_setup_idx,
+            test_setup_idx=test_setup_idx,
+        )
         if train_idx.size == 0 or test_idx.size == 0:
             continue
-        train_end = int(times[train_idx].max())
-        test_start = int(times[test_idx].min())
-        if test_start < train_end + int(embargo_ns):
-            # طبّق حظر: احذف من التدريب ما بعد cutoff
-            cutoff = test_start - int(embargo_ns)
-            train_idx = train_idx[times[train_idx] <= cutoff]
-            if train_idx.size == 0:
-                continue
-            train_end = int(times[train_idx].max())
-        assert_temporal_split(times[train_idx], times[test_idx], embargo=float(embargo_ns))
         folds.append(
             ScienceFold(
                 fold=fold_i,
-                train_idx=train_idx.astype(np.intp),
-                test_idx=test_idx.astype(np.intp),
+                train_idx=train_idx,
+                test_idx=test_idx,
                 train_end_ts=train_end,
-                test_start_ts=int(times[test_idx].min()),
-                test_end_ts=int(times[test_idx].max()),
+                test_start_ts=int(setup_times[test_setup_idx].min()),
+                test_end_ts=int(setup_times[test_setup_idx].max()),
                 segment=f"month->{test_month}",
             )
         )
@@ -149,13 +269,17 @@ def build_contract_aware_folds(
     purge_samples: int = 1,
     min_train_size: int = 12,
 ) -> list[ScienceFold]:
-    """طيّات زمنية عامة؛ تُوسم بالعقد إن وُجد لأكثر من أداة."""
+    """طيّات زمنية على setup فريد مع تشخيص تعدد الأدوات/العقود.
+
+    وجود أكثر من ``instrument_id`` لا يجعل الاختبار leave-one-contract-out؛
+    الزمن يبقى وحدة الفصل لمنع ادعاء تعميم عقدي غير مقاس.
+    """
     if frame.height == 0:
         return []
     work = attach_segment_keys(frame.sort(ts_col), ts_col=ts_col)
-    times = work[ts_col].to_numpy().astype(np.int64)
-    folds = build_time_folds(
-        times,
+    folds = build_time_folds_for_frame(
+        work,
+        ts_col=ts_col,
         n_splits=n_splits,
         embargo=embargo,
         purge_samples=purge_samples,
@@ -164,7 +288,6 @@ def build_contract_aware_folds(
     n_contracts = work["segment_contract"].n_unique()
     if n_contracts <= 1:
         return folds
-    # أعد الوسم فقط — التقسيم يبقى زمنيًا عالميًا لتجنّب خلط مستقبل عقد في ماضي آخر
     return [
         ScienceFold(
             fold=f.fold,
@@ -173,7 +296,7 @@ def build_contract_aware_folds(
             train_end_ts=f.train_end_ts,
             test_start_ts=f.test_start_ts,
             test_end_ts=f.test_end_ts,
-            segment=f"multi_contract({n_contracts})",
+            segment=f"time_multi_instrument({n_contracts})",
         )
         for f in folds
     ]
@@ -216,5 +339,7 @@ __all__ = [
     "build_contract_aware_folds",
     "build_expanding_month_folds",
     "build_time_folds",
+    "build_time_folds_for_frame",
     "folds_to_frame",
+    "unique_setup_timestamps",
 ]

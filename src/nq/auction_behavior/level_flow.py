@@ -55,6 +55,7 @@ _CANCEL = MboAction.CANCEL.value
 _MODIFY = MboAction.MODIFY.value
 _TRADE = MboAction.TRADE.value
 _FILL = MboAction.FILL.value
+_CLEAR = MboAction.CLEAR.value
 _NS = 1_000_000_000.0
 
 
@@ -73,6 +74,162 @@ def _empty(keys: pl.DataFrame) -> pl.DataFrame:
         else pl.DataFrame(schema={AVAILABILITY_TS: pl.Int64()})
     )
     return base.with_columns(pl.lit(0.0).alias(c) for c in LEVEL_FLOW_COLUMNS)
+
+
+def _order_lifecycle_by_bucket(events: pl.DataFrame) -> pl.DataFrame:  # noqa: PLR0912, PLR0915
+    """آلة حالات سببية عبر البراميل متوافقة مع دلالات MBO في ``OrderBook``.
+
+    ``CANCEL.size`` كمية ملغاة وقد يكون جزئيًا، و``TRADE/FILL`` دليل تنفيذ عند
+    السعر لكنه لا يغيّر حالة الدفتر بنفسه. المخرجات تُنسب إلى برميل الإغلاق فقط.
+    الأوامر التي يمسحها ``CLEAR`` أو تنتهي مع العينة تظل censored ولا تتحول إلى
+    إلغاء اصطناعي.
+    """
+    schema = {
+        BUCKET_START: pl.Int64(),
+        "lf_mean_order_lifetime_ns": pl.Float64(),
+        "lf_queue_survival_rate": pl.Float64(),
+        "lf_partial_exec_rate": pl.Float64(),
+        "lf_refill_rate": pl.Float64(),
+    }
+    if events.height == 0 or "order_id" not in events.columns:
+        return pl.DataFrame(schema=schema)
+
+    work = events.sort([EVENT_TS, "order_id"])
+    # حالة حية لكل order_id؛ price index يربط trade (غالبًا order_id=0)
+    # بالأوامر الظاهرة عند المستوى من دون ادعاء تخصيص تنفيذ لأمر بعينه.
+    open_ts: dict[int, int] = {}
+    current_size: dict[int, float] = {}
+    order_price: dict[int, float] = {}
+    orders_at_price: dict[float, set[int]] = {}
+    had_execution: dict[int, bool] = {}
+    had_refill: dict[int, bool] = {}
+    survived_change: dict[int, bool] = {}
+    rows: list[dict[str, float | int]] = []
+
+    actions = work["action"].to_list()
+    oids = work["order_id"].to_list()
+    times = work[EVENT_TS].to_list()
+    sizes = work["size"].to_list()
+    buckets = work[BUCKET_START].to_list()
+    prices = work["price"].to_list() if "price" in work.columns else [None] * work.height
+    near_flags = (
+        work["_near_level"].fill_null(False).to_list()
+        if "_near_level" in work.columns
+        else [True] * work.height
+    )
+
+    def _drop(oid: int) -> None:
+        price = order_price.pop(oid, None)
+        if price is not None:
+            at_price = orders_at_price.get(price)
+            if at_price is not None:
+                at_price.discard(oid)
+                if not at_price:
+                    orders_at_price.pop(price, None)
+        open_ts.pop(oid, None)
+        current_size.pop(oid, None)
+        had_execution.pop(oid, None)
+        had_refill.pop(oid, None)
+        survived_change.pop(oid, None)
+
+    for action, oid_raw, ts_raw, size_raw, buck_raw, price_raw, near_raw in zip(
+        actions, oids, times, sizes, buckets, prices, near_flags, strict=True
+    ):
+        ts = int(ts_raw)
+        size = float(size_raw) if size_raw is not None else 0.0
+        buck = int(buck_raw)
+        price = float(price_raw) if price_raw is not None else None
+        act = str(action)
+
+        if act == _CLEAR:
+            # reset إداري: كل الأعمار المفتوحة censored وليست cancels مرصودة.
+            for live_oid in tuple(open_ts):
+                _drop(live_oid)
+            continue
+
+        if act in (_TRADE, _FILL):
+            touched: set[int] = set()
+            if price is not None:
+                touched.update(orders_at_price.get(price, set()))
+            if oid_raw is not None and int(oid_raw) in open_ts:
+                touched.add(int(oid_raw))
+            for live_oid in touched:
+                had_execution[live_oid] = True
+            # وفق عقد الدفتر، التغيير الكمي يأتي في CANCEL مستقل.
+            continue
+
+        if oid_raw is None:
+            continue
+        oid = int(oid_raw)
+
+        if act == _ADD:
+            if not bool(near_raw):
+                continue
+            if oid in open_ts:
+                # duplicate ADD يستبدل الحالة القديمة؛ القديمة censored.
+                _drop(oid)
+            open_ts[oid] = ts
+            current_size[oid] = max(size, 0.0)
+            if price is not None:
+                order_price[oid] = price
+                orders_at_price.setdefault(price, set()).add(oid)
+            had_execution[oid] = False
+            had_refill[oid] = False
+            survived_change[oid] = False
+            continue
+        if oid not in open_ts:
+            # أمر بلا ADD مرئي في النافذة — تجاهل
+            continue
+        if act == _MODIFY:
+            old_size = current_size.get(oid, 0.0)
+            if size > old_size:
+                had_refill[oid] = True
+            survived_change[oid] = True
+            current_size[oid] = max(size, 0.0)
+            if price is not None and price != order_price.get(oid):
+                old_price = order_price.get(oid)
+                if old_price is not None:
+                    old_set = orders_at_price.get(old_price)
+                    if old_set is not None:
+                        old_set.discard(oid)
+                        if not old_set:
+                            orders_at_price.pop(old_price, None)
+                order_price[oid] = price
+                orders_at_price.setdefault(price, set()).add(oid)
+            continue
+        if act == _CANCEL:
+            remaining_before = current_size.get(oid, 0.0)
+            cancel_qty = size if size > 0 else remaining_before
+            remaining = max(remaining_before - min(cancel_qty, remaining_before), 0.0)
+            if remaining > 0:
+                current_size[oid] = remaining
+                survived_change[oid] = True
+                continue
+            life = float(ts - open_ts[oid])
+            # الإسناد لزمن الإغلاق (سببي)
+            rows.append(
+                {
+                    BUCKET_START: buck,
+                    "_life": life,
+                    "_survived": float(survived_change.get(oid, False)),
+                    "_partial": float(had_execution.get(oid, False)),
+                    "_refill": float(had_refill.get(oid, False)),
+                }
+            )
+            _drop(oid)
+
+    if not rows:
+        return pl.DataFrame(schema=schema)
+    return (
+        pl.DataFrame(rows)
+        .group_by(BUCKET_START, maintain_order=True)
+        .agg(
+            pl.col("_life").mean().alias("lf_mean_order_lifetime_ns"),
+            pl.col("_survived").mean().alias("lf_queue_survival_rate"),
+            pl.col("_partial").mean().alias("lf_partial_exec_rate"),
+            pl.col("_refill").mean().alias("lf_refill_rate"),
+        )
+    )
 
 
 def attach_level_flow_features(  # noqa: PLR0912, PLR0915
@@ -208,7 +365,7 @@ def attach_level_flow_features(  # noqa: PLR0912, PLR0915
 
     grouped = joined.group_by(BUCKET_START, maintain_order=True).agg(aggs)
 
-    # عمر الأمر / بقاء الطابور / refill — على أوامر لمست المستويات
+    # عمر الأمر عبر البراميل: آلة حالات سببية order_id → يُصدَر عند الإغلاق
     life_frame = pl.DataFrame(
         schema={
             BUCKET_START: pl.Int64(),
@@ -219,45 +376,9 @@ def attach_level_flow_features(  # noqa: PLR0912, PLR0915
         }
     )
     if "order_id" in joined.columns:
-        order_stats = (
-            joined.filter(near_any)
-            .group_by(BUCKET_START, "order_id", maintain_order=True)
-            .agg(
-                pl.col(EVENT_TS).min().alias("_first"),
-                pl.col(EVENT_TS).max().alias("_last"),
-                is_add.any().alias("_had_add"),
-                is_cancel.any().alias("_had_cancel"),
-                is_trade.any().alias("_had_trade"),
-                is_modify.sum().alias("_n_mod"),
-                pl.col("size").first().alias("_sz0"),
-                pl.col("size").last().alias("_sz1"),
-            )
-            .with_columns(
-                (pl.col("_last") - pl.col("_first")).cast(pl.Float64).alias("_life"),
-                (
-                    pl.col("_had_add")
-                    & pl.col("_had_trade")
-                    & (pl.col("_sz1") < pl.col("_sz0"))
-                    & ~pl.col("_had_cancel")
-                )
-                .cast(pl.Float64)
-                .alias("_partial"),
-                (pl.col("_had_add") & (pl.col("_n_mod") > 0) & ~pl.col("_had_cancel"))
-                .cast(pl.Float64)
-                .alias("_refill"),
-                (pl.col("_had_add") & ~pl.col("_had_cancel") & pl.col("_had_trade"))
-                .cast(pl.Float64)
-                .alias("_survived"),
-            )
-            .group_by(BUCKET_START, maintain_order=True)
-            .agg(
-                pl.col("_life").mean().alias("lf_mean_order_lifetime_ns"),
-                pl.col("_survived").mean().alias("lf_queue_survival_rate"),
-                pl.col("_partial").mean().alias("lf_partial_exec_rate"),
-                pl.col("_refill").mean().alias("lf_refill_rate"),
-            )
-        )
-        life_frame = order_stats
+        # افتح lifecycle فقط إذا كان ADD قرب مستوى القرار وقت ظهوره، ثم واصل
+        # تتبعه حتى الإغلاق ولو تحرك decision_* لاحقًا إلى مستوى آخر.
+        life_frame = _order_lifecycle_by_bucket(joined.with_columns(near_any.alias("_near_level")))
 
     def _intensity(count: str) -> pl.Expr:
         return (pl.col(count).cast(pl.Float64) / pl.col("_dur")).fill_null(0.0)
