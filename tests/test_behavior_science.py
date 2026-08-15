@@ -115,6 +115,11 @@ def test_science_stack_runs_end_to_end() -> None:
     assert "frozen_final_holdout" in diag["science_steps"]
     assert diag["signal_quality_is_calibrated_probability"] is False
     assert diag["prediction_uses_oos_labels"] is False
+    assert "feature_names" in diag
+    assert isinstance(diag["feature_names"], list)
+    assert "feature_names_by_family" in diag
+    assert "feature_weights_by_outcome" in diag
+    assert "named_features_in_diagnostics" in diag["science_steps"]
     assert diag["holdout_cut_ts"] != 0 or result.science.labeled.height == 0
 
 

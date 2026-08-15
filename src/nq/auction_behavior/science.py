@@ -19,7 +19,9 @@ from nq.auction_behavior.calibration import (
 from nq.auction_behavior.conditional import (
     ConditionalModel,
     fit_conditional_models,
+    group_feature_names_by_family,
     predict_probabilities_at_states,
+    rank_feature_weights,
     score_conditional_models,
     select_feature_names_by_family,
 )
@@ -121,6 +123,37 @@ def _calibration_tail_split(
     return fit, cal
 
 
+def _log_feature_names(
+    names: tuple[str, ...],
+    *,
+    progress: ProgressLike | None,
+    label: str,
+) -> dict[str, list[str]]:
+    grouped = group_feature_names_by_family(names)
+    if progress is not None:
+        progress.op(f"{label}: n={len(names)}")
+        for family, items in grouped.items():
+            progress.op(f"{label} family {family} ({len(items)}): {', '.join(items)}")
+    return grouped
+
+
+def _log_feature_weights(
+    ranked: dict[str, list[dict[str, float | str]]],
+    *,
+    progress: ProgressLike | None,
+) -> None:
+    if progress is None:
+        return
+    for outcome, rows in ranked.items():
+        if not rows:
+            progress.op(f"science knowledge {outcome}: no fitted weights")
+            continue
+        detail = ", ".join(
+            f"{row['name']}={float(row['weight']):+.3f}" for row in rows[:8]
+        )
+        progress.op(f"science knowledge {outcome}: {detail}")
+
+
 def run_behavior_science(  # noqa: PLR0912, PLR0915
     blended: pl.DataFrame,
     *,
@@ -185,8 +218,9 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         develop if develop.height else blended,
         max_features=cfg.max_features,
     )
-    if progress is not None:
-        progress.op(f"science: features={len(candidate_feature_names)}")
+    _log_feature_names(
+        candidate_feature_names, progress=progress, label="science candidate features"
+    )
 
     folds: list[ScienceFold] = []
     if cfg.use_month_folds:
@@ -381,6 +415,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
     holdout_eval: HoldoutEvaluation | None = None
     holdout_state = holdout_pack
     live_preds = pl.DataFrame()
+    knowledge_weights: dict[str, list[dict[str, float | str]]] = {}
     if develop.height >= cfg.min_train_size and candidate_feature_names:
         if progress is not None:
             progress.op("science: fit final live model")
@@ -405,6 +440,11 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             min_neg=cfg.min_neg,
             progress=progress,
         )
+        _log_feature_names(
+            final_features, progress=progress, label="science final features"
+        )
+        knowledge_weights = rank_feature_weights(final_model)
+        _log_feature_weights(knowledge_weights, progress=progress)
         raw_final_cal = (
             score_conditional_models(
                 final_model,
@@ -492,6 +532,9 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             "holdout_cut_ts": int(holdout_pack.cut_ts),
             "holdout_touched": bool(holdout_state.touched),
             "n_features": len(feature_names),
+            "feature_names": list(feature_names),
+            "feature_names_by_family": group_feature_names_by_family(feature_names),
+            "feature_weights_by_outcome": knowledge_weights,
             "n_final_calibrators": len(final_calibrators),
             "n_level_flow_features": n_lf,
             "n_reliability_features": n_rel,
@@ -516,6 +559,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 "level_anchored_order_flow",
                 "reliability_evidence_no_delete",
                 "family_aware_feature_selection",
+                "named_features_in_diagnostics",
                 "asia_london_projection_state",
                 "path_depth_confirmation_no_if",
                 "platt_calibration_causal_tail",

@@ -18,6 +18,8 @@ from nq.auction_behavior.conditional import (
     MODEL_STATUS_INSUFFICIENT,
     MODEL_STATUS_SINGLE_CLASS,
     fit_conditional_models,
+    group_feature_names_by_family,
+    rank_feature_weights,
     select_feature_names_by_family,
 )
 from nq.auction_behavior.drift import _psi_1d
@@ -291,6 +293,44 @@ def test_small_feature_budget_is_balanced_across_families() -> None:
     assert any(name.startswith("struct_") for name in names)
     assert any(name.startswith("lf_") for name in names)
     assert any(name.startswith("rel_") for name in names)
+
+
+def test_feature_names_are_grouped_and_ranked_by_weight() -> None:
+    names = (
+        "proj_poc_shift_ticks",
+        "path_depth_confirm",
+        "lf_arrival_intensity",
+        "rel_credibility",
+        "struct_dist_vah_ticks",
+    )
+    grouped = group_feature_names_by_family(names)
+    assert grouped["projection"] == ["proj_poc_shift_ticks"]
+    assert grouped["path"] == ["path_depth_confirm"]
+    assert grouped["level_flow"] == ["lf_arrival_intensity"]
+    model = fit_conditional_models(
+        pl.DataFrame(
+            {
+                SETUP_AVAILABILITY_TS: [1, 2, 3, 4, 5, 6],
+                OUTCOME_AVAILABLE_TS: [2, 3, 4, 5, 6, 7],
+                "outcome_name": ["y_true_break"] * 6,
+                "y": [0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+                "proj_poc_shift_ticks": [0.0, 2.0, 0.1, 2.2, 0.0, 1.8],
+                "path_depth_confirm": [0.1, 0.9, 0.2, 0.8, 0.1, 0.7],
+            }
+        ),
+        feature_names=("proj_poc_shift_ticks", "path_depth_confirm"),
+        outcomes=("y_true_break",),
+        train_end_ts=7,
+        min_train=4,
+        min_pos=2,
+        min_neg=2,
+    )
+    ranked = rank_feature_weights(model, top_k=2)
+    assert "y_true_break" in ranked
+    assert {row["name"] for row in ranked["y_true_break"]} <= {
+        "proj_poc_shift_ticks",
+        "path_depth_confirm",
+    }
 
 
 def test_insufficient_support_returns_nan_not_half() -> None:

@@ -245,6 +245,75 @@ def select_feature_names_by_family(
     return tuple(chosen)
 
 
+def feature_family_name(name: str) -> str:
+    """عائلة ثابتة لاسم ميزة — للتقارير فقط."""
+    checks: tuple[tuple[str, bool], ...] = (
+        ("path", name in PATH_CONFIRM_COLUMNS or name.startswith("path_")),
+        ("projection", name in PROJECTION_NUMERIC_COLUMNS or name.startswith("proj_")),
+        ("structure", name in STRUCTURE_FEATURE_COLUMNS or name.startswith("struct_")),
+        ("sequence", name in SEQUENCE_MEMORY_COLUMNS),
+        ("level_flow", name in LEVEL_FLOW_COLUMNS or name.startswith("lf_")),
+        ("reliability", name in RELIABILITY_COLUMNS or name.startswith("rel_")),
+        (
+            "memory_roll",
+            name.startswith("mem_")
+            or "__lag" in name
+            or "__rmean" in name
+            or "__rsum" in name
+            or "__ecount" in name,
+        ),
+        (
+            "quality",
+            name
+            in {"signal_quality", "signal_evidence", "deceptive_score", "real_liquidity_ratio"},
+        ),
+        ("state", name in STATE_FEATURE_COLUMNS),
+    )
+    for family, matched in checks:
+        if matched:
+            return family
+    return "other"
+
+
+def group_feature_names_by_family(names: tuple[str, ...] | list[str]) -> dict[str, list[str]]:
+    """يجمّع أسماء الميزات حسب العائلة مع الحفاظ على ترتيب الاختيار."""
+    grouped: dict[str, list[str]] = {}
+    for name in names:
+        grouped.setdefault(feature_family_name(str(name)), []).append(str(name))
+    return grouped
+
+
+def rank_feature_weights(
+    model: ConditionalModel,
+    *,
+    top_k: int = 12,
+) -> dict[str, list[dict[str, float | str]]]:
+    """أكبر |وزن| لكل هدف (بدون intercept) — وصف مساهمة، ليس أهمية سببية."""
+    ranked: dict[str, list[dict[str, float | str]]] = {}
+    k = max(1, int(top_k))
+    for outcome, raw in model.weights.items():
+        feats = model.feature_names_by_outcome.get(outcome, model.feature_names)
+        coefs = np.asarray(raw, dtype=np.float64)
+        if coefs.size <= 1 or not feats:
+            ranked[outcome] = []
+            continue
+        body = coefs[1:]
+        n = min(len(feats), int(body.size))
+        order = np.argsort(-np.abs(body[:n]))
+        rows: list[dict[str, float | str]] = []
+        for idx in order[:k]:
+            rows.append(
+                {
+                    "name": str(feats[int(idx)]),
+                    "family": feature_family_name(str(feats[int(idx)])),
+                    "weight": float(body[int(idx)]),
+                    "abs_weight": float(abs(body[int(idx)])),
+                }
+            )
+        ranked[outcome] = rows
+    return ranked
+
+
 def fit_conditional_models(
     labeled: pl.DataFrame,
     *,
@@ -484,8 +553,11 @@ __all__ = [
     "MODEL_STATUS_OK",
     "MODEL_STATUS_SINGLE_CLASS",
     "ConditionalModel",
+    "feature_family_name",
     "fit_conditional_models",
+    "group_feature_names_by_family",
     "predict_probabilities_at_states",
+    "rank_feature_weights",
     "score_conditional_models",
     "select_feature_names",
     "select_feature_names_by_family",

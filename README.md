@@ -557,7 +557,9 @@ if science is not None and science.holdout_eval is not None:
 3. FE بنيوي حول `decision_*` / HVN (`struct_*`)  
 4. ذاكرة: lags + rolling + تسلسل — `shift` داخل المجموعة فقط  
 5. Level-anchored OF + reliability evidence (Raw MBO محفوظ) + lifecycle عبر البراميل  
-6. اختيار ميزات بعائلات إلزامية (projection/structure/sequence/lf/rel)  
+6. اختيار ميزات بعائلات إلزامية؛ **الأسماء** تُطبع في التقدم وتُحفظ في
+   `science.diagnostics["feature_names"]` / `feature_names_by_family` /
+   `feature_weights_by_outcome` (أكبر |وزن| لكل هدف — وصف مساهمة لا أهمية سببية)  
 7. Asia→London projection داخل متجه الحالة  
 8. Platt على ذيل قطار سببي + ECE/Brier/**BSS** (`signal_quality ≠` احتمال)  
 9. Walk-forward على **setup فريد** · **OOF** للباك تست · live منفصل · holdout مرة واحدة  
