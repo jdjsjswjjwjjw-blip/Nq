@@ -20,6 +20,7 @@ from nq.auction_behavior.reliability import RELIABILITY_COLUMNS
 from nq.auction_behavior.state import STATE_FEATURE_COLUMNS
 from nq.auction_behavior.structure import STRUCTURE_FEATURE_COLUMNS
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.research.progress import ProgressLike
 from nq.validation.leakage import assert_temporal_split
 
 _EPS = 1e-12
@@ -251,8 +252,13 @@ def fit_conditional_models(
     min_pos: int = 3,
     min_neg: int = 3,
     min_samples_per_feature: int = 2,
+    progress: ProgressLike | None = None,
 ) -> ConditionalModel:
     """يدرّب نموذجًا شرطيًا لكل هدف على نتائج **محسومة** معروفة حتى ``train_end_ts``."""
+    if progress is not None:
+        progress.op(
+            f"fit_conditional_models outcomes={len(outcomes)} features={len(feature_names)}"
+        )
     known = filter_outcomes_known_by(labeled, asof_ts=train_end_ts)
     known = filter_resolved_outcomes(known)
     if SETUP_AVAILABILITY_TS in known.columns:
@@ -268,7 +274,10 @@ def fit_conditional_models(
     features_by_outcome: dict[str, tuple[str, ...]] = {}
     base_rate: dict[str, float] = {}
 
-    for outcome in outcomes:
+    for i, outcome in enumerate(outcomes, start=1):
+        if progress is not None:
+            progress.heartbeat(i, len(outcomes), label="fit-outcomes", force=True)
+            progress.op(f"fit {outcome} ({i}/{len(outcomes)})")
         part = known.filter(pl.col("outcome_name") == outcome)
         # اسقط NaN في y إن وُجد
         if "y" in part.columns:

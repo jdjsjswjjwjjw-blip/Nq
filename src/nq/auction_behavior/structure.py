@@ -10,6 +10,7 @@ import polars as pl
 
 from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.research.progress import ProgressLike
 
 STRUCTURE_FEATURE_COLUMNS = (
     "struct_dist_vah_ticks",
@@ -39,8 +40,11 @@ def attach_structure_features(
     frame: pl.DataFrame,
     *,
     tick_size: float | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يضيف مسافات نسبية/تيكات عن حدود القرار ومرساة آسيا إن وُجدت."""
+    if progress is not None:
+        progress.op(f"attach_structure_features bars={frame.height:,}")
     if frame.height == 0:
         return frame.with_columns(pl.lit(0.0).alias(c) for c in STRUCTURE_FEATURE_COLUMNS)
     if AVAILABILITY_TS not in frame.columns:

@@ -46,6 +46,7 @@ from nq.auction_behavior.walk_forward import (
     folds_to_frame,
 )
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.research.progress import ProgressLike
 
 _MIN_TRAIN_FOR_CAL_SPLIT = 10
 _MIN_CAL_ROWS = 5
@@ -124,9 +125,12 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
     blended: pl.DataFrame,
     *,
     config: ScienceConfig | None = None,
+    progress: ProgressLike | None = None,
 ) -> BehaviorScienceReport:
     """يشغّل العلم مع OOF تاريخي منفصل عن التنبؤ الحي."""
     cfg = config or ScienceConfig()
+    if progress is not None:
+        progress.op(f"run_behavior_science bars={blended.height:,}")
     empty_holdout = carve_frozen_holdout(pl.DataFrame(), holdout_frac=cfg.holdout_frac)
     empty = BehaviorScienceReport(
         labeled=pl.DataFrame(),
@@ -146,28 +150,48 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         diagnostics={"empty": True},
     )
     if blended.height == 0 or AVAILABILITY_TS not in blended.columns:
+        if progress is not None:
+            progress.op("science: empty blended")
         return empty
 
+    if progress is not None:
+        progress.op("science: labeled outcomes")
     outcomes = build_labeled_outcomes(
         blended,
         outcome_window=cfg.outcome_window,
         group_col=cfg.group_col if cfg.group_col in blended.columns else None,
+        progress=progress,
     )
     labeled_all = attach_outcome_availability_guard(blended, outcomes)
     labeled = filter_resolved_outcomes(labeled_all)
     n_censored = int(labeled_all.height - labeled.height) if labeled_all.height else 0
+    if progress is not None:
+        progress.op(
+            f"science: labeled={labeled_all.height:,} resolved={labeled.height:,} "
+            f"censored={n_censored:,}"
+        )
 
     # اختيار ميزات من صفوف التطوير المحسومة فقط (بعد carve لاحقًا نعيد على develop)
+    if progress is not None:
+        progress.op(f"science: carve holdout frac={cfg.holdout_frac}")
     holdout_pack = carve_frozen_holdout(labeled, holdout_frac=cfg.holdout_frac)
     develop = holdout_pack.develop
+    if progress is not None:
+        progress.op(f"science: develop={develop.height:,} holdout={holdout_pack.holdout.height:,}")
 
+    if progress is not None:
+        progress.op("science: family feature selection")
     candidate_feature_names = select_feature_names_by_family(
         develop if develop.height else blended,
         max_features=cfg.max_features,
     )
+    if progress is not None:
+        progress.op(f"science: features={len(candidate_feature_names)}")
 
     folds: list[ScienceFold] = []
     if cfg.use_month_folds:
+        if progress is not None:
+            progress.op("science: expanding month folds")
         folds = build_expanding_month_folds(
             develop,
             ts_col=SETUP_AVAILABILITY_TS,
@@ -176,6 +200,8 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             purge_samples=cfg.purge_samples,
         )
     if not folds:
+        if progress is not None:
+            progress.op("science: contract-aware folds")
         folds = build_contract_aware_folds(
             develop,
             ts_col=SETUP_AVAILABILITY_TS,
@@ -184,14 +210,23 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             purge_samples=cfg.purge_samples,
             min_train_size=cfg.min_train_size,
         )
+    if progress is not None:
+        progress.op(f"science: n_folds={len(folds)}")
 
     fold_score_rows: list[pl.DataFrame] = []
     oof_state_rows: list[pl.DataFrame] = []
     fold_metric_rows: list[dict[str, float | int | str]] = []
     drift_psis: list[float] = []
     seen_setup_test: set[int] = set()
+    n_folds = max(len(folds), 1)
 
-    for sf in folds:
+    for fold_i, sf in enumerate(folds, start=1):
+        if progress is not None:
+            progress.heartbeat(fold_i, n_folds, label="science-folds", force=True)
+            progress.op(
+                f"science fold {fold_i}/{len(folds)} segment={sf.segment} "
+                f"train_end={sf.train_end_ts}"
+            )
         train = develop[sf.train_idx]
         test = develop[sf.test_idx]
         # امنع تكرار setup في OOS عبر الطيّات
@@ -210,6 +245,11 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             fit_part if fit_part.height else known_train,
             max_features=cfg.max_features,
         )
+        if progress is not None:
+            progress.op(
+                f"science fold {fold_i}: fit={fit_part.height:,} cal={cal_part.height:,} "
+                f"test={test.height:,}"
+            )
         model = fit_conditional_models(
             fit_part,
             feature_names=fold_features,
@@ -219,6 +259,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             min_train=max(8, cfg.min_train_size // 2),
             min_pos=cfg.min_pos,
             min_neg=cfg.min_neg,
+            progress=progress,
         )
         # معايرة Platt على ذيل القطار إن أمكن
         raw_cal = (
@@ -239,6 +280,8 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 min_samples=max(10, cfg.min_train_size // 2),
             )
 
+        if progress is not None:
+            progress.op(f"science fold {fold_i}: score + calibrate + drift")
         # سجّل الاختبار بمؤشرات الصفوف داخل develop
         scored = score_conditional_models(
             model,
@@ -339,6 +382,8 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
     holdout_state = holdout_pack
     live_preds = pl.DataFrame()
     if develop.height >= cfg.min_train_size and candidate_feature_names:
+        if progress is not None:
+            progress.op("science: fit final live model")
         final_train_end = int(holdout_pack.cut_ts)
         final_known = filter_outcomes_known_by(develop, asof_ts=final_train_end)
         final_fit, final_cal = _calibration_tail_split(
@@ -358,6 +403,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             min_train=max(8, cfg.min_train_size // 2),
             min_pos=cfg.min_pos,
             min_neg=cfg.min_neg,
+            progress=progress,
         )
         raw_final_cal = (
             score_conditional_models(
@@ -375,6 +421,8 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             min_samples=max(10, cfg.min_train_size // 2),
         )
         # حي فقط — غير مؤهل للباك تست التاريخي
+        if progress is not None:
+            progress.op("science: live state predictions")
         live_preds = predict_probabilities_at_states(
             final_model,
             blended,
@@ -386,6 +434,8 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         )
         live_preds = apply_calibrators_to_state_predictions(live_preds, final_calibrators)
         if cfg.evaluate_holdout and holdout_pack.holdout.height > 0:
+            if progress is not None:
+                progress.op(f"science: frozen holdout n={holdout_pack.holdout.height:,}")
             ho_min = holdout_pack.holdout[SETUP_AVAILABILITY_TS].min()
             ho_max = holdout_pack.holdout[SETUP_AVAILABILITY_TS].max()
             assert ho_min is not None and ho_max is not None
@@ -412,6 +462,11 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         if c.startswith("mem_") or "__lag" in c or "__rmean" in c or "__rsum" in c
     )
 
+    if progress is not None:
+        progress.op(
+            f"science done folds={len(folds)} oof={conditional_oof_predictions.height:,} "
+            f"live={live_preds.height:,}"
+        )
     return BehaviorScienceReport(
         labeled=labeled_all,
         feature_names=feature_names,

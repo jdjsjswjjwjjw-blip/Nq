@@ -10,6 +10,7 @@ Causality contract (must match auction / volume-profile research fixes):
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,6 +48,7 @@ from nq.core.session import (
     session_date_from_ns,
     vp_liquidity_session_label,
 )
+from nq.research.progress import PipelineProgress, ProgressLike, resolve_progress
 from nq.simulation.auction import (
     VP_PROFILE_INTERVAL_NS,
     VP_SIGNAL_INTERVAL_NS,
@@ -106,6 +108,8 @@ class BehaviorConfig:
     holdout_frac: float = 0.2
     # الـholdout لا يُلمس تلقائيًا؛ فعّله صراحة بعد قفل التطوير.
     evaluate_holdout: bool = False
+    quiet: bool = False
+    progress_log_path: str | None = None
     projection_config: AsiaLondonProjectionConfig = field(
         default_factory=AsiaLondonProjectionConfig
     )
@@ -201,7 +205,11 @@ def _with_session_runs(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _with_behavior_story_runs(frame: pl.DataFrame) -> pl.DataFrame:
+def _with_behavior_story_runs(
+    frame: pl.DataFrame,
+    *,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
     """يجمع آسيا+لندن في قصة واحدة، ويعيد الضبط عند نيويورك/يوم جديد."""
     if frame.height == 0 or VP_LIQUIDITY_SESSION not in frame.columns:
         return frame
@@ -209,14 +217,20 @@ def _with_behavior_story_runs(frame: pl.DataFrame) -> pl.DataFrame:
     times = [int(x) for x in ordered[AVAILABILITY_TS].to_list()]
     sessions = [int(x) for x in ordered[VP_LIQUIDITY_SESSION].fill_null(-1).to_list()]
     asia_london = {int(VpLiquiditySession.ASIA), int(VpLiquiditySession.LONDON)}
-    keys = [
-        f"{session_date_from_ns(ts)}:{'asia_london' if sess in asia_london else sess}"
-        for ts, sess in zip(times, sessions, strict=True)
-    ]
+    n = len(times)
+    if progress is not None:
+        progress.op(f"behavior story runs n={n:,}")
+    keys = []
+    for i, (ts, sess) in enumerate(zip(times, sessions, strict=True), start=1):
+        if progress is not None:
+            progress.heartbeat(i, n, label="behavior-story-keys")
+        keys.append(f"{session_date_from_ns(ts)}:{'asia_london' if sess in asia_london else sess}")
     runs: list[int] = []
     run = 0
     previous: str | None = None
-    for key in keys:
+    for i, key in enumerate(keys, start=1):
+        if progress is not None:
+            progress.heartbeat(i, n, label="behavior-story-runs")
         if key != previous:
             run += 1
         runs.append(run)
@@ -224,8 +238,15 @@ def _with_behavior_story_runs(frame: pl.DataFrame) -> pl.DataFrame:
     return ordered.with_columns(pl.Series("_behavior_story_run", runs, dtype=pl.Int64))
 
 
-def _attach_projection(blended: pl.DataFrame, projection: pl.DataFrame) -> pl.DataFrame:
+def _attach_projection(
+    blended: pl.DataFrame,
+    projection: pl.DataFrame,
+    *,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
     """يلحق آخر إسقاط لندن المكتمل داخل يوم التداول نفسه (asof خلفي)."""
+    if progress is not None:
+        progress.op(f"attach projection asof bars={blended.height:,} proj={projection.height:,}")
     if blended.height == 0 or projection.height == 0:
         return blended.with_columns(pl.lit(0.0).alias(c) for c in PROJECTION_NUMERIC_COLUMNS)
     ordered = blended.sort(AVAILABILITY_TS)
@@ -286,7 +307,11 @@ def _attach_projection(blended: pl.DataFrame, projection: pl.DataFrame) -> pl.Da
     ).drop("_projection_story_date")
 
 
-def _session_vp_summary(states: pl.DataFrame) -> pl.DataFrame:
+def _session_vp_summary(
+    states: pl.DataFrame,
+    *,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
     """ملخص لكل دورة جلسة متصلة، مع فصل حدود القرار عن الملف المكتمل."""
     if states.height == 0 or VP_LIQUIDITY_SESSION not in states.columns:
         return pl.DataFrame(
@@ -308,8 +333,14 @@ def _session_vp_summary(states: pl.DataFrame) -> pl.DataFrame:
         )
 
     work = _with_session_runs(states)
+    groups = list(work.group_by("_liquidity_run", maintain_order=True))
+    n_groups = len(groups)
+    if progress is not None:
+        progress.op(f"session_vp_summary runs={n_groups}")
     rows: list[dict[str, Any]] = []
-    for run_id, g in work.group_by("_liquidity_run", maintain_order=True):
+    for i, (run_id, g) in enumerate(groups, start=1):
+        if progress is not None:
+            progress.heartbeat(i, n_groups, label="session-vp-summary")
         rid = _as_int(run_id[0] if isinstance(run_id, tuple) else run_id)
         sid = _as_int(g[VP_LIQUIDITY_SESSION][0])
         last = g.tail(1)
@@ -344,7 +375,11 @@ def _session_vp_summary(states: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def _london_scenario_summary(states: pl.DataFrame) -> pl.DataFrame:
+def _london_scenario_summary(  # noqa: PLR0912, PLR0915
+    states: pl.DataFrame,
+    *,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
     """سيناريو لندن مقابل قيمة آسيا المكتملة (وصفي؛ بلا توصية صفقة).
 
     يستخدم الملف النهائي لآسيا عند انتقال الجلسة. نتائج مدى لندن تحمل
@@ -377,7 +412,13 @@ def _london_scenario_summary(states: pl.DataFrame) -> pl.DataFrame:
     rows: list[dict[str, Any]] = []
     # اجمع أزواج: آخر آسيا قبل أول لندن التالية
     asia_last: pl.DataFrame | None = None
-    for _run_id, g in runs.group_by("_liquidity_run", maintain_order=True):
+    run_groups = list(runs.group_by("_liquidity_run", maintain_order=True))
+    n_runs = len(run_groups)
+    if progress is not None:
+        progress.op(f"london_scenario_summary runs={n_runs}")
+    for i, (_run_id, g) in enumerate(run_groups, start=1):
+        if progress is not None:
+            progress.heartbeat(i, n_runs, label="london-scenario")
         sess = int(g[VP_LIQUIDITY_SESSION][0])
         if sess == asia_code:
             asia_last = g.tail(1)
@@ -440,23 +481,58 @@ def _london_scenario_summary(states: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(rows) if rows else pl.DataFrame(schema=schema)
 
 
-def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
+_BEHAVIOR_PIPELINE_STEPS = 12
+
+
+def run_auction_behavior_analysis(
     mbo: pl.DataFrame,
     *,
     config: BehaviorConfig | None = None,
     score_mbo: pl.DataFrame | None = None,
+    progress: PipelineProgress | bool | None = None,
+    quiet: bool | None = None,
 ) -> AuctionBehaviorResult:
     """يشغّل طبقات المرحلة 1–11 ويعيد تقرير سلوك (بدون بوابات تداول).
 
     ``mbo``: تدفّق MBO لبناء حالات المزاد.
     ``score_mbo``: اختياري — خام قبل أي تنظيف لتسجيل نية التضليل (درجات فقط).
+    كل خطوة/عملية تُطبع فورًا عبر ``PipelineProgress`` (stderr + progress.log).
     """
     cfg = config or BehaviorConfig()
+    resolved_quiet = cfg.quiet if quiet is None else bool(quiet)
+    if quiet is None and progress is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        resolved_quiet = True
+    log = resolve_progress(progress, quiet=resolved_quiet)
+    if cfg.progress_log_path and log.enabled:
+        log.attach_log(cfg.progress_log_path)
+    log.begin("auction_behavior", total_steps=_BEHAVIOR_PIPELINE_STEPS)
+    try:
+        return _run_auction_behavior_analysis(
+            mbo,
+            cfg=cfg,
+            score_mbo=score_mbo,
+            log=log,
+        )
+    except Exception as exc:
+        log.fail(exc)
+        raise
+
+
+def _run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
+    mbo: pl.DataFrame,
+    *,
+    cfg: BehaviorConfig,
+    score_mbo: pl.DataFrame | None,
+    log: ProgressLike,
+) -> AuctionBehaviorResult:
+    n_mbo = 0 if mbo is None else int(mbo.height)
+    log.step("asia_london_projection", f"mbo_rows={n_mbo:,}")
     projection = (
-        build_asia_london_projection(mbo, config=cfg.projection_config)
+        build_asia_london_projection(mbo, config=cfg.projection_config, progress=log)
         if mbo is not None and mbo.height > 0 and cfg.include_asia_london_projection
         else pl.DataFrame()
     )
+    log.op(f"projection bars={projection.height:,}")
     if mbo is None or mbo.height == 0:
         empty_probs = BehaviorProbabilities(
             p_balanced=0.0,
@@ -472,7 +548,7 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
             detail="empty mbo",
         )
         empty_val = validate_behavior_frame(pl.DataFrame())
-        return AuctionBehaviorResult(
+        empty = AuctionBehaviorResult(
             probabilities=empty_probs,
             validation=empty_val,
             blended=pl.DataFrame(),
@@ -483,14 +559,21 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
             projection=projection,
             diagnostics={"empty": True, "deceptive_filtered": False},
         )
+        log.done("empty mbo")
+        return empty
 
-    # Layers 1–3: session-aware auction states (decision_* lagged inside builder)
+    log.step(
+        "auction_action_states",
+        f"profile={cfg.profile_interval_ns} · signal={cfg.signal_interval_ns}",
+    )
     states = auction_action_states(
         mbo,
         profile_interval_ns=cfg.profile_interval_ns,
         signal_interval_ns=cfg.signal_interval_ns,
         fixed_range=cfg.fixed_range,
+        progress=log,
     )
+    log.op(f"state bars={states.height:,}")
     if states.height == 0:
         empty_probs = BehaviorProbabilities(
             p_balanced=0.0,
@@ -505,7 +588,7 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
             n_samples=0,
             detail="no trade-derived auction bars",
         )
-        return AuctionBehaviorResult(
+        empty = AuctionBehaviorResult(
             probabilities=empty_probs,
             validation=validate_behavior_frame(pl.DataFrame()),
             blended=pl.DataFrame(),
@@ -521,9 +604,16 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
                 "deceptive_filtered": False,
             },
         )
+        log.done("no auction bars")
+        return empty
     _require_decision_columns(states)
-    session_profiles = _session_vp_summary(states)
-    london_scenarios = _london_scenario_summary(states)
+    log.step("session_summaries")
+    log.op("session_vp_summary")
+    session_profiles = _session_vp_summary(states, progress=log)
+    log.op(f"session_profiles={session_profiles.height:,}")
+    log.op("london_scenario_summary")
+    london_scenarios = _london_scenario_summary(states, progress=log)
+    log.op(f"london_scenarios={london_scenarios.height:,}")
 
     # Layer 4: order-flow intention via deceptive scores — raw path, no deletion
     deceptive_bucket = pl.DataFrame()
@@ -531,36 +621,57 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
     scored: pl.DataFrame | None = None
     reliability = pl.DataFrame()
     level_flow = pl.DataFrame()
+    log.step("order_flow_scores", "raw MBO · no deletion")
     if cfg.include_deceptive_scores or cfg.include_reliability_evidence:
         score_src = score_mbo if score_mbo is not None else mbo
-        scored = score_deceptive_events(score_src)
+        log.op(f"score_deceptive_events events={score_src.height:,}")
+        scored = score_deceptive_events(score_src, progress=log)
         scored_rows = int(scored.height)
+        log.op(f"scored_rows={scored_rows:,}")
         # Intentionally do NOT call filter_deceptive_liquidity.
         if cfg.include_deceptive_scores:
+            log.op("deceptive_features_by_bucket")
             deceptive_bucket = deceptive_features_by_bucket(
                 score_src,
                 interval_ns=cfg.signal_interval_ns,
                 scored=scored,
+                progress=log,
             )
+            log.op(f"deceptive buckets={deceptive_bucket.height:,}")
         if cfg.include_reliability_evidence:
+            log.op("attach_reliability_evidence")
             reliability = attach_reliability_evidence(
                 score_src,
                 interval_ns=cfg.signal_interval_ns,
                 scored=scored,
+                progress=log,
             )
+            log.op(f"reliability bars={reliability.height:,}")
+    else:
+        log.op("deceptive/reliability skipped")
+    log.step("level_flow", f"enabled={cfg.include_level_flow}")
     if cfg.include_level_flow:
         level_flow = attach_level_flow_features(
             mbo if score_mbo is None else score_mbo,
             states,
             config=LevelFlowConfig(interval_ns=cfg.signal_interval_ns),
+            progress=log,
         )
+        log.op(f"level_flow bars={level_flow.height:,}")
+    else:
+        log.op("level_flow skipped")
 
     # Layers 5–6: VP/FSM signals + behavior events
+    log.step("auction_signals_from_states", f"bars={states.height:,}")
     signals = auction_signals_from_states(
         states,
         fixed_range_decisions=cfg.fixed_range,
+        progress=log,
     )
+    log.op(f"signal bars={signals.height:,}")
     blended = signals
+    log.step("join_flow_and_projection")
+    log.op("join deceptive scores")
     if deceptive_bucket.height > 0 and AVAILABILITY_TS in deceptive_bucket.columns:
         deco_cols = [
             c
@@ -590,6 +701,7 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
     else:
         blended = blended.with_columns(pl.col("real_liquidity_ratio").fill_null(1.0))
 
+    log.op("join reliability evidence")
     if reliability.height > 0 and AVAILABILITY_TS in reliability.columns:
         rel_cols = [c for c in (AVAILABILITY_TS, *RELIABILITY_COLUMNS) if c in reliability.columns]
         blended = blended.join(reliability.select(rel_cols), on=AVAILABILITY_TS, how="left")
@@ -599,6 +711,7 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
     else:
         blended = blended.with_columns(pl.lit(0.0).alias(c) for c in RELIABILITY_COLUMNS)
 
+    log.op("join level_flow")
     if level_flow.height > 0 and AVAILABILITY_TS in level_flow.columns:
         lf_cols = [c for c in (AVAILABILITY_TS, *LEVEL_FLOW_COLUMNS) if c in level_flow.columns]
         blended = blended.join(level_flow.select(lf_cols), on=AVAILABILITY_TS, how="left")
@@ -620,41 +733,54 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
         "open",
         VP_LIQUIDITY_SESSION,
     )
+    log.op("join decision_* from states")
     join_cols = [c for c in candidate_cols if c in states.columns and c not in blended.columns]
     state_decision = states.select(AVAILABILITY_TS, *join_cols)
     blended = blended.join(state_decision, on=AVAILABILITY_TS, how="left")
+    log.op("session runs + projection asof + story runs")
     blended = _with_session_runs(blended)
-    blended = _attach_projection(blended, projection)
-    blended = _with_behavior_story_runs(blended)
+    blended = _attach_projection(blended, projection, progress=log)
+    blended = _with_behavior_story_runs(blended, progress=log)
+    log.op(f"blended bars={blended.height:,}")
 
+    log.step("behavior_events", f"window={cfg.outcome_window}")
     events = build_behavior_events(
         blended,
         outcome_window=cfg.outcome_window,
         group_col="_behavior_story_run",
+        progress=log,
     )
+    log.op(f"event rows={events.height:,}")
 
-    # Layers 7–9 + structure FE + richer memory
-    blended = attach_signal_quality(blended)
-    blended = attach_structure_features(blended)
+    log.step("quality_structure_memory")
+    log.op("attach_signal_quality")
+    blended = attach_signal_quality(blended, progress=log)
+    log.op("attach_structure_features")
+    blended = attach_structure_features(blended, progress=log)
     mem_cols = [c for c in (*_MEMORY_BASE_COLS, *STRUCTURE_FEATURE_COLUMNS) if c in blended.columns]
     event_mem = [
         c
         for c in ("vp_fsm_break", "vp_fsm_retest", "vp_look_fail", "vp_absorb")
         if c in blended.columns
     ]
+    log.op(f"attach_market_memory lags={cfg.memory_lags} cols={len(mem_cols)}")
     blended = attach_market_memory(
         blended,
         columns=mem_cols,
         lags=cfg.memory_lags,
         group_col="_behavior_story_run",
         event_columns=event_mem,
+        progress=log,
     )
-    blended = attach_sequence_memory(blended, group_col="_behavior_story_run")
-    blended = attach_state_vector(blended)
+    log.op("attach_sequence_memory")
+    blended = attach_sequence_memory(blended, group_col="_behavior_story_run", progress=log)
+    log.op("attach_state_vector")
+    blended = attach_state_vector(blended, progress=log)
     _assert_no_trade_columns(blended)
     _assert_no_trade_columns(events)
+    log.op(f"feature cols={len(blended.columns)}")
 
-    # Layers 10–11: base-rate OOS + science stack
+    log.step("base_rate_probabilities", f"n_splits={cfg.n_splits}")
     probs, base_rate_fold_metrics = estimate_behavior_probabilities(
         blended,
         events,
@@ -662,10 +788,13 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
         embargo=cfg.embargo,
         purge_samples=cfg.purge_samples,
         min_train_size=cfg.min_train_size,
+        progress=log,
     )
+    log.op(f"base_rate n_samples={probs.n_samples} folds={base_rate_fold_metrics.height}")
     science: BehaviorScienceReport | None = None
     predictions = pl.DataFrame()
     fold_metrics = base_rate_fold_metrics
+    log.step("behavior_science", f"enabled={cfg.include_science}")
     if cfg.include_science:
         science = run_behavior_science(
             blended,
@@ -679,6 +808,7 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
                 evaluate_holdout=cfg.evaluate_holdout,
                 group_col="_behavior_story_run",
             ),
+            progress=log,
         )
         # لا تخلط: fold_metrics الشرطي منفصل؛ base-rate يبقى في diagnostics
         if science.fold_frame.height:
@@ -688,7 +818,17 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
             predictions = science.conditional_oof_predictions
         else:
             predictions = science.live_model_predictions
-    validation = validate_behavior_frame(blended, fold_df=fold_metrics)
+        log.op(
+            f"science labeled={science.diagnostics.get('n_labeled', 0)} "
+            f"oof={science.conditional_oof_predictions.height} "
+            f"live={science.live_model_predictions.height}"
+        )
+    else:
+        log.op("science skipped")
+
+    log.step("validate_behavior_frame")
+    validation = validate_behavior_frame(blended, fold_df=fold_metrics, progress=log)
+    log.op(f"validation.ok={validation.ok} n_rows={validation.n_rows}")
 
     diagnostics: dict[str, Any] = {
         "n_mbo_rows": int(mbo.height),
@@ -742,10 +882,12 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
             "holdout_frac": cfg.holdout_frac,
             "evaluate_holdout": cfg.evaluate_holdout,
             "projection_interval_ns": cfg.projection_config.interval_ns,
-            "memory_scope": "asia_london_story_then_reset_at_new_york_or_new_day",
+            "quiet": cfg.quiet,
+            "progress_log_path": cfg.progress_log_path,
         },
     }
 
+    log.done(f"bars={blended.height:,} events={events.height:,} ok={validation.ok}")
     return AuctionBehaviorResult(
         probabilities=probs,
         validation=validation,

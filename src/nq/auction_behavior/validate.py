@@ -8,6 +8,7 @@ import numpy as np
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.research.progress import ProgressLike
 from nq.validation.leakage import assert_availability_not_before_event, assert_causal_order
 
 
@@ -48,9 +49,12 @@ def validate_behavior_frame(
     *,
     fold_df: pl.DataFrame | None = None,
     event_ts_col: str | None = None,
+    progress: ProgressLike | None = None,
 ) -> BehaviorValidationReport:
     """يفحص أن الإطار سببي وخالٍ من مخرجات تداول، وأن ``decision_*`` موجودة عند التوفر."""
     n = int(frame.height)
+    if progress is not None:
+        progress.op(f"validate_behavior_frame rows={n:,}")
     if n == 0:
         return BehaviorValidationReport(
             ok=True,
@@ -103,6 +107,8 @@ def validate_behavior_frame(
     ok = causal_ok and decision_ok and no_trade
     if ok:
         detail_parts.append("behavior_validation_passed")
+    if progress is not None:
+        progress.op(f"validation ok={ok} n_rows={n} folds={n_folds}")
     return BehaviorValidationReport(
         ok=ok,
         n_rows=n,

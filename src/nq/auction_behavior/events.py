@@ -6,6 +6,7 @@ import numpy as np
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.research.progress import ProgressLike
 
 #: أحداث مخرَجة — أسماء ثابتة للطبقة الاحتمالية.
 BEHAVIOR_EVENT_COLUMNS = (
@@ -37,6 +38,7 @@ def build_behavior_events(  # noqa: PLR0912, PLR0915
     *,
     outcome_window: int = 8,
     group_col: str | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يحوّل نبضات VP/FSM/امتصاص إلى أحداث مفهومة (سببية من الأعمدة الجاهزة).
 
@@ -47,6 +49,8 @@ def build_behavior_events(  # noqa: PLR0912, PLR0915
         raise ValueError(f"outcome_window must be >= 1, got {outcome_window}")
     if group_col is not None and frame.height > 0 and group_col not in frame.columns:
         raise ValueError(f"group_col is missing: {group_col}")
+    if progress is not None:
+        progress.op(f"build_behavior_events bars={frame.height:,} window={outcome_window}")
     if frame.height == 0 or AVAILABILITY_TS not in frame.columns:
         empty = {c: pl.Series(c, [], dtype=pl.Float64) for c in BEHAVIOR_EVENT_COLUMNS}
         return pl.DataFrame({AVAILABILITY_TS: pl.Series([], dtype=pl.Int64), **empty})
@@ -79,6 +83,8 @@ def build_behavior_events(  # noqa: PLR0912, PLR0915
         active = _array(name) > _ACTIVE_FLAG
         pulse = np.zeros(work.height, dtype=np.float64)
         for idx in range(work.height):
+            if progress is not None:
+                progress.heartbeat(idx + 1, work.height, label=f"evt-pulse-{name}")
             new_group = idx == 0 or groups[idx] != groups[idx - 1]
             was_active = False if new_group else bool(active[idx - 1])
             pulse[idx] = float(bool(active[idx]) and not was_active)
@@ -101,6 +107,8 @@ def build_behavior_events(  # noqa: PLR0912, PLR0915
     pending_break = -1
     pending_retest = -1
     for i in range(work.height):
+        if progress is not None:
+            progress.heartbeat(i + 1, work.height, label="behavior-events")
         if i > 0 and groups[i] != groups[i - 1]:
             pending_break = -1
             pending_retest = -1
@@ -137,6 +145,8 @@ def build_behavior_events(  # noqa: PLR0912, PLR0915
         if abs(retest_a[i]) > 0.0:
             pending_retest = i
 
+    if progress is not None:
+        progress.op(f"behavior_events done bars={work.height:,}")
     breakout = _col("vp_fsm_break").abs() > 0.0
     look_fail = _col("vp_look_fail")
     absorb = _col("vp_absorb")

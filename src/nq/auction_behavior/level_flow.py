@@ -13,6 +13,7 @@ import polars as pl
 from nq.contracts.mbo import PRICE_SCALE, MboAction
 from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.time import sort_causal
+from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket
 
 LEVEL_FLOW_COLUMNS = (
@@ -76,7 +77,11 @@ def _empty(keys: pl.DataFrame) -> pl.DataFrame:
     return base.with_columns(pl.lit(0.0).alias(c) for c in LEVEL_FLOW_COLUMNS)
 
 
-def _order_lifecycle_by_bucket(events: pl.DataFrame) -> pl.DataFrame:  # noqa: PLR0912, PLR0915
+def _order_lifecycle_by_bucket(  # noqa: PLR0912, PLR0915
+    events: pl.DataFrame,
+    *,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
     """آلة حالات سببية عبر البراميل متوافقة مع دلالات MBO في ``OrderBook``.
 
     ``CANCEL.size`` كمية ملغاة وقد يكون جزئيًا، و``TRADE/FILL`` دليل تنفيذ عند
@@ -111,6 +116,9 @@ def _order_lifecycle_by_bucket(events: pl.DataFrame) -> pl.DataFrame:  # noqa: P
     times = work[EVENT_TS].to_list()
     sizes = work["size"].to_list()
     buckets = work[BUCKET_START].to_list()
+    n_events = len(actions)
+    if progress is not None:
+        progress.op(f"order_lifecycle events={n_events:,}")
     prices = work["price"].to_list() if "price" in work.columns else [None] * work.height
     near_flags = (
         work["_near_level"].fill_null(False).to_list()
@@ -132,9 +140,12 @@ def _order_lifecycle_by_bucket(events: pl.DataFrame) -> pl.DataFrame:  # noqa: P
         had_refill.pop(oid, None)
         survived_change.pop(oid, None)
 
-    for action, oid_raw, ts_raw, size_raw, buck_raw, price_raw, near_raw in zip(
-        actions, oids, times, sizes, buckets, prices, near_flags, strict=True
+    for i, (action, oid_raw, ts_raw, size_raw, buck_raw, price_raw, near_raw) in enumerate(
+        zip(actions, oids, times, sizes, buckets, prices, near_flags, strict=True),
+        start=1,
     ):
+        if progress is not None:
+            progress.heartbeat(i, n_events, label="order-lifecycle")
         ts = int(ts_raw)
         size = float(size_raw) if size_raw is not None else 0.0
         buck = int(buck_raw)
@@ -237,12 +248,15 @@ def attach_level_flow_features(  # noqa: PLR0912, PLR0915
     states: pl.DataFrame,
     *,
     config: LevelFlowConfig | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يبني ميزات شدة/بقاء/امتصاص قرب حدود القرار لكل برميل.
 
     يستخدم فقط أحداثًا داخل البرميل ومستويات ``decision_*`` المعروفة عند نهايته.
     """
     cfg = config or LevelFlowConfig()
+    if progress is not None:
+        progress.op(f"level_flow: mbo={mbo.height:,} states={states.height:,}")
     if states.height == 0 or AVAILABILITY_TS not in states.columns:
         return _empty(states)
     need = ("decision_vah", "decision_val", "decision_poc")
@@ -376,9 +390,10 @@ def attach_level_flow_features(  # noqa: PLR0912, PLR0915
         }
     )
     if "order_id" in joined.columns:
-        # افتح lifecycle فقط إذا كان ADD قرب مستوى القرار وقت ظهوره، ثم واصل
-        # تتبعه حتى الإغلاق ولو تحرك decision_* لاحقًا إلى مستوى آخر.
-        life_frame = _order_lifecycle_by_bucket(joined.with_columns(near_any.alias("_near_level")))
+        life_frame = _order_lifecycle_by_bucket(
+            joined.with_columns(near_any.alias("_near_level")),
+            progress=progress,
+        )
 
     def _intensity(count: str) -> pl.Expr:
         return (pl.col(count).cast(pl.Float64) / pl.col("_dur")).fill_null(0.0)
@@ -465,13 +480,16 @@ def attach_level_flow_features(  # noqa: PLR0912, PLR0915
     )
 
     out = out.select(AVAILABILITY_TS, *LEVEL_FLOW_COLUMNS)
-    return (
+    result = (
         states.select(AVAILABILITY_TS)
         .join(out, on=AVAILABILITY_TS, how="left")
         .with_columns(pl.col(c).fill_null(0.0) for c in LEVEL_FLOW_COLUMNS)
         .unique(subset=[AVAILABILITY_TS], keep="last")
         .sort(AVAILABILITY_TS)
     )
+    if progress is not None:
+        progress.op(f"level_flow done bars={result.height:,}")
+    return result
 
 
 __all__ = [

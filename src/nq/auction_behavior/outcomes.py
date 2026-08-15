@@ -15,6 +15,7 @@ import numpy as np
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.research.progress import ProgressLike
 from nq.validation.leakage import assert_availability_not_before_event, assert_causal_order
 
 OUTCOME_AVAILABLE_TS = "outcome_available_ts"
@@ -150,6 +151,7 @@ def build_labeled_outcomes(  # noqa: PLR0912, PLR0915
     outcome_window: int = 8,
     group_col: str | None = None,
     specs: tuple[OutcomeSpec, ...] | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يبني جدول إعداد→نتيجة مع طابعي الإعداد والإتاحة.
 
@@ -200,7 +202,13 @@ def build_labeled_outcomes(  # noqa: PLR0912, PLR0915
     )
 
     rows: list[dict[str, object]] = []
-    for spec in active_specs:
+    n_specs = len(active_specs)
+    if progress is not None:
+        progress.op(f"build_labeled_outcomes bars={n:,} specs={n_specs}")
+    for spec_i, spec in enumerate(active_specs, start=1):
+        if progress is not None:
+            progress.heartbeat(spec_i, n_specs, label="outcome-specs", force=True)
+            progress.op(f"outcome {spec.name} ({spec_i}/{n_specs})")
         trig_names = spec.trigger_cols if spec.trigger_cols else (spec.trigger_col,)
         trigger = np.zeros(n, dtype=bool)
         for col in trig_names:
@@ -208,6 +216,8 @@ def build_labeled_outcomes(  # noqa: PLR0912, PLR0915
         # onset داخل كل مجموعة: الصف الأول من القصة previous=False دائمًا
         onset = np.zeros(n, dtype=bool)
         for i in range(n):
+            if progress is not None:
+                progress.heartbeat(i + 1, n, label=f"onset-{spec.name}")
             if not trigger[i]:
                 continue
             if i == 0 or groups[i] != groups[i - 1] or not trigger[i - 1]:
@@ -220,6 +230,8 @@ def build_labeled_outcomes(  # noqa: PLR0912, PLR0915
             fail |= _active(_col_array(work, col, n))
 
         for i in range(n):
+            if progress is not None:
+                progress.heartbeat(i + 1, n, label=f"outcome-{spec.name}")
             if not onset[i]:
                 continue
             # كم صفًا لاحقًا داخل المجموعة قبل انقطاع القصة؟
@@ -309,6 +321,8 @@ def build_labeled_outcomes(  # noqa: PLR0912, PLR0915
                 )
 
     out = pl.DataFrame(rows) if rows else pl.DataFrame(schema=schema)
+    if progress is not None:
+        progress.op(f"labeled outcomes rows={out.height:,}")
     if out.height:
         # التحقق الزمني على الصفوف المحسومة فقط (censored قد يحمل NaN في y)
         known = out.filter(pl.col("label_status") == "resolved")
