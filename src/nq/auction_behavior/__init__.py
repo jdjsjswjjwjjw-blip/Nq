@@ -9,6 +9,10 @@
 
 from __future__ import annotations
 
+from nq.auction_behavior.path_confirm import (
+    PATH_CONFIRM_COLUMNS,
+    attach_path_depth_confirmation,
+)
 from nq.auction_behavior.pipeline import (
     AuctionBehaviorResult,
     BehaviorConfig,
@@ -31,6 +35,7 @@ from nq.auction_behavior.types import BehaviorProbabilities, BehaviorStateSnapsh
 from nq.auction_behavior.validate import BehaviorValidationReport
 
 __all__ = [
+    "PATH_CONFIRM_COLUMNS",
     "PROJECTION_NUMERIC_COLUMNS",
     "AsiaLondonProjectionConfig",
     "AuctionBehaviorResult",
@@ -40,6 +45,7 @@ __all__ = [
     "BehaviorStateSnapshot",
     "BehaviorValidationReport",
     "ScienceConfig",
+    "attach_path_depth_confirmation",
     "behavior_live_prediction_frame",
     "behavior_oof_prediction_frame",
     "behavior_prediction_frame",

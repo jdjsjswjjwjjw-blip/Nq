@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
+from nq.auction_behavior.path_confirm import PATH_CONFIRM_COLUMNS
 from nq.auction_behavior.projection import PROJECTION_NUMERIC_COLUMNS
 from nq.auction_behavior.types import BehaviorStateSnapshot
 from nq.contracts.temporal import AVAILABILITY_TS
@@ -27,6 +28,7 @@ STATE_FEATURE_COLUMNS = (
     "real_liquidity_ratio",
     "signal_quality",
     *PROJECTION_NUMERIC_COLUMNS,
+    *PATH_CONFIRM_COLUMNS,
 )
 
 

@@ -456,6 +456,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
     )
     n_lf = sum(1 for c in feature_names if c.startswith("lf_"))
     n_rel = sum(1 for c in feature_names if c.startswith("rel_"))
+    n_path = sum(1 for c in feature_names if c.startswith("path_"))
     n_mem = sum(
         1
         for c in feature_names
@@ -494,6 +495,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             "n_final_calibrators": len(final_calibrators),
             "n_level_flow_features": n_lf,
             "n_reliability_features": n_rel,
+            "n_path_features": n_path,
             "n_memory_features": n_mem,
             "n_folds": len(folds),
             "n_oof_prediction_rows": int(conditional_oof_predictions.height),
@@ -515,6 +517,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 "reliability_evidence_no_delete",
                 "family_aware_feature_selection",
                 "asia_london_projection_state",
+                "path_depth_confirmation_no_if",
                 "platt_calibration_causal_tail",
                 "calibration_ece_brier_bss",
                 "walk_forward_unique_setup",

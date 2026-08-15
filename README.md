@@ -587,6 +587,8 @@ if science is not None and science.holdout_eval is not None:
 `proj_asia_coverage_ratio` والعلم في `proj_anchor_complete`.
 إذا لندن لم تكتمل حتى 09:30، `outcome_available_ts` = آخر بار لندن في العينة.
 
+**مسار لندن + عمق (30ث، بلا بوابات `if`):** بعد تجميد آسيا، بارات لندن على فريم الإشارة تقيس باستمرار: كم خرج السعر برة VAH/VAL، أقصى امتداد سببي، التصحيح البسيط بعد ثبات المسار (`path_correction_ticks` — **ليس** ريتست كامل للمنطقة)، وهل العمق يتابع الهجرة أو يدافع عن قيمة آسيا (`path_depth_confirm`). `path_change_progress` / `path_change_fail` أدلة مستمرة ∈[0,1] للنموذج، وليست شروط قبول/رفض. آسيا تبقى أصفارًا على هذه الأعمدة.
+
 ---
 
 ### 4c) من بايثون (API)
