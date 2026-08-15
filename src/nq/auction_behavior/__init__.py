@@ -22,6 +22,7 @@ from nq.auction_behavior.projection import (
     AsiaLondonProjectionConfig,
     build_asia_london_projection,
 )
+from nq.auction_behavior.science import BehaviorScienceReport, ScienceConfig, run_behavior_science
 from nq.auction_behavior.state import latest_state_snapshot, state_matrix
 from nq.auction_behavior.types import BehaviorProbabilities, BehaviorStateSnapshot
 from nq.auction_behavior.validate import BehaviorValidationReport
@@ -32,13 +33,16 @@ __all__ = [
     "AuctionBehaviorResult",
     "BehaviorConfig",
     "BehaviorProbabilities",
+    "BehaviorScienceReport",
     "BehaviorStateSnapshot",
     "BehaviorValidationReport",
+    "ScienceConfig",
     "behavior_probabilities_frame",
     "behavior_probability_summary",
     "behavior_state_frame",
     "build_asia_london_projection",
     "latest_state_snapshot",
     "run_auction_behavior_analysis",
+    "run_behavior_science",
     "state_matrix",
 ]

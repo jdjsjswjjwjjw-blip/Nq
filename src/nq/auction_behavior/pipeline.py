@@ -17,7 +17,7 @@ import numpy as np
 import polars as pl
 
 from nq.auction_behavior.events import BEHAVIOR_EVENT_COLUMNS, build_behavior_events
-from nq.auction_behavior.memory import attach_causal_memory
+from nq.auction_behavior.memory import attach_market_memory
 from nq.auction_behavior.model import estimate_behavior_probabilities
 from nq.auction_behavior.projection import (
     PROJECTION_NUMERIC_COLUMNS,
@@ -25,7 +25,9 @@ from nq.auction_behavior.projection import (
     build_asia_london_projection,
 )
 from nq.auction_behavior.quality import attach_signal_quality
+from nq.auction_behavior.science import BehaviorScienceReport, ScienceConfig, run_behavior_science
 from nq.auction_behavior.state import STATE_FEATURE_COLUMNS, attach_state_vector
+from nq.auction_behavior.structure import STRUCTURE_FEATURE_COLUMNS, attach_structure_features
 from nq.auction_behavior.types import BehaviorProbabilities
 from nq.auction_behavior.validate import (
     TRADE_FORBIDDEN_COLUMNS,
@@ -68,6 +70,9 @@ _MEMORY_BASE_COLS = (
     *PROJECTION_NUMERIC_COLUMNS,
 )
 
+_HOLDOUT_FRAC_MIN = 0.05
+_HOLDOUT_FRAC_MAX = 0.5
+
 
 @dataclass(frozen=True, slots=True)
 class BehaviorConfig:
@@ -84,6 +89,9 @@ class BehaviorConfig:
     memory_lags: tuple[int, ...] = (1, 2, 3, 5)
     outcome_window: int = 8
     include_asia_london_projection: bool = True
+    include_science: bool = True
+    holdout_frac: float = 0.2
+    evaluate_holdout: bool = True
     projection_config: AsiaLondonProjectionConfig = field(
         default_factory=AsiaLondonProjectionConfig
     )
@@ -101,6 +109,10 @@ class BehaviorConfig:
             raise ValueError("all memory_lags must be >= 1")
         if len(set(self.memory_lags)) != len(self.memory_lags):
             raise ValueError("memory_lags must be unique")
+        if not _HOLDOUT_FRAC_MIN <= self.holdout_frac <= _HOLDOUT_FRAC_MAX:
+            raise ValueError(
+                f"holdout_frac must be in [{_HOLDOUT_FRAC_MIN}, {_HOLDOUT_FRAC_MAX}]"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +127,7 @@ class AuctionBehaviorResult:
     session_profiles: pl.DataFrame
     london_scenarios: pl.DataFrame
     projection: pl.DataFrame = field(default_factory=pl.DataFrame)
+    science: BehaviorScienceReport | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -409,7 +422,7 @@ def _london_scenario_summary(states: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(rows) if rows else pl.DataFrame(schema=schema)
 
 
-def run_auction_behavior_analysis(
+def run_auction_behavior_analysis(  # noqa: PLR0915
     mbo: pl.DataFrame,
     *,
     config: BehaviorConfig | None = None,
@@ -543,13 +556,20 @@ def run_auction_behavior_analysis(
     else:
         blended = blended.with_columns(pl.col("real_liquidity_ratio").fill_null(1.0))
 
-    # Attach decision_* for validation visibility (from states; already lagged)
-    decision_cols = [
-        c
-        for c in ("decision_poc", "decision_vah", "decision_val", BUCKET_START)
-        if c in states.columns
-    ]
-    state_decision = states.select(AVAILABILITY_TS, *decision_cols)
+    # Attach decision_* + OHLC for structure FE (from states; decision already lagged)
+    candidate_cols = (
+        "decision_poc",
+        "decision_vah",
+        "decision_val",
+        BUCKET_START,
+        "close",
+        "high",
+        "low",
+        "open",
+        VP_LIQUIDITY_SESSION,
+    )
+    join_cols = [c for c in candidate_cols if c in states.columns and c not in blended.columns]
+    state_decision = states.select(AVAILABILITY_TS, *join_cols)
     blended = blended.join(state_decision, on=AVAILABILITY_TS, how="left")
     blended = _with_session_runs(blended)
     blended = _attach_projection(blended, projection)
@@ -561,20 +581,27 @@ def run_auction_behavior_analysis(
         group_col="_behavior_story_run",
     )
 
-    # Layers 7–9: quality → memory → state vector
+    # Layers 7–9 + structure FE + richer memory
     blended = attach_signal_quality(blended)
-    mem_cols = [c for c in _MEMORY_BASE_COLS if c in blended.columns]
-    blended = attach_causal_memory(
+    blended = attach_structure_features(blended)
+    mem_cols = [c for c in (*_MEMORY_BASE_COLS, *STRUCTURE_FEATURE_COLUMNS) if c in blended.columns]
+    event_mem = [
+        c
+        for c in ("vp_fsm_break", "vp_fsm_retest", "vp_look_fail", "vp_absorb")
+        if c in blended.columns
+    ]
+    blended = attach_market_memory(
         blended,
         columns=mem_cols,
         lags=cfg.memory_lags,
         group_col="_behavior_story_run",
+        event_columns=event_mem,
     )
     blended = attach_state_vector(blended)
     _assert_no_trade_columns(blended)
     _assert_no_trade_columns(events)
 
-    # Layers 10–11: probabilistic model + purged OOS + validation
+    # Layers 10–11: base-rate OOS + science stack (1–9)
     probs, fold_metrics = estimate_behavior_probabilities(
         blended,
         events,
@@ -583,6 +610,23 @@ def run_auction_behavior_analysis(
         purge_samples=cfg.purge_samples,
         min_train_size=cfg.min_train_size,
     )
+    science: BehaviorScienceReport | None = None
+    if cfg.include_science:
+        science = run_behavior_science(
+            blended,
+            config=ScienceConfig(
+                outcome_window=cfg.outcome_window,
+                n_splits=cfg.n_splits,
+                embargo=cfg.embargo,
+                purge_samples=cfg.purge_samples,
+                min_train_size=cfg.min_train_size,
+                holdout_frac=cfg.holdout_frac,
+                evaluate_holdout=cfg.evaluate_holdout,
+                group_col="_behavior_story_run",
+            ),
+        )
+        if science.fold_frame.height:
+            fold_metrics = science.fold_frame
     validation = validate_behavior_frame(blended, fold_df=fold_metrics)
 
     diagnostics: dict[str, Any] = {
@@ -592,14 +636,18 @@ def run_auction_behavior_analysis(
         "n_events": int(events.height),
         "n_behavior_event_cols": len(BEHAVIOR_EVENT_COLUMNS),
         "n_state_feature_cols": len(STATE_FEATURE_COLUMNS),
+        "n_structure_feature_cols": len(STRUCTURE_FEATURE_COLUMNS),
         "n_projection_bars": int(projection.height),
         "deceptive_scored_rows": scored_rows,
         "deceptive_filtered": False,
+        "science": None if science is None else science.diagnostics,
         "causality": {
             "decision_columns_required": True,
             "profile_to_signal": "backward_asof_inside_auction_action_states",
             "deceptive_deletion": False,
             "validation": "purged_walk_forward",
+            "outcomes": "outcome_available_ts_gated",
+            "holdout": "frozen_final_tail",
             "trade_outputs": False,
         },
         "config": {
@@ -612,6 +660,8 @@ def run_auction_behavior_analysis(
             "purge_samples": cfg.purge_samples,
             "outcome_window": cfg.outcome_window,
             "include_asia_london_projection": cfg.include_asia_london_projection,
+            "include_science": cfg.include_science,
+            "holdout_frac": cfg.holdout_frac,
             "projection_interval_ns": cfg.projection_config.interval_ns,
             "memory_scope": "asia_london_story_then_reset_at_new_york_or_new_day",
         },
@@ -626,6 +676,7 @@ def run_auction_behavior_analysis(
         session_profiles=session_profiles,
         london_scenarios=london_scenarios,
         projection=projection,
+        science=science,
         diagnostics=diagnostics,
     )
 

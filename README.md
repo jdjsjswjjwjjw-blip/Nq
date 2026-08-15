@@ -494,33 +494,55 @@ python scripts/run_week.py \
 | 7 | ذاكرة سوقية | `shift(k)` خلفي فقط (`k≥1`)؛ قصة آسيا+لندن متصلة، والتصفير عند نيويورك/يوم جديد |
 | 8–9 | جودة إشارة + متجه حالة | بلا تحجيم صفقة |
 | 10–11 | توقعات base-rate تجريبية + تحقق | الاحتمال من train فقط؛ OOS للمعايرة/Brier فقط · بلا `edge_*` |
+| علم 1–9 | نموذج شرطي + outcomes + FE + ذاكرة + إسقاط + ECE + WF + drift + holdout مجمّد | `outcome_available_ts` · holdout ذيل زمني لم يُلمَس في التطوير · PSI/استقرار |
 
 ```python
 from nq.auction_behavior import (
     AsiaLondonProjectionConfig,
     BehaviorConfig,
+    ScienceConfig,
     behavior_probability_summary,
     behavior_state_frame,
     run_auction_behavior_analysis,
+    run_behavior_science,
 )
 
 result = run_auction_behavior_analysis(
     mbo_frame,
-    config=BehaviorConfig(include_deceptive_scores=True),  # درجات فقط، بلا حذف
+    config=BehaviorConfig(
+        include_deceptive_scores=True,  # درجات فقط، بلا حذف
+        include_science=True,           # طبقة العلم 1–9
+        holdout_frac=0.2,               # ذيل مجمّد
+        evaluate_holdout=True,          # تقييم واحد فقط
+    ),
 )
 print(result.probabilities)          # p_true_break / p_false_break / …
 print(behavior_probability_summary(result))  # صف واحد + available_after_ts
 states = behavior_state_frame(result)        # حالة زمنية؛ ليست احتمالات per-row
 projection = result.projection               # Asia build → London extend كل 3 دقائق
+science = result.science                     # معايرة · drift · holdout
 assert result.validation.ok
 assert result.diagnostics["deceptive_filtered"] is False
 assert "entry_gate" not in result.blended.columns
+if science is not None and science.holdout_eval is not None:
+    print(science.holdout_eval.ece, science.drift_summary)
 ```
 
 > هذه الطبقة **لا تستبدل** `run_vp_auction` (مسار التنفيذ/R:R). هي مسار فهم سابق
 > لقرارات التداول، فوق نفس `decision_*` و`join_asof(..., backward)`.
-> والاحتمالات الحالية **baseline مجمّع وليست نموذجًا شرطيًا لكل حالة**؛ لا تُستخدم
-> مباشرة كمكافأة RL أو كقرار تداول قبل إضافة نموذج معاير على مستوى الحالة.
+> طبقة العلم تضيف نموذجًا شرطيًا (لوجستي L2) على إعدادات موسومة بـ
+> ``setup_availability_ts`` / ``outcome_available_ts``، مع Holdout نهائي يُقاس مرة واحدة.
+
+**خطوات العلم (1–9):**
+1. Conditional logistic على حالة الإعداد  
+2. نتائج موسومة + `outcome_available_ts`  
+3. FE بنيوي حول `decision_*` / HVN (`struct_*`)  
+4. ذاكرة أغنى: lags + rolling ماضي صارم + عدّادات أحداث  
+5. Asia→London projection داخل متجه الحالة  
+6. معايرة ECE + Brier  
+7. Walk-forward زمني/شهري/متعدد العقود (على التطوير فقط)  
+8. Drift (PSI) + استقرار عبر الطيّات  
+9. Final frozen holdout — رفض إعادة اللمس  
 
 **إسقاط آسيا→لندن:** يبني `build_asia_london_projection` ملف آسيا تراكميًا بلا
 تصفير، ويجمّده عند أول برميل لندن كـ`asia_poc/vah/val/HVN`. بعد ذلك يضيف كل
@@ -770,7 +792,8 @@ Nq/
 * `nq.strategies` — `run_fail_fvg_research` / `search_fail_fvg_hypotheses` /
   `run_fail_breakout_research` / `search_fail_breakout_hypotheses` /
   `generate_depth_entry_candidates` / `run_vp_auction_research`
-* `nq.auction_behavior` — `run_auction_behavior_analysis` (Phase‑1: احتمالات سلوك بلا تداول)
+* `nq.auction_behavior` — `run_auction_behavior_analysis` + `run_behavior_science`
+  (Phase‑1 فهم + علم 1–9: شرطي/معايرة/drift/holdout مجمّد · بلا تداول)
 * `nq.coverage` — MFIG/CER/PSG/CRS/LORI/QDUF؛ كتل `failed_breakout` + `order_book_depth` + VP
 * `nq.validation` — `detect_leakage_by_perturbation`, `assert_availability_not_before_event`
 
