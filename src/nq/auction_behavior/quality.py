@@ -37,13 +37,23 @@ def attach_signal_quality(frame: pl.DataFrame) -> pl.DataFrame:
         + (_f("vp_absorb").abs() > 0.0).cast(pl.Float64) * 0.10
         + (_f("vp_pullback_defense") > _ACTIVE_FLAG).cast(pl.Float64) * 0.05
     )
-    # توافق أوردرفلو مبكر مع البروفايل + سيولة حقيقية منخفضة التضليل.
-    flow_align = (
-        (_f("vp_early_imbalance").abs() > 0.0).cast(pl.Float64) * 0.15
-        + (_f("real_liquidity_ratio", 0.5).clip(0.0, 1.0) * 0.10)
-        + ((1.0 - _f("deceptive_score", 0.0).clip(0.0, 1.0)) * 0.10)
+    # الثقة في السيولة تعدّل الدليل البنيوي ولا تُنشئ دليلاً من لا شيء.
+    early_flow = (_f("vp_early_imbalance").abs() > 0.0).cast(pl.Float64) * 0.15
+    rejection = (_f("vp_look_fail").abs() > 0.0).cast(pl.Float64) * 0.15
+    projection_story = (
+        (_f("proj_expansion_testing") > _ACTIVE_FLAG).cast(pl.Float64) * 0.05
+        + (_f("proj_expansion_accepting") > _ACTIVE_FLAG).cast(pl.Float64) * 0.12
+        + (_f("proj_value_transferred") > _ACTIVE_FLAG).cast(pl.Float64) * 0.15
+        + (_f("proj_rejection_to_asia") > _ACTIVE_FLAG).cast(pl.Float64) * 0.10
     )
-    quality = (break_strength + retest_q + flow_align).clip(0.0, 1.0)
+    evidence = (break_strength + retest_q + early_flow + rejection + projection_story).clip(
+        0.0, 1.0
+    )
+    liquidity_reliability = (
+        _f("real_liquidity_ratio", 0.5).clip(0.0, 1.0) * 0.5
+        + (1.0 - _f("deceptive_score", 0.5).clip(0.0, 1.0)) * 0.5
+    )
+    quality = (evidence * (0.5 + 0.5 * liquidity_reliability)).clip(0.0, 1.0)
     return work.with_columns(quality.alias("signal_quality"))
 
 
