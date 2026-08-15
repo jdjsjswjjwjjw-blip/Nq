@@ -57,6 +57,10 @@ class VpLiquiditySession(IntEnum):
     NEW_YORK = 2
 
 
+def _dt_to_ns(local: dt.datetime) -> int:
+    return int(local.timestamp() * 1_000_000_000)
+
+
 def vp_liquidity_session_from_ns(ts_ns: int) -> int:
     """يصنّف الطابع إلى آسيا/لندن/نيويورك بتوقيت America/New_York (سببي)."""
     local = dt.datetime.fromtimestamp(ts_ns / 1e9, tz=_ET).time()
@@ -65,6 +69,42 @@ def vp_liquidity_session_from_ns(ts_ns: int) -> int:
     if local < _NY_START:
         return int(VpLiquiditySession.LONDON)
     return int(VpLiquiditySession.NEW_YORK)
+
+
+def vp_liquidity_session_bounds_ns(ts_ns: int) -> tuple[int, int]:
+    """حدود تقويمية نصف-مفتوحة ``[start, end)`` لجلسة السيولة التي تحتوي ``ts_ns``."""
+    local = dt.datetime.fromtimestamp(ts_ns / 1e9, tz=_ET)
+    day = local.date()
+    clock = local.time()
+    if clock >= _ASIA_START:
+        start = dt.datetime.combine(day, _ASIA_START, tzinfo=_ET)
+        end = dt.datetime.combine(day + dt.timedelta(days=1), _LONDON_START, tzinfo=_ET)
+    elif clock < _LONDON_START:
+        start = dt.datetime.combine(day - dt.timedelta(days=1), _ASIA_START, tzinfo=_ET)
+        end = dt.datetime.combine(day, _LONDON_START, tzinfo=_ET)
+    elif clock < _NY_START:
+        start = dt.datetime.combine(day, _LONDON_START, tzinfo=_ET)
+        end = dt.datetime.combine(day, _NY_START, tzinfo=_ET)
+    else:
+        start = dt.datetime.combine(day, _NY_START, tzinfo=_ET)
+        end = dt.datetime.combine(day, _ASIA_START, tzinfo=_ET)
+    return _dt_to_ns(start), _dt_to_ns(end)
+
+
+def clip_zone_start_ns(ts_ns: int, data_start_ns: int) -> int:
+    """بداية الزون داخل العينة: ``max(افتتاح الجلسة، أول تايمستامب في الداتا)``."""
+    calendar_start, _ = vp_liquidity_session_bounds_ns(ts_ns)
+    return max(int(calendar_start), int(data_start_ns))
+
+
+def clip_zone_end_ns(ts_ns: int, data_end_ns: int) -> int:
+    """نهاية الزون داخل العينة: ``min(إغلاق الجلسة، آخر تايمستامب في الداتا)``.
+
+    إذا الملف مقصوص قبل نهاية لندن (أو أي زون)، الزون تُقفَل عند آخر حدث
+    متاح وليست عند النهاية التقويمية 09:30/18:00.
+    """
+    _, calendar_end = vp_liquidity_session_bounds_ns(ts_ns)
+    return min(int(calendar_end), int(data_end_ns))
 
 
 def vp_liquidity_session_label(session_id: int) -> str:
@@ -142,9 +182,12 @@ __all__ = [
     "SessionPhase",
     "VpLiquiditySession",
     "add_session_columns",
+    "clip_zone_end_ns",
+    "clip_zone_start_ns",
     "minutes_since_rth_open_from_ns",
     "session_date_from_ns",
     "session_phase_from_ns",
+    "vp_liquidity_session_bounds_ns",
     "vp_liquidity_session_from_ns",
     "vp_liquidity_session_label",
 ]

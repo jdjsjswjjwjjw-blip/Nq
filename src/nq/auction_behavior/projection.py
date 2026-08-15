@@ -3,6 +3,11 @@
 يبقى ملف آسيا مرساة ثابتة، بينما يمتد ملف مركّب من بداية آسيا إلى نهاية كل
 برميل مكتمل في لندن. لا يوجد تصفير عند انتقال آسيا→لندن، ولا تُنسب نتيجة
 برميل لندن إلى وقت أسبق من ``bucket_end``.
+
+إذا الملف مقصوص: كل زون تُقفَل عند آخر تايمستامب متاح
+(``min(نهاية الجلسة التقويمية، نهاية الداتا)``). تغطية آسيا تُقاس على النافذة
+الموجودة في الملف، لا على 9 ساعات تقويمية ثابتة. فجوات *داخل* النافذة ما زالت
+تخفّض ``proj_asia_coverage_ratio``.
 """
 
 from __future__ import annotations
@@ -18,6 +23,8 @@ from nq.contracts.temporal import AVAILABILITY_TS, EVENT_TS
 from nq.core.session import (
     VP_LIQUIDITY_SESSION,
     VpLiquiditySession,
+    clip_zone_end_ns,
+    clip_zone_start_ns,
     session_date_from_ns,
     vp_liquidity_session_from_ns,
 )
@@ -174,6 +181,14 @@ def _phase(
     return "expansion_testing"
 
 
+def _expected_observed_buckets(span_start: int, span_end: int, interval_ns: int) -> int:
+    """عدد البراميل المتوقعة داخل نافذة العينة (بعد قصّ بداية/نهاية الملف)."""
+    width = int(span_end) - int(span_start)
+    if width <= 0:
+        return 1
+    return max(1, width // int(interval_ns))
+
+
 def _bucket_groups(
     frame: pl.DataFrame,
     *,
@@ -289,6 +304,7 @@ def build_asia_london_projection(  # noqa: PLR0912, PLR0915
         migration_steps: list[float] = []
         repricing_stable = 0
         asia_bucket_count = 0
+        asia_span_start: int | None = None
         asia_coverage = 0.0
         anchor_complete = False
 
@@ -301,12 +317,17 @@ def build_asia_london_projection(  # noqa: PLR0912, PLR0915
             session_id = int(bucket[VP_LIQUIDITY_SESSION][0])
             if session_id == london_id and anchor is None:
                 anchor = running.value_area()
-                expected_asia_buckets = max(
-                    1,
-                    round((9 * 60 * 60 * 1_000_000_000) / cfg.interval_ns),
-                )
-                asia_coverage = min(1.0, asia_bucket_count / expected_asia_buckets)
-                anchor_complete = asia_coverage >= cfg.min_asia_coverage_ratio
+                if asia_span_start is None or asia_bucket_count == 0:
+                    asia_coverage = 0.0
+                    anchor_complete = False
+                else:
+                    observed_start = clip_zone_start_ns(asia_span_start, asia_span_start)
+                    observed_end = clip_zone_end_ns(asia_span_start, bucket_start)
+                    expected_asia_buckets = _expected_observed_buckets(
+                        observed_start, observed_end, cfg.interval_ns
+                    )
+                    asia_coverage = min(1.0, asia_bucket_count / expected_asia_buckets)
+                    anchor_complete = asia_coverage >= cfg.min_asia_coverage_ratio
                 if anchor is not None:
                     anchor_primary, anchor_hvns = _primary_hvn(running, anchor)
             for price, size in bucket.select("price", "size").iter_rows():
@@ -332,6 +353,8 @@ def build_asia_london_projection(  # noqa: PLR0912, PLR0915
             low = int(np.asarray(low_value).item())
             bucket_end = int(bucket[BUCKET_END][0])
             if session_id == asia_id:
+                if asia_span_start is None:
+                    asia_span_start = bucket_start
                 asia_bucket_count += 1
                 rows.append(
                     _asia_row(

@@ -435,6 +435,7 @@ def test_session_summaries_do_not_merge_repeated_sessions() -> None:
 
 
 def test_london_realized_outcome_has_end_availability() -> None:
+    """لندن المقصوصة تُقفَل عند آخر بار في العينة، لا عند 09:30 التقويمي."""
     states = pl.DataFrame(
         {
             AVAILABILITY_TS: [10, 20, 30, 40],

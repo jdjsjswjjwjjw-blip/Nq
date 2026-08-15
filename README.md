@@ -576,12 +576,16 @@ if science is not None and science.holdout_eval is not None:
 | `expansion_accepting` | الحجم خارج قيمة آسيا وهجرة القيمة يتفقان مع اتجاه التوسع |
 | `rejection_return_to_asia` | عاد السعر إلى قيمة آسيا قبل انتقال القيمة |
 | `repriced_balance` | انتقل POC/HVN، انخفض تداخل VA، ثم استقر الملف الجديد |
-| `incomplete_asia_anchor` | تغطية آسيا غير كافية؛ لا يُسمح باستنتاج قبول/انتقال |
+| `incomplete_asia_anchor` | فجوات داخل نافذة آسيا الموجودة في الملف؛ لا يُسمح باستنتاج قبول/انتقال |
 
 كل حالة تُنشر عند `bucket_end` فقط. الافتراضي ثلاث دقائق ويمكن تغييره عبر
 `BehaviorConfig(projection_config=AsiaLondonProjectionConfig(interval_ns=...))`.
-المرساة لا تُعد مكتملة افتراضيًا إلا عند تغطية 80% على الأقل من براميل آسيا؛
-تظهر النسبة في `proj_asia_coverage_ratio` والعلم في `proj_anchor_complete`.
+المرساة لا تُعد مكتملة افتراضيًا إلا عند تغطية 80% على الأقل من براميل آسيا
+**داخل نافذة الملف** (من أول بار آسيا موجود حتى `min(03:00 ET، نهاية الداتا)`)،
+وليست مقابل 9 ساعات تقويمية. قصّ بداية/نهاية الملف يقفل الزون عند آخر
+تايمستامب متاح؛ الفجوات داخل النافذة ما زالت تُسقط التغطية. تظهر النسبة في
+`proj_asia_coverage_ratio` والعلم في `proj_anchor_complete`.
+إذا لندن لم تكتمل حتى 09:30، `outcome_available_ts` = آخر بار لندن في العينة.
 
 ---
 

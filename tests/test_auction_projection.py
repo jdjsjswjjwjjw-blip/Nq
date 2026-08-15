@@ -154,3 +154,33 @@ def test_default_marks_partial_asia_as_incomplete_anchor() -> None:
     assert set(london["auction_phase"].to_list()) == {"incomplete_asia_anchor"}
     assert london["proj_anchor_complete"].sum() == 0.0
     assert london["proj_expansion_active"].sum() == 0.0
+
+
+def _dense_truncated_asia_london_stream() -> pl.DataFrame:
+    """آسيا كثيفة من 20:00 ET (ملف مقصوص) حتى 03:00، ثم لندن قصيرة حتى 05:00."""
+    events: list[tuple[str, str, int, int, int]] = []
+    times: list[int] = []
+    asia = _ns_et(2024, 6, 3, 20, 0)
+    london = _ns_et(2024, 6, 4, 3, 0)
+    london_end = _ns_et(2024, 6, 4, 5, 0)
+    t = asia
+    while t < london:
+        events.append(("T", "B", _BASE, 2, 0))
+        times.append(t)
+        t += 3 * _MINUTE
+    t = london
+    while t < london_end:
+        events.append(("T", "B", _BASE + 8 * _TICK, 3, 0))
+        times.append(t)
+        t += 3 * _MINUTE
+    return make_stream(events, event_ts=times, sequence=list(range(1, len(events) + 1)))
+
+
+def test_truncated_file_window_completes_dense_asia_anchor() -> None:
+    projection = build_asia_london_projection(_dense_truncated_asia_london_stream())
+    london = projection.filter(pl.col("projection_stage") == "london_extend")
+    assert london.height > 0
+    assert float(london["proj_asia_coverage_ratio"][0]) >= 0.80
+    assert float(london["proj_anchor_complete"][0]) == 1.0
+    assert "incomplete_asia_anchor" not in set(london["auction_phase"].to_list())
+    assert int(london[AVAILABILITY_TS][-1]) < _ns_et(2024, 6, 4, 9, 30)
