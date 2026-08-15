@@ -100,6 +100,7 @@ def test_intensive_purged_folds_respect_temporal_order() -> None:
             signal_interval_ns=200,
             fixed_range=False,
             include_deceptive_scores=False,
+            include_science=False,
             n_splits=5,
             embargo=1,
             purge_samples=1,

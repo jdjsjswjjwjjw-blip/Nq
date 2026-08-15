@@ -489,38 +489,67 @@ python scripts/run_week.py \
 |------|---------|-------------|
 | 1–2 | حالات مزاد + منظوران للملف: جلسة مستقلة وAsia→London ممتد | القرار المحلي = `decision_*`؛ مرساة آسيا ثابتة والملف المركب لا يُصفّر في لندن |
 | 3 | سيناريو لندن مقابل ملف آسيا المكتمل (وصفي) | نتيجة مدى لندن تحمل `outcome_available_ts` عند نهاية الجلسة |
-| 4 | نية أوردرفلو (درجات تضليل) | **درجات فقط** — لا `filter_deceptive_liquidity` |
+| 4 | نية أوردرفلو + موثوقية إحصائية + تدفق عند المستويات | **درجات/evidence فقط** — لا حذف أوامر وهمية؛ Raw MBO يبقى |
 | 5–6 | دمج إشارات VP/FSM + أحداث سلوكية | نتيجة الكسر/الريتست تُنبض حين تصبح معروفة؛ `vp_fr_exit` قبول لا فشل |
-| 7 | ذاكرة سوقية | `shift(k)` خلفي فقط (`k≥1`)؛ قصة آسيا+لندن متصلة، والتصفير عند نيويورك/يوم جديد |
-| 8–9 | جودة إشارة + متجه حالة | بلا تحجيم صفقة |
-| 10–11 | توقعات base-rate تجريبية + تحقق | الاحتمال من train فقط؛ OOS للمعايرة/Brier فقط · بلا `edge_*` |
+| 7 | ذاكرة سوقية | lags + rolling ماضي + `mem_time_since_*` / dwell / هجرة POC·HVN؛ قصة آسيا+لندن |
+| 8–9 | جودة إشارة (evidence) + متجه حالة | `signal_quality ≠` احتمال معاير |
+| 10–11 | base-rate تجريبي + علم شرطي | State(t)→probs؛ التدريب على علاقات؛ OOS للمعايرة فقط · بلا `edge_*` |
+| علم | نموذج شرطي + targets صارمة + ECE + WF + drift + holdout | `outcome_available_ts` · فصل `behavior_state_frame` عن `behavior_prediction_frame` |
 
 ```python
 from nq.auction_behavior import (
     AsiaLondonProjectionConfig,
     BehaviorConfig,
+    ScienceConfig,
+    behavior_prediction_frame,
     behavior_probability_summary,
     behavior_state_frame,
     run_auction_behavior_analysis,
+    run_behavior_science,
 )
 
 result = run_auction_behavior_analysis(
     mbo_frame,
-    config=BehaviorConfig(include_deceptive_scores=True),  # درجات فقط، بلا حذف
+    config=BehaviorConfig(
+        include_deceptive_scores=True,  # درجات فقط، بلا حذف
+        include_level_flow=True,        # شدة/بقاء قرب VAH·VAL·POC·HVN
+        include_reliability_evidence=True,  # credibility evidence، بلا حذف
+        include_science=True,           # طبقة العلم
+        holdout_frac=0.2,
+        evaluate_holdout=True,
+    ),
 )
-print(result.probabilities)          # p_true_break / p_false_break / …
-print(behavior_probability_summary(result))  # صف واحد + available_after_ts
-states = behavior_state_frame(result)        # حالة زمنية؛ ليست احتمالات per-row
-projection = result.projection               # Asia build → London extend كل 3 دقائق
+print(result.probabilities)
+print(behavior_probability_summary(result))  # ملخص؛ confidence ≠ calibrated p
+states = behavior_state_frame(result)        # «ما الذي أعرفه الآن؟»
+preds = behavior_prediction_frame(result)    # «ماذا أتوقع؟» p_y_* شرطية
+projection = result.projection
+science = result.science
 assert result.validation.ok
 assert result.diagnostics["deceptive_filtered"] is False
+assert result.diagnostics["signal_quality_is_calibrated_probability"] is False
 assert "entry_gate" not in result.blended.columns
+if science is not None and science.holdout_eval is not None:
+    print(science.holdout_eval.ece, science.drift_summary)
 ```
 
 > هذه الطبقة **لا تستبدل** `run_vp_auction` (مسار التنفيذ/R:R). هي مسار فهم سابق
 > لقرارات التداول، فوق نفس `decision_*` و`join_asof(..., backward)`.
-> والاحتمالات الحالية **baseline مجمّع وليست نموذجًا شرطيًا لكل حالة**؛ لا تُستخدم
-> مباشرة كمكافأة RL أو كقرار تداول قبل إضافة نموذج معاير على مستوى الحالة.
+> النموذج الشرطي يتعلّم `State(t) → P(outcome)`؛ التسميات تُحل عند
+> ``outcome_available_ts`` ولا تدخل في حساب الاحتمال وقت التنبؤ.
+> الأهداف الأساسية: `y_expansion_accepting` · `y_rejection_return_to_asia` ·
+> `y_repriced_balance`.
+
+**خطوات العلم:**
+1. Conditional logistic: State(t) → احتمالات شرطية (بلا تسميات OOS داخل p)  
+2. نتائج موسومة + `outcome_available_ts` (onset → حل لاحق)  
+3. FE بنيوي حول `decision_*` / HVN (`struct_*`)  
+4. ذاكرة: lags + rolling + تسلسل (`mem_time_since_*`, dwell, هجرة)  
+5. Level-anchored OF + reliability evidence (Raw MBO محفوظ)  
+6. Asia→London projection داخل متجه الحالة  
+7. معايرة ECE + Brier (احتمال معاير ≠ signal_quality)  
+8. Walk-forward على التطوير فقط  
+9. Drift (PSI) + استقرار · Final frozen holdout مرة واحدة  
 
 **إسقاط آسيا→لندن:** يبني `build_asia_london_projection` ملف آسيا تراكميًا بلا
 تصفير، ويجمّده عند أول برميل لندن كـ`asia_poc/vah/val/HVN`. بعد ذلك يضيف كل
@@ -770,7 +799,8 @@ Nq/
 * `nq.strategies` — `run_fail_fvg_research` / `search_fail_fvg_hypotheses` /
   `run_fail_breakout_research` / `search_fail_breakout_hypotheses` /
   `generate_depth_entry_candidates` / `run_vp_auction_research`
-* `nq.auction_behavior` — `run_auction_behavior_analysis` (Phase‑1: احتمالات سلوك بلا تداول)
+* `nq.auction_behavior` — `run_auction_behavior_analysis` + `run_behavior_science`
+  (Phase‑1 فهم + علم 1–9: شرطي/معايرة/drift/holdout مجمّد · بلا تداول)
 * `nq.coverage` — MFIG/CER/PSG/CRS/LORI/QDUF؛ كتل `failed_breakout` + `order_book_depth` + VP
 * `nq.validation` — `detect_leakage_by_perturbation`, `assert_availability_not_before_event`
 

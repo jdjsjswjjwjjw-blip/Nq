@@ -17,7 +17,12 @@ import numpy as np
 import polars as pl
 
 from nq.auction_behavior.events import BEHAVIOR_EVENT_COLUMNS, build_behavior_events
-from nq.auction_behavior.memory import attach_causal_memory
+from nq.auction_behavior.level_flow import (
+    LEVEL_FLOW_COLUMNS,
+    LevelFlowConfig,
+    attach_level_flow_features,
+)
+from nq.auction_behavior.memory import attach_market_memory, attach_sequence_memory
 from nq.auction_behavior.model import estimate_behavior_probabilities
 from nq.auction_behavior.projection import (
     PROJECTION_NUMERIC_COLUMNS,
@@ -25,7 +30,10 @@ from nq.auction_behavior.projection import (
     build_asia_london_projection,
 )
 from nq.auction_behavior.quality import attach_signal_quality
+from nq.auction_behavior.reliability import RELIABILITY_COLUMNS, attach_reliability_evidence
+from nq.auction_behavior.science import BehaviorScienceReport, ScienceConfig, run_behavior_science
 from nq.auction_behavior.state import STATE_FEATURE_COLUMNS, attach_state_vector
+from nq.auction_behavior.structure import STRUCTURE_FEATURE_COLUMNS, attach_structure_features
 from nq.auction_behavior.types import BehaviorProbabilities
 from nq.auction_behavior.validate import (
     TRADE_FORBIDDEN_COLUMNS,
@@ -65,8 +73,16 @@ _MEMORY_BASE_COLS = (
     "signal_quality",
     "deceptive_score",
     "real_liquidity_ratio",
+    "rel_credibility",
+    "rel_evidence_strength",
+    "lf_absorption_proxy",
+    "lf_liquidity_withdrawal",
+    "lf_arrival_intensity",
     *PROJECTION_NUMERIC_COLUMNS,
 )
+
+_HOLDOUT_FRAC_MIN = 0.05
+_HOLDOUT_FRAC_MAX = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +93,8 @@ class BehaviorConfig:
     signal_interval_ns: int = VP_SIGNAL_INTERVAL_NS
     fixed_range: bool = True
     include_deceptive_scores: bool = True
+    include_level_flow: bool = True
+    include_reliability_evidence: bool = True
     n_splits: int = 3
     embargo: int = 0
     purge_samples: int = 1
@@ -84,6 +102,9 @@ class BehaviorConfig:
     memory_lags: tuple[int, ...] = (1, 2, 3, 5)
     outcome_window: int = 8
     include_asia_london_projection: bool = True
+    include_science: bool = True
+    holdout_frac: float = 0.2
+    evaluate_holdout: bool = True
     projection_config: AsiaLondonProjectionConfig = field(
         default_factory=AsiaLondonProjectionConfig
     )
@@ -101,6 +122,8 @@ class BehaviorConfig:
             raise ValueError("all memory_lags must be >= 1")
         if len(set(self.memory_lags)) != len(self.memory_lags):
             raise ValueError("memory_lags must be unique")
+        if not _HOLDOUT_FRAC_MIN <= self.holdout_frac <= _HOLDOUT_FRAC_MAX:
+            raise ValueError(f"holdout_frac must be in [{_HOLDOUT_FRAC_MIN}, {_HOLDOUT_FRAC_MAX}]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +138,9 @@ class AuctionBehaviorResult:
     session_profiles: pl.DataFrame
     london_scenarios: pl.DataFrame
     projection: pl.DataFrame = field(default_factory=pl.DataFrame)
+    science: BehaviorScienceReport | None = None
+    #: إطار تنبؤ منفصل: State(t)→p(outcome|state) — ليس behavior_state_frame.
+    predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -409,7 +435,7 @@ def _london_scenario_summary(states: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(rows) if rows else pl.DataFrame(schema=schema)
 
 
-def run_auction_behavior_analysis(
+def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
     mbo: pl.DataFrame,
     *,
     config: BehaviorConfig | None = None,
@@ -497,15 +523,31 @@ def run_auction_behavior_analysis(
     # Layer 4: order-flow intention via deceptive scores — raw path, no deletion
     deceptive_bucket = pl.DataFrame()
     scored_rows = 0
-    if cfg.include_deceptive_scores:
+    scored: pl.DataFrame | None = None
+    reliability = pl.DataFrame()
+    level_flow = pl.DataFrame()
+    if cfg.include_deceptive_scores or cfg.include_reliability_evidence:
         score_src = score_mbo if score_mbo is not None else mbo
         scored = score_deceptive_events(score_src)
         scored_rows = int(scored.height)
         # Intentionally do NOT call filter_deceptive_liquidity.
-        deceptive_bucket = deceptive_features_by_bucket(
-            score_src,
-            interval_ns=cfg.signal_interval_ns,
-            scored=scored,
+        if cfg.include_deceptive_scores:
+            deceptive_bucket = deceptive_features_by_bucket(
+                score_src,
+                interval_ns=cfg.signal_interval_ns,
+                scored=scored,
+            )
+        if cfg.include_reliability_evidence:
+            reliability = attach_reliability_evidence(
+                score_src,
+                interval_ns=cfg.signal_interval_ns,
+                scored=scored,
+            )
+    if cfg.include_level_flow:
+        level_flow = attach_level_flow_features(
+            mbo if score_mbo is None else score_mbo,
+            states,
+            config=LevelFlowConfig(interval_ns=cfg.signal_interval_ns),
         )
 
     # Layers 5–6: VP/FSM signals + behavior events
@@ -543,13 +585,38 @@ def run_auction_behavior_analysis(
     else:
         blended = blended.with_columns(pl.col("real_liquidity_ratio").fill_null(1.0))
 
-    # Attach decision_* for validation visibility (from states; already lagged)
-    decision_cols = [
-        c
-        for c in ("decision_poc", "decision_vah", "decision_val", BUCKET_START)
-        if c in states.columns
-    ]
-    state_decision = states.select(AVAILABILITY_TS, *decision_cols)
+    if reliability.height > 0 and AVAILABILITY_TS in reliability.columns:
+        rel_cols = [c for c in (AVAILABILITY_TS, *RELIABILITY_COLUMNS) if c in reliability.columns]
+        blended = blended.join(reliability.select(rel_cols), on=AVAILABILITY_TS, how="left")
+        blended = blended.with_columns(
+            pl.col(c).fill_null(0.0) for c in RELIABILITY_COLUMNS if c in blended.columns
+        )
+    else:
+        blended = blended.with_columns(pl.lit(0.0).alias(c) for c in RELIABILITY_COLUMNS)
+
+    if level_flow.height > 0 and AVAILABILITY_TS in level_flow.columns:
+        lf_cols = [c for c in (AVAILABILITY_TS, *LEVEL_FLOW_COLUMNS) if c in level_flow.columns]
+        blended = blended.join(level_flow.select(lf_cols), on=AVAILABILITY_TS, how="left")
+        blended = blended.with_columns(
+            pl.col(c).fill_null(0.0) for c in LEVEL_FLOW_COLUMNS if c in blended.columns
+        )
+    else:
+        blended = blended.with_columns(pl.lit(0.0).alias(c) for c in LEVEL_FLOW_COLUMNS)
+
+    # Attach decision_* + OHLC for structure FE (from states; decision already lagged)
+    candidate_cols = (
+        "decision_poc",
+        "decision_vah",
+        "decision_val",
+        BUCKET_START,
+        "close",
+        "high",
+        "low",
+        "open",
+        VP_LIQUIDITY_SESSION,
+    )
+    join_cols = [c for c in candidate_cols if c in states.columns and c not in blended.columns]
+    state_decision = states.select(AVAILABILITY_TS, *join_cols)
     blended = blended.join(state_decision, on=AVAILABILITY_TS, how="left")
     blended = _with_session_runs(blended)
     blended = _attach_projection(blended, projection)
@@ -561,20 +628,28 @@ def run_auction_behavior_analysis(
         group_col="_behavior_story_run",
     )
 
-    # Layers 7–9: quality → memory → state vector
+    # Layers 7–9 + structure FE + richer memory
     blended = attach_signal_quality(blended)
-    mem_cols = [c for c in _MEMORY_BASE_COLS if c in blended.columns]
-    blended = attach_causal_memory(
+    blended = attach_structure_features(blended)
+    mem_cols = [c for c in (*_MEMORY_BASE_COLS, *STRUCTURE_FEATURE_COLUMNS) if c in blended.columns]
+    event_mem = [
+        c
+        for c in ("vp_fsm_break", "vp_fsm_retest", "vp_look_fail", "vp_absorb")
+        if c in blended.columns
+    ]
+    blended = attach_market_memory(
         blended,
         columns=mem_cols,
         lags=cfg.memory_lags,
         group_col="_behavior_story_run",
+        event_columns=event_mem,
     )
+    blended = attach_sequence_memory(blended, group_col="_behavior_story_run")
     blended = attach_state_vector(blended)
     _assert_no_trade_columns(blended)
     _assert_no_trade_columns(events)
 
-    # Layers 10–11: probabilistic model + purged OOS + validation
+    # Layers 10–11: base-rate OOS + science stack (1–9)
     probs, fold_metrics = estimate_behavior_probabilities(
         blended,
         events,
@@ -583,6 +658,25 @@ def run_auction_behavior_analysis(
         purge_samples=cfg.purge_samples,
         min_train_size=cfg.min_train_size,
     )
+    science: BehaviorScienceReport | None = None
+    predictions = pl.DataFrame()
+    if cfg.include_science:
+        science = run_behavior_science(
+            blended,
+            config=ScienceConfig(
+                outcome_window=cfg.outcome_window,
+                n_splits=cfg.n_splits,
+                embargo=cfg.embargo,
+                purge_samples=cfg.purge_samples,
+                min_train_size=cfg.min_train_size,
+                holdout_frac=cfg.holdout_frac,
+                evaluate_holdout=cfg.evaluate_holdout,
+                group_col="_behavior_story_run",
+            ),
+        )
+        if science.fold_frame.height:
+            fold_metrics = science.fold_frame
+        predictions = science.state_predictions
     validation = validate_behavior_frame(blended, fold_df=fold_metrics)
 
     diagnostics: dict[str, Any] = {
@@ -592,14 +686,24 @@ def run_auction_behavior_analysis(
         "n_events": int(events.height),
         "n_behavior_event_cols": len(BEHAVIOR_EVENT_COLUMNS),
         "n_state_feature_cols": len(STATE_FEATURE_COLUMNS),
+        "n_structure_feature_cols": len(STRUCTURE_FEATURE_COLUMNS),
+        "n_level_flow_cols": len(LEVEL_FLOW_COLUMNS),
+        "n_reliability_cols": len(RELIABILITY_COLUMNS),
         "n_projection_bars": int(projection.height),
+        "n_prediction_rows": int(predictions.height),
         "deceptive_scored_rows": scored_rows,
         "deceptive_filtered": False,
+        "signal_quality_is_calibrated_probability": False,
+        "science": None if science is None else science.diagnostics,
         "causality": {
             "decision_columns_required": True,
             "profile_to_signal": "backward_asof_inside_auction_action_states",
             "deceptive_deletion": False,
+            "reliability_deletion": False,
             "validation": "purged_walk_forward",
+            "outcomes": "outcome_available_ts_gated",
+            "holdout": "frozen_final_tail",
+            "prediction_vs_state": "separated",
             "trade_outputs": False,
         },
         "config": {
@@ -607,11 +711,15 @@ def run_auction_behavior_analysis(
             "signal_interval_ns": cfg.signal_interval_ns,
             "fixed_range": cfg.fixed_range,
             "include_deceptive_scores": cfg.include_deceptive_scores,
+            "include_level_flow": cfg.include_level_flow,
+            "include_reliability_evidence": cfg.include_reliability_evidence,
             "n_splits": cfg.n_splits,
             "embargo": cfg.embargo,
             "purge_samples": cfg.purge_samples,
             "outcome_window": cfg.outcome_window,
             "include_asia_london_projection": cfg.include_asia_london_projection,
+            "include_science": cfg.include_science,
+            "holdout_frac": cfg.holdout_frac,
             "projection_interval_ns": cfg.projection_config.interval_ns,
             "memory_scope": "asia_london_story_then_reset_at_new_york_or_new_day",
         },
@@ -626,15 +734,18 @@ def run_auction_behavior_analysis(
         session_profiles=session_profiles,
         london_scenarios=london_scenarios,
         projection=projection,
+        science=science,
+        predictions=predictions,
         diagnostics=diagnostics,
     )
 
 
 def behavior_state_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
-    """إطار زمني خفيف للحالة/الجودة (ليس جدول احتمالات)."""
+    """ما الذي أعرفه عن السوق الآن؟ — حالة فقط، بلا أعمدة ``p_*`` تنبؤية."""
     cols = [
         AVAILABILITY_TS,
         "signal_quality",
+        "signal_evidence",
         "vp_balance",
         "vp_imbalance",
         "vp_fsm_break",
@@ -655,19 +766,54 @@ def behavior_state_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
         "composite_vah",
         "composite_val",
         *PROJECTION_NUMERIC_COLUMNS,
+        *LEVEL_FLOW_COLUMNS,
+        *RELIABILITY_COLUMNS,
+        "mem_time_since_break",
+        "mem_time_since_retest",
+        "mem_dwell_inside_value",
+        "mem_poc_migration_abs",
+        "mem_value_transfer_gradual",
     ]
     frame = result.blended
     keep = [c for c in cols if c in frame.columns]
-    return frame.select(keep) if keep else pl.DataFrame()
+    out = frame.select(keep) if keep else pl.DataFrame()
+    # ضمان فصل صارم: لا أعمدة احتمال شرطي داخل إطار الحالة
+    leak = [c for c in out.columns if c.startswith("p_y_") or c.startswith("p_hat")]
+    if leak:
+        raise AssertionError(f"behavior_state_frame must not contain predictions: {leak}")
+    return out
+
+
+def behavior_prediction_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
+    """بناءً على ما أعرفه الآن، ماذا أتوقع؟ — احتمالات شرطية منفصلة عن الحالة.
+
+    الأعمدة ``p_y_*`` من النموذج الشرطي. ليست ``signal_quality``.
+    لا تُحسب من تسميات OOS؛ التدريب تعلّم العلاقة ثم التنبؤ يستخدم الميزات فقط.
+    """
+    if result.predictions.height > 0:
+        return result.predictions
+    if result.science is not None and result.science.state_predictions.height > 0:
+        return result.science.state_predictions
+    return pl.DataFrame(
+        schema={
+            AVAILABILITY_TS: pl.Int64(),
+            "prediction_source": pl.Utf8(),
+        }
+    )
 
 
 def behavior_probabilities_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
-    """اسم توافق قديم لـ :func:`behavior_state_frame`؛ لا يحتوي تنبؤًا لكل صف."""
+    """توافق قديم → يُفضَّل :func:`behavior_state_frame` للحالة أو
+    :func:`behavior_prediction_frame` للتنبؤ. يُرجع الحالة فقط (بلا ``p_*``).
+    """
     return behavior_state_frame(result)
 
 
 def behavior_probability_summary(result: AuctionBehaviorResult) -> pl.DataFrame:
-    """صف واحد للتوقعات المجمعة مع وقت اكتمال التحقق الذي أتاحها."""
+    """صف واحد للتوقعات المجمعة مع وقت اكتمال التحقق الذي أتاحها.
+
+    ``confidence`` هنا متوسط evidence (``signal_quality``) — ليس احتمالًا معايرًا.
+    """
     probs = result.probabilities
     available_after_ts: int | None = None
     if result.fold_metrics.height and "test_end_ts" in result.fold_metrics.columns:
@@ -688,6 +834,7 @@ def behavior_probability_summary(result: AuctionBehaviorResult) -> pl.DataFrame:
             "p_expansion_continue": [probs.p_expansion_continue],
             "p_return_to_value": [probs.p_return_to_value],
             "confidence": [probs.confidence],
+            "confidence_is_calibrated_probability": [False],
             "n_samples": [probs.n_samples],
             "detail": [probs.detail],
         }
@@ -697,6 +844,7 @@ def behavior_probability_summary(result: AuctionBehaviorResult) -> pl.DataFrame:
 __all__ = [
     "AuctionBehaviorResult",
     "BehaviorConfig",
+    "behavior_prediction_frame",
     "behavior_probabilities_frame",
     "behavior_probability_summary",
     "behavior_state_frame",

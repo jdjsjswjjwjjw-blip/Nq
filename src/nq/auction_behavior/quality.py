@@ -1,4 +1,9 @@
-"""جودة إشارة سلوكية ودرجة ثقة (بلا تحجيم صفقة)."""
+"""جودة إشارة سلوكية — evidence / feature وليست احتمالًا معايرًا.
+
+``signal_quality ∈ [0,1]`` يقيس قوة الدليل البنيوي/التدفقي المتاح الآن.
+هذا **ليس** ``P(outcome | state)``؛ الاحتمال الشرطي المعاير يأتي من
+``ConditionalModel`` ثم يُختبر بـ ECE/Brier على OOS فقط.
+"""
 
 from __future__ import annotations
 
@@ -11,9 +16,9 @@ _ACTIVE_FLAG = 0.5
 
 
 def attach_signal_quality(frame: pl.DataFrame) -> pl.DataFrame:
-    """يقيس قوة الكسر / جودة الريتست / توافق الأوردرفلو مع البروفايل → ``signal_quality``.
+    """يقيس قوة الكسر / جودة الريتست / توافق الأوردرفلو → ``signal_quality``.
 
-    كل المكوّنات من أعمدة سببية جاهزة؛ الناتج ∈ [0, 1].
+    الناتج evidence ∈ [0, 1] — لا تُفسَّر كاحتمال سيناريو معاير.
     """
     if frame.height == 0:
         return frame.with_columns(pl.lit(0.0).alias("signal_quality"))
@@ -53,12 +58,21 @@ def attach_signal_quality(frame: pl.DataFrame) -> pl.DataFrame:
         _f("real_liquidity_ratio", 0.5).clip(0.0, 1.0) * 0.5
         + (1.0 - _f("deceptive_score", 0.5).clip(0.0, 1.0)) * 0.5
     )
+    # دمج اختياري لأدلة الموثوقية الإحصائية إن وُجدت (ليست حكم حذف).
+    if "rel_credibility" in work.columns:
+        liquidity_reliability = 0.7 * liquidity_reliability + 0.3 * _f("rel_credibility", 0.5).clip(
+            0.0, 1.0
+        )
     quality = (evidence * (0.5 + 0.5 * liquidity_reliability)).clip(0.0, 1.0)
-    return work.with_columns(quality.alias("signal_quality"))
+    return work.with_columns(
+        quality.alias("signal_quality"),
+        evidence.alias("signal_evidence"),
+        pl.lit(False).alias("signal_quality_is_calibrated_probability"),
+    )
 
 
 def mean_confidence(frame: pl.DataFrame) -> float:
-    """متوسط ``signal_quality`` على الإطار."""
+    """متوسط ``signal_quality`` على الإطار (evidence متوسط — ليس ECE)."""
     if frame.height == 0 or "signal_quality" not in frame.columns:
         return 0.0
     vals = frame["signal_quality"].to_numpy().astype(np.float64)
