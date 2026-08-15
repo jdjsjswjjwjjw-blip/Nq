@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 import pytest
 
-from nq.auction_behavior import BehaviorConfig, run_auction_behavior_analysis
+from nq.auction_behavior import (
+    BehaviorConfig,
+    behavior_prediction_frame,
+    behavior_state_frame,
+    run_auction_behavior_analysis,
+)
+from nq.auction_behavior import reliability as rel_mod
 from nq.auction_behavior.calibration import expected_calibration_error
 from nq.auction_behavior.holdout import carve_frozen_holdout, evaluate_frozen_holdout_once
 from nq.auction_behavior.outcomes import (
     OUTCOME_AVAILABLE_TS,
+    OUTCOME_TARGETS,
+    PRIMARY_OUTCOME_TARGETS,
     SETUP_AVAILABILITY_TS,
     build_labeled_outcomes,
 )
@@ -110,8 +120,6 @@ def test_science_stack_runs_end_to_end() -> None:
 
 @pytest.mark.leakage
 def test_state_frame_has_no_predictions_prediction_frame_separate() -> None:
-    from nq.auction_behavior import behavior_prediction_frame, behavior_state_frame
-
     frame = _long_stream(120)
     result = run_auction_behavior_analysis(
         frame,
@@ -146,17 +154,13 @@ def test_state_frame_has_no_predictions_prediction_frame_separate() -> None:
 
 
 def test_primary_outcomes_in_catalog() -> None:
-    from nq.auction_behavior.outcomes import OUTCOME_TARGETS, PRIMARY_OUTCOME_TARGETS
-
     for name in PRIMARY_OUTCOME_TARGETS:
         assert name in OUTCOME_TARGETS
 
 
 def test_reliability_never_filters_mbo() -> None:
     """أدلة الموثوقية لا تستدعي filter_deceptive_liquidity."""
-    import nq.auction_behavior.reliability as rel_mod
-
-    src = open(rel_mod.__file__, encoding="utf-8").read()
+    src = Path(rel_mod.__file__).read_text(encoding="utf-8")
     assert "filter_deceptive_liquidity" not in src
     assert "score_deceptive_events" in src
 
