@@ -8,6 +8,7 @@ import numpy as np
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.research.progress import ProgressLike
 
 _DEFAULT_LAGS = (1, 2, 3, 5)
 _DEFAULT_ROLL = (3, 8)
@@ -70,6 +71,7 @@ def attach_market_memory(  # noqa: PLR0912
     roll_windows: tuple[int, ...] = _DEFAULT_ROLL,
     group_col: str | None = None,
     event_columns: Sequence[str] | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """ذاكرة كاملة: lags + متوسطات/مجاميع rolling ماضية + عدّادات أحداث.
 
@@ -77,6 +79,8 @@ def attach_market_memory(  # noqa: PLR0912
     المتوسط يُحسب على الصفوف حتى الحالي؛ لتجنب إدخال نفس صف الإشارة في
     بعض الاستخدامات نُزيح النتيجة بـ 1 بعد الـrolling (ماضي صارم).
     """
+    if progress is not None:
+        progress.op(f"attach_market_memory cols={len(columns)} lags={lags}")
     work = attach_causal_memory(frame, columns=columns, lags=lags, group_col=group_col)
     if work.height == 0:
         return work
@@ -117,19 +121,27 @@ def attach_market_memory(  # noqa: PLR0912
             else:
                 exprs.append(cnt.shift(1).alias(f"{col}__ecount{win}"))
     if not exprs:
+        if progress is not None:
+            progress.op("market_memory: no extra rolling columns")
         return work
-    return work.with_columns(exprs)
+    out = work.with_columns(exprs)
+    if progress is not None:
+        progress.op(f"market_memory rows={out.height:,} extra_cols={len(exprs)}")
+    return out
 
 
-def attach_sequence_memory(  # noqa: PLR0915
+def attach_sequence_memory(  # noqa: PLR0912, PLR0915
     frame: pl.DataFrame,
     *,
     group_col: str | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """تسلسل/dwell/هجرة: السوق عند t ليس مجرد لقطة سعر.
 
     كل المقاييس سببية (ماضي فقط عبر cum/shift). لا تستخدم نتائج مستقبلية.
     """
+    if progress is not None:
+        progress.op(f"attach_sequence_memory bars={frame.height:,}")
     if frame.height == 0:
         return frame.with_columns(pl.lit(0.0).alias(c) for c in SEQUENCE_MEMORY_COLUMNS)
 
@@ -193,6 +205,8 @@ def attach_sequence_memory(  # noqa: PLR0915
     story_i = 0
     prev_g = groups[0] if n else 0
     for i in range(n):
+        if progress is not None:
+            progress.heartbeat(i + 1, n, label="sequence-memory")
         if groups[i] != prev_g:
             last_b = last_r = last_a = -10_000
             cb = cr = 0.0
@@ -241,7 +255,7 @@ def attach_sequence_memory(  # noqa: PLR0915
             dab = 0.0
         story_i += 1
 
-    return work.with_columns(
+    out = work.with_columns(
         pl.Series("mem_time_since_break", time_break),
         pl.Series("mem_time_since_retest", time_retest),
         pl.Series("mem_time_since_absorb", time_absorb),
@@ -258,6 +272,9 @@ def attach_sequence_memory(  # noqa: PLR0915
         pl.Series("mem_value_transfer_gradual", gradual),
         pl.Series("mem_bars_since_london_open_proxy", bars_london),
     )
+    if progress is not None:
+        progress.op(f"sequence_memory done bars={out.height:,}")
+    return out
 
 
 def memory_feature_matrix(

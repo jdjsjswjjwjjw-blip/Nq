@@ -597,6 +597,7 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
     retest_mid_frac: float = _DEFAULT_RETEST_MID_FRAC,
     build_anchor_frac: float = _DEFAULT_BUILD_ANCHOR_FRAC,
     fixed_range_decisions: bool = False,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """آلة حالات على براميل الفعل (30ث) بحدود الرينج (5د) + تأكيد تدفق.
 
@@ -620,6 +621,8 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
     empty = {c: pl.Series(c, [0.0] * n if n else [], dtype=pl.Float64) for c in _FSM_SIGNAL_COLUMNS}
     if n == 0:
         return pl.DataFrame(empty)
+    if progress is not None:
+        progress.op(f"auction_fsm_columns bars={n:,}")
 
     balanced = states["is_balanced"].to_numpy()
     close = states["close"].to_numpy().astype(np.float64)
@@ -709,6 +712,8 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
         balance_streak = 0
 
     for i in range(n):
+        if progress is not None:
+            progress.heartbeat(i + 1, n, label="auction-fsm")
         # انتقال جلسة السيولة يقتل أي سياق كسر/بناء سابق (حدود جديدة).
         if i > 0 and int(sessions[i]) != int(sessions[i - 1]) and pending_dir != 0.0:
             _reset_pending()
@@ -861,6 +866,7 @@ def auction_signals_from_states(
     build_max_age: int = _DEFAULT_BUILD_MAX_AGE,
     rebalance_confirm: int = _DEFAULT_REBALANCE_CONFIRM,
     fixed_range_decisions: bool = True,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يحوّل حالات المزاد المحسوبة مسبقًا إلى أعمدة VP/FSM دون إعادة مسح MBO."""
     fr_signal_cols = (
@@ -897,6 +903,8 @@ def auction_signals_from_states(
     }
     if states.height == 0:
         return pl.DataFrame(schema=base_schema)
+    if progress is not None:
+        progress.op(f"auction_signals_from_states bars={states.height:,}")
 
     ordered = states.sort(BUCKET_START)
     if "decision_vah" not in ordered.columns:
@@ -1002,7 +1010,10 @@ def auction_signals_from_states(
         build_max_age=build_max_age,
         rebalance_confirm=rebalance_confirm,
         fixed_range_decisions=fixed_range_decisions,
+        progress=progress,
     )
+    if progress is not None:
+        progress.op("auction_signals_from_states: classic+fsm stacked")
     return classic.hstack(fsm)
 
 
@@ -1049,6 +1060,7 @@ def auction_signal_frame(
         build_max_age=build_max_age,
         rebalance_confirm=rebalance_confirm,
         fixed_range_decisions=fixed_range,
+        progress=progress,
     )
 
 

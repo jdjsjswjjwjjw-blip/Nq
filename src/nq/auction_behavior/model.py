@@ -12,6 +12,7 @@ from nq.auction_behavior.quality import mean_confidence
 from nq.auction_behavior.types import BehaviorProbabilities
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.models.splitting import purged_walk_forward_split
+from nq.research.progress import ProgressLike
 from nq.validation.leakage import assert_temporal_split
 
 _ACTIVE_FLAG = 0.5
@@ -73,7 +74,7 @@ def _descriptive_probabilities(work: pl.DataFrame) -> BehaviorProbabilities:
     )
 
 
-def estimate_behavior_probabilities(
+def estimate_behavior_probabilities(  # noqa: PLR0915
     blended: pl.DataFrame,
     events: pl.DataFrame,
     *,
@@ -81,6 +82,7 @@ def estimate_behavior_probabilities(
     embargo: int = 0,
     purge_samples: int = 1,
     min_train_size: int = 8,
+    progress: ProgressLike | None = None,
 ) -> tuple[BehaviorProbabilities, pl.DataFrame]:
     """يعيد توقعات base-rate من التدريب فقط ومقاييس تحقق OOS منفصلة.
 
@@ -88,6 +90,8 @@ def estimate_behavior_probabilities(
     ``train`` فقط، ثم يُقارن بنتيجة ``test``. لذلك لا تدخل نتيجة الاختبار في
     الاحتمال المعلن، وتبقى معدلات OOS أعمدة تحقق لا تنبؤات.
     """
+    if progress is not None:
+        progress.op(f"estimate_behavior_probabilities bars={blended.height:,}")
     if blended.height == 0 or AVAILABILITY_TS not in blended.columns:
         empty = BehaviorProbabilities(
             p_balanced=0.0,
@@ -121,15 +125,26 @@ def estimate_behavior_probabilities(
     except ValueError:
         folds = []
     if not folds:
+        if progress is not None:
+            progress.op("base-rate: insufficient folds — descriptive rates")
         return _descriptive_probabilities(work), pl.DataFrame()
 
     fold_rows: list[dict[str, float | int]] = []
     forecasts: dict[str, list[tuple[float, int]]] = {name: [] for name, _, _ in _TARGETS}
     total_oos = 0
+    n_folds = len(folds)
+    if progress is not None:
+        progress.op(f"base-rate folds={n_folds}")
     for fold_i, fold in enumerate(folds):
+        if progress is not None:
+            progress.heartbeat(fold_i + 1, n_folds, label="base-rate-folds", force=True)
         assert_temporal_split(times[fold.train_idx], times[fold.test_idx], embargo=float(embargo))
         train = work[fold.train_idx]
         test = work[fold.test_idx]
+        if progress is not None:
+            progress.op(
+                f"base-rate fold {fold_i + 1}/{n_folds} train={train.height:,} test={test.height:,}"
+            )
         test_n = int(test.height)
         total_oos += test_n
         row: dict[str, float | int] = {

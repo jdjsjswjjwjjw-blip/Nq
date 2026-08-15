@@ -13,6 +13,7 @@ import polars as pl
 from nq.contracts.mbo import MboAction
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.time import sort_causal
+from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_START, add_time_bucket
 from nq.simulation.deceptive_liquidity import score_deceptive_events
 
@@ -47,16 +48,22 @@ def attach_reliability_evidence(
     *,
     interval_ns: int | None = None,
     scored: pl.DataFrame | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يجمّع أدلة الموثوقية على براميل ``availability_ts`` بدون إسقاط أحداث."""
     cfg_interval = int(interval_ns) if interval_ns is not None else ReliabilityConfig().interval_ns
     empty = pl.DataFrame(
         schema={AVAILABILITY_TS: pl.Int64(), **{c: pl.Float64() for c in RELIABILITY_COLUMNS}}
     )
+    n_mbo = 0 if mbo is None else int(mbo.height)
+    if progress is not None:
+        progress.op(f"attach_reliability_evidence: mbo={n_mbo:,}")
     if mbo is None or mbo.height == 0:
+        if progress is not None:
+            progress.op("reliability: empty mbo")
         return empty
 
-    scored_frame = scored if scored is not None else score_deceptive_events(mbo)
+    scored_frame = scored if scored is not None else score_deceptive_events(mbo, progress=progress)
     work = sort_causal(scored_frame)
     bucketed = add_time_bucket(work, interval_ns=cfg_interval)
     action = pl.col("action").cast(pl.Utf8)
@@ -94,7 +101,10 @@ def attach_reliability_evidence(
         .select(AVAILABILITY_TS, *RELIABILITY_COLUMNS)
         .sort(AVAILABILITY_TS)
     )
-    return agg.with_columns(pl.col(c).fill_null(0.0) for c in RELIABILITY_COLUMNS)
+    out = agg.with_columns(pl.col(c).fill_null(0.0) for c in RELIABILITY_COLUMNS)
+    if progress is not None:
+        progress.op(f"reliability bars={out.height:,}")
+    return out
 
 
 __all__ = [

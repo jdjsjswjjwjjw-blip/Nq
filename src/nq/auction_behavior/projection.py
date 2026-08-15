@@ -21,6 +21,7 @@ from nq.core.session import (
     session_date_from_ns,
     vp_liquidity_session_from_ns,
 )
+from nq.research.progress import ProgressLike
 from nq.simulation.common import BUCKET_END, BUCKET_START, add_time_bucket, extract_trades
 from nq.simulation.volume_profile import DevelopingVolumeProfile, ValueArea, classify_nodes
 
@@ -173,22 +174,29 @@ def _phase(
     return "expansion_testing"
 
 
-def _bucket_groups(frame: pl.DataFrame, *, interval_ns: int) -> pl.DataFrame:
+def _bucket_groups(
+    frame: pl.DataFrame,
+    *,
+    interval_ns: int,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
     trades = extract_trades(add_time_bucket(frame, interval_ns=interval_ns)).sort(EVENT_TS)
     if trades.height == 0:
         return trades
     times = [int(x) for x in trades[EVENT_TS].to_list()]
+    n = len(times)
+    if progress is not None:
+        progress.op(f"projection: session labels for {n:,} trades")
+    dates: list[str] = []
+    sessions: list[int] = []
+    for i, ts in enumerate(times, start=1):
+        dates.append(session_date_from_ns(ts))
+        sessions.append(int(vp_liquidity_session_from_ns(ts)))
+        if progress is not None:
+            progress.heartbeat(i, n, label="projection-session-labels")
     return trades.with_columns(
-        pl.Series(
-            "projection_story_date",
-            [session_date_from_ns(ts) for ts in times],
-            dtype=pl.Utf8,
-        ),
-        pl.Series(
-            VP_LIQUIDITY_SESSION,
-            [vp_liquidity_session_from_ns(ts) for ts in times],
-            dtype=pl.Int8,
-        ),
+        pl.Series("projection_story_date", dates, dtype=pl.Utf8),
+        pl.Series(VP_LIQUIDITY_SESSION, sessions, dtype=pl.Int8),
     )
 
 
@@ -226,19 +234,46 @@ def build_asia_london_projection(  # noqa: PLR0912, PLR0915
     mbo: pl.DataFrame,
     *,
     config: AsiaLondonProjectionConfig | None = None,
+    progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """يبني ملفًا مركبًا Asia→London ويصنف انتقال القيمة دون قرارات تداول."""
     cfg = config or AsiaLondonProjectionConfig()
-    trades = _bucket_groups(mbo, interval_ns=cfg.interval_ns)
+    if progress is not None:
+        progress.op(
+            f"build_asia_london_projection: mbo={mbo.height:,} interval_ns={cfg.interval_ns}"
+        )
+    trades = _bucket_groups(mbo, interval_ns=cfg.interval_ns, progress=progress)
     if trades.height == 0:
+        if progress is not None:
+            progress.op("projection: no trades")
         return _empty_projection()
 
     asia_id = int(VpLiquiditySession.ASIA)
     london_id = int(VpLiquiditySession.LONDON)
-    rows: list[dict[str, Any]] = []
-    for story_key, story in trades.group_by("projection_story_date", maintain_order=True):
+    stories = list(trades.group_by("projection_story_date", maintain_order=True))
+    n_stories = len(stories)
+    packed: list[tuple[str, pl.DataFrame, list[tuple[object, pl.DataFrame]]]] = []
+    n_buckets = 0
+    n_trades = 0
+    for story_key, story in stories:
         story_date = str(story_key[0] if isinstance(story_key, tuple) else story_key)
         relevant = story.filter(pl.col(VP_LIQUIDITY_SESSION).is_in([asia_id, london_id]))
+        buckets = list(relevant.group_by(BUCKET_START, maintain_order=True))
+        n_buckets += len(buckets)
+        n_trades += int(relevant.height)
+        packed.append((story_date, relevant, buckets))
+    if progress is not None:
+        progress.op(
+            f"projection stories={n_stories} buckets={n_buckets:,} asia_london_trades={n_trades:,}"
+        )
+    rows: list[dict[str, Any]] = []
+    story_i = 0
+    bucket_i = 0
+    trade_i = 0
+    for story_date, relevant, buckets in packed:
+        story_i += 1
+        if progress is not None:
+            progress.heartbeat(story_i, n_stories, label="projection-stories")
         if relevant.height == 0:
             continue
         running = DevelopingVolumeProfile(fraction=cfg.value_fraction)
@@ -257,8 +292,10 @@ def build_asia_london_projection(  # noqa: PLR0912, PLR0915
         asia_coverage = 0.0
         anchor_complete = False
 
-        buckets = relevant.group_by(BUCKET_START, maintain_order=True)
         for bucket_key, raw_bucket in buckets:
+            bucket_i += 1
+            if progress is not None:
+                progress.heartbeat(bucket_i, max(n_buckets, 1), label="projection-buckets")
             bucket_start = int(bucket_key[0] if isinstance(bucket_key, tuple) else bucket_key)
             bucket = raw_bucket.sort(EVENT_TS)
             session_id = int(bucket[VP_LIQUIDITY_SESSION][0])
@@ -273,6 +310,9 @@ def build_asia_london_projection(  # noqa: PLR0912, PLR0915
                 if anchor is not None:
                     anchor_primary, anchor_hvns = _primary_hvn(running, anchor)
             for price, size in bucket.select("price", "size").iter_rows():
+                trade_i += 1
+                if progress is not None:
+                    progress.heartbeat(trade_i, max(n_trades, 1), label="projection-trades")
                 px, sz = int(price), int(size)
                 running.add_trade(px, sz)
                 if session_id == london_id and anchor is not None:
@@ -418,8 +458,15 @@ def build_asia_london_projection(  # noqa: PLR0912, PLR0915
                 }
             )
     if not rows:
+        if progress is not None:
+            progress.op("projection: no asia/london rows")
         return _empty_projection()
-    return pl.DataFrame(rows, schema=_empty_projection().schema, strict=False).sort(AVAILABILITY_TS)
+    out = pl.DataFrame(rows, schema=_empty_projection().schema, strict=False).sort(AVAILABILITY_TS)
+    if progress is not None:
+        progress.op(
+            f"projection done: rows={out.height:,} stories={n_stories} buckets={bucket_i:,}"
+        )
+    return out
 
 
 __all__ = [

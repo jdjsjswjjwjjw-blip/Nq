@@ -11,15 +11,22 @@ import numpy as np
 import polars as pl
 
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.research.progress import ProgressLike
 
 _ACTIVE_FLAG = 0.5
 
 
-def attach_signal_quality(frame: pl.DataFrame) -> pl.DataFrame:
+def attach_signal_quality(
+    frame: pl.DataFrame,
+    *,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
     """يقيس قوة الكسر / جودة الريتست / توافق الأوردرفلو → ``signal_quality``.
 
     الناتج evidence ∈ [0, 1] — لا تُفسَّر كاحتمال سيناريو معاير.
     """
+    if progress is not None:
+        progress.op(f"attach_signal_quality bars={frame.height:,}")
     if frame.height == 0:
         return frame.with_columns(pl.lit(0.0).alias("signal_quality"))
 

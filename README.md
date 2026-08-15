@@ -187,7 +187,8 @@ python scripts/run_week.py \
 يغطي بالتفصيل: تحميل MBO، الميزات، إعادة بناء الدفتر (`reconstruct`)، مسح العمق (ساعة البحث + FB 30m)،
 مسار أحداث العمق + asof + توليد `__depth__*`، FVG/Auction/VP شموعًا بشموع، تجسيد فرضيات FB/FVG،
 بناء نوافذ SSL (مع نبض كل طيّة)، tick_stream، ألفا (عمق + تبديلات)، مقاييس M9 الستة مع نبض التبديل،
-والشاشة الاستكشافية. الكتابة thread-safe؛ نبض كل قناة مستقل حتى لا يكتم SSL نبض M9.
+والشاشة الاستكشافية، ومسار `nq.auction_behavior` (إسقاط آسيا→لندن، FSM، نية أوامر،
+تدفق المستويات، أحداث، ذاكرة، علم شرطي طيّة بطيّة). الكتابة thread-safe؛ نبض كل قناة مستقل حتى لا يكتم SSL نبض M9.
 عند `parallel_coverage=true` تظهر بادئة `[SSL]` / `[M9]`.
 الافتراضي تسلسلي (`parallel_coverage=false`) حتى لا يبدو اللوج «دائرة» متداخلة.
 عطّل بـ `--quiet` أو `[run] quiet = true`.
@@ -517,6 +518,8 @@ result = run_auction_behavior_analysis(
         include_science=True,           # طبقة العلم
         holdout_frac=0.2,
         evaluate_holdout=True,
+        quiet=False,                   # نبض حي على stderr
+        # progress_log_path="out/progress.log",
     ),
 )
 print(result.probabilities)
@@ -539,6 +542,14 @@ if science is not None and science.holdout_eval is not None:
 > ``outcome_available_ts`` ولا تدخل في حساب الاحتمال وقت التنبؤ.
 > الأهداف الأساسية: `y_expansion_accepting` · `y_rejection_return_to_asia` ·
 > `y_repriced_balance`.
+
+**تقدّم التشغيل (stderr + `progress.log`):** نفس أسلوب الخط الموحّد — كل خطوة `→`
+وكل عملية `-` وكل حلقة طويلة `…` (نسبة + سرعة + ETA كل ~1 ث). لا تبقى طبقة
+سلوك صامتة: إسقاط آسيا→لندن (قصص/براميل/صفقات)، حالات المزاد + FSM،
+`score_deceptive_events`، موثوقية، تدفق المستويات + عمر الأوامر، إشارات VP،
+أحداث سلوكية، ذاكرة تسلسلية، base-rate، علم شرطي (طيّة بطيّة + أهداف).
+عطّل بـ `BehaviorConfig(quiet=True)` أو `run_auction_behavior_analysis(..., quiet=True)`.
+ملف اختياري: `BehaviorConfig(progress_log_path=".../progress.log")`.
 
 **خطوات العلم:**
 1. Conditional logistic: State(t) → احتمالات شرطية (بلا تسميات OOS داخل p)  

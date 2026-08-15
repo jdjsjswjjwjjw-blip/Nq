@@ -9,6 +9,7 @@ from nq.auction_behavior.projection import PROJECTION_NUMERIC_COLUMNS
 from nq.auction_behavior.types import BehaviorStateSnapshot
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.session import VP_LIQUIDITY_SESSION
+from nq.research.progress import ProgressLike
 
 STATE_FEATURE_COLUMNS = (
     "vp_balance",
@@ -29,8 +30,14 @@ STATE_FEATURE_COLUMNS = (
 )
 
 
-def attach_state_vector(frame: pl.DataFrame) -> pl.DataFrame:
+def attach_state_vector(
+    frame: pl.DataFrame,
+    *,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
     """يضمن وجود أعمدة الحالة الرقمية (يملأ الغائب بأصفار)."""
+    if progress is not None:
+        progress.op(f"attach_state_vector bars={frame.height:,} cols={len(STATE_FEATURE_COLUMNS)}")
     work = frame
     for col in STATE_FEATURE_COLUMNS:
         if col not in work.columns:
