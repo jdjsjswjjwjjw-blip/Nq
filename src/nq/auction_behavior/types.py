@@ -7,7 +7,12 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class BehaviorProbabilities:
-    """استنتاجات احتمالية لحالة المزاد مع ثقة."""
+    """استنتاجات احتمالية لحالة المزاد مع ثقة.
+
+    الأهداف الأساسية (expansion / rejection / repriced / residual) إن وُجدت
+    تشكّل توزيعًا مشتركًا (مجموعها 1). الحقول القديمة الثنائية تبقى مستقلة
+    أو من base-rate كخط أساس BSS وليست competing-risk.
+    """
 
     p_balanced: float
     p_imbalanced: float
@@ -20,6 +25,13 @@ class BehaviorProbabilities:
     confidence: float
     n_samples: int
     detail: str = ""
+    p_expansion_accepting: float = 0.0
+    p_rejection_return_to_asia: float = 0.0
+    p_repriced_balance: float = 0.0
+    p_residual: float = 0.0
+    probability_source: str = "train_only_walk_forward_base_rates"
+    probabilities_are_joint_distribution: bool = False
+    n_oof_rows: int = 0
 
 
 @dataclass(frozen=True, slots=True)

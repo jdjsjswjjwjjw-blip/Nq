@@ -207,5 +207,7 @@ def estimate_behavior_probabilities(  # noqa: PLR0915
             f"purged walk-forward train-only base-rate forecasts; folds={len(folds)}; "
             "OOS outcomes used for calibration only; not state-conditional"
         ),
+        probability_source="train_only_walk_forward_base_rates",
+        probabilities_are_joint_distribution=False,
     )
     return probs, pl.DataFrame(fold_rows)

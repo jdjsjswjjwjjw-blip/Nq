@@ -494,8 +494,8 @@ python scripts/run_week.py \
 | 5–6 | دمج إشارات VP/FSM + أحداث سلوكية | نتيجة الكسر/الريتست تُنبض حين تصبح معروفة؛ `vp_fr_exit` قبول لا فشل |
 | 7 | ذاكرة سوقية | lags + rolling ماضي + `mem_time_since_*` / dwell / هجرة POC·HVN؛ قصة آسيا+لندن |
 | 8–9 | جودة إشارة (evidence) + متجه حالة | `signal_quality ≠` احتمال معاير |
-| 10–11 | base-rate تجريبي + علم شرطي | State(t)→probs؛ التدريب على علاقات؛ OOS للمعايرة فقط · بلا `edge_*` |
-| علم | نموذج شرطي + targets صارمة + ECE + WF + drift + holdout | `outcome_available_ts` · فصل `behavior_state_frame` عن `behavior_prediction_frame` |
+| 10–11 | نموذج شرطي + competing-risk + base-rate كخط أساس BSS | State(t)→P(outcome\|state)؛ الأهداف الأساسية softmax مجموعها 1 · OOF للمعايرة · بلا `edge_*` |
+| علم | Conditional + competing softmax + ablation عائلات + ECE/Brier/logloss/BSS + WF + drift + holdout مجمّد | `outcome_available_ts` · فصل `behavior_state_frame` عن `behavior_prediction_frame` |
 
 ```python
 from nq.auction_behavior import (
@@ -517,7 +517,7 @@ result = run_auction_behavior_analysis(
         include_reliability_evidence=True,  # credibility evidence، بلا حذف
         include_science=True,           # طبقة العلم
         holdout_frac=0.2,
-        evaluate_holdout=True,
+        evaluate_holdout=False,         # الذيل المجمّد لا يُلمس إلا opt-in صريح
         quiet=False,                   # نبض حي على stderr
         # progress_log_path="out/progress.log",
     ),
@@ -525,12 +525,16 @@ result = run_auction_behavior_analysis(
 print(result.probabilities)
 print(behavior_probability_summary(result))  # ملخص؛ confidence ≠ calibrated p
 states = behavior_state_frame(result)        # «ما الذي أعرفه الآن؟»
-preds = behavior_prediction_frame(result)    # «ماذا أتوقع؟» p_y_* شرطية
+preds = behavior_prediction_frame(result)    # «ماذا أتوقع؟» p_y_* شرطية OOF
 projection = result.projection
 science = result.science
 assert result.validation.ok
 assert result.diagnostics["deceptive_filtered"] is False
 assert result.diagnostics["signal_quality_is_calibrated_probability"] is False
+assert result.probabilities.probability_source in {
+    "state_conditional_oof",
+    "train_only_walk_forward_base_rates",
+}
 assert "entry_gate" not in result.blended.columns
 if science is not None and science.holdout_eval is not None:
     print(science.holdout_eval.ece, science.drift_summary)
@@ -538,21 +542,29 @@ if science is not None and science.holdout_eval is not None:
 
 > هذه الطبقة **لا تستبدل** `run_vp_auction` (مسار التنفيذ/R:R). هي مسار فهم سابق
 > لقرارات التداول، فوق نفس `decision_*` و`join_asof(..., backward)`.
-> النموذج الشرطي يتعلّم `State(t) → P(outcome)`؛ التسميات تُحل عند
+> النموذج الشرطي يتعلّم `State(t) → P(outcome|state)` على الميزات الحالية
+> (64 عائلة: VP/بنية، إسقاط آسيا→لندن، ذاكرة، MBO، موثوقية). التسميات تُحل عند
 > ``outcome_available_ts`` ولا تدخل في حساب الاحتمال وقت التنبؤ.
-> الأهداف الأساسية: `y_expansion_accepting` · `y_rejection_return_to_asia` ·
-> `y_repriced_balance`.
+> الأهداف الأساسية تشكّل توزيعًا مشتركًا competing-risk:
+> `P(y_expansion_accepting)+P(y_rejection_return_to_asia)+P(y_repriced_balance)+P(residual)=1`.
+> الثنائيات المستقلة تبقى للأهداف الثانوية (كسر/ريتست VP).
+> الاحتمالات المعلنة في `result.probabilities` تأتي من **متوسط OOF الشرطي**،
+> وbase-rate يُحفظ فقط كخط أساس لـ Brier Skill Score.
+> Ablation العائلات (A: VP/سعر → E: +reliability) يُقارن OOS على نفس الطيّات:
+> إن لم يُحسّن MBO أو reliability خارج العينة فلا يُدّعى أنهما أقوى.
+> `evaluate_holdout` يبقى opt-in صريحًا؛ الذيل المجمّد لا يُلمس تلقائيًا.
 
 **تقدّم التشغيل (stderr + `progress.log`):** نفس أسلوب الخط الموحّد — كل خطوة `→`
 وكل عملية `-` وكل حلقة طويلة `…` (نسبة + سرعة + ETA كل ~1 ث). لا تبقى طبقة
 سلوك صامتة: إسقاط آسيا→لندن (قصص/براميل/صفقات)، حالات المزاد + FSM،
 `score_deceptive_events`، موثوقية، تدفق المستويات + عمر الأوامر، إشارات VP،
-أحداث سلوكية، ذاكرة تسلسلية، base-rate، علم شرطي (طيّة بطيّة + أهداف).
+أحداث سلوكية، ذاكرة تسلسلية، base-rate (خط أساس BSS)، علم شرطي competing-risk
+(طيّة بطيّة + أهداف + ablation).
 عطّل بـ `BehaviorConfig(quiet=True)` أو `run_auction_behavior_analysis(..., quiet=True)`.
 ملف اختياري: `BehaviorConfig(progress_log_path=".../progress.log")`.
 
 **خطوات العلم:**
-1. Conditional logistic: State(t) → احتمالات شرطية (بلا تسميات OOS داخل p)  
+1. Conditional logistic + **softmax competing-risk** على الأهداف الأساسية (مجموعها 1)  
 2. نتائج موسومة + `outcome_available_ts`؛ **censored** عند نافذة ناقصة (لا y=0)  
 3. FE بنيوي حول `decision_*` / HVN (`struct_*`)  
 4. ذاكرة: lags + rolling + تسلسل — `shift` داخل المجموعة فقط  
@@ -561,11 +573,14 @@ if science is not None and science.holdout_eval is not None:
    `science.diagnostics["feature_names"]` / `feature_names_by_family` /
    `feature_weights_by_outcome` (أكبر |وزن| لكل هدف — وصف مساهمة لا أهمية سببية)  
 7. Asia→London projection داخل متجه الحالة  
-8. Platt على ذيل قطار سببي + ECE/Brier/**BSS** (`signal_quality ≠` احتمال)  
-9. Walk-forward على **setup فريد** · **OOF** للباك تست · live منفصل · holdout مرة واحدة  
+8. Platt على ذيل قطار سببي + ECE/Brier/**BSS**/logloss/AUC (`signal_quality ≠` احتمال)  
+9. Walk-forward على **setup فريد** · **OOF شرطي** للباك تست · live منفصل · holdout مرة واحدة  
+10. Ablation A→E على نفس الطيّات: VP/سعر، +إسقاط ديناميكي، +ذاكرة، +MBO، +reliability  
 
 > `behavior_prediction_frame` يفضّل تنبؤات OOF (`eligible_for_backtest=True`).  
 > التنبؤ الحي من النموذج النهائي يحمل `eligible_for_backtest=False` و`model_train_end_ts`.  
+> العيّنة العلمية = إعدادات المزاد الموسومة (ليس كل صف MBO). إذا `n_competing_setups`
+> أصغر بكثير من عدد الميزات، `sample_size_caution=true` — لا تعقّد النموذج قبل بيانات أطول.  
 
 **إسقاط آسيا→لندن:** يبني `build_asia_london_projection` ملف آسيا تراكميًا بلا
 تصفير، ويجمّده عند أول برميل لندن كـ`asia_poc/vah/val/HVN`. بعد ذلك يضيف كل

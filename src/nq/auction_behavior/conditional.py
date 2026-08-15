@@ -72,7 +72,8 @@ class ConditionalModel:
         return _sigmoid(x @ w)
 
 
-def _design_matrix(frame: pl.DataFrame, feature_names: tuple[str, ...]) -> np.ndarray:
+def design_matrix(frame: pl.DataFrame, feature_names: tuple[str, ...]) -> np.ndarray:
+    """مصفوفة تصميم: intercept + ميزات الحالة عند الصف (بدون y)."""
     n = frame.height
     if not feature_names:
         return np.ones((n, 1), dtype=np.float64)
@@ -83,6 +84,10 @@ def _design_matrix(frame: pl.DataFrame, feature_names: tuple[str, ...]) -> np.nd
         else:
             cols.append(np.zeros(n, dtype=np.float64))
     return np.column_stack(cols)
+
+
+def _design_matrix(frame: pl.DataFrame, feature_names: tuple[str, ...]) -> np.ndarray:
+    return design_matrix(frame, feature_names)
 
 
 def _fit_logistic_l2(
@@ -144,11 +149,13 @@ def select_feature_names_by_family(
     *,
     max_features: int = 64,
     quotas: dict[str, int] | None = None,
+    include_families: tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
     """حصص إلزامية لكل عائلة ثم ملء الباقي — يزيل الثابت.
 
     الافتراضي يضمن دخول projection / path / structure / sequence / level_flow / reliability
     قبل امتلاء السقف بأعمدة الحالة فقط.
+    ``include_families`` يقيّد الاختيار (للـ ablation).
     """
     mem_roll = tuple(
         c
@@ -210,7 +217,7 @@ def select_feature_names_by_family(
             taken += 1
             budget -= 1
 
-    family_order = (
+    family_order: tuple[str, ...] = (
         "projection",
         "path",
         "structure",
@@ -221,6 +228,10 @@ def select_feature_names_by_family(
         "state",
         "quality",
     )
+    if include_families is not None:
+        allowed = set(include_families)
+        family_order = tuple(fam for fam in family_order if fam in allowed)
+        families = {fam: cols for fam, cols in families.items() if fam in allowed}
     # round-robin: حتى عند ميزانية صغيرة لا تستحوذ عائلة الإسقاط على كل السعة.
     remaining = {fam: max(0, int(q.get(fam, 0))) for fam in family_order}
     while budget > 0 and any(value > 0 for value in remaining.values()):
@@ -553,6 +564,7 @@ __all__ = [
     "MODEL_STATUS_OK",
     "MODEL_STATUS_SINGLE_CLASS",
     "ConditionalModel",
+    "design_matrix",
     "feature_family_name",
     "fit_conditional_models",
     "group_feature_names_by_family",

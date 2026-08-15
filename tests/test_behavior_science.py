@@ -112,6 +112,7 @@ def test_science_stack_runs_end_to_end() -> None:
     assert mem_cols
     diag = result.science.diagnostics
     assert "conditional_model_state_to_probs" in diag["science_steps"]
+    assert "competing_risk_softmax_joint" in diag["science_steps"]
     assert "frozen_final_holdout" in diag["science_steps"]
     assert diag["signal_quality_is_calibrated_probability"] is False
     assert diag["prediction_uses_oos_labels"] is False
