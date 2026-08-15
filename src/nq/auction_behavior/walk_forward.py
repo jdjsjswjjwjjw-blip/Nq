@@ -190,10 +190,13 @@ def build_expanding_month_folds(
     ts_col: str = SETUP_AVAILABILITY_TS,
     min_train_months: int = 1,
     embargo_ns: int = 0,
+    purge_samples: int = 1,
 ) -> list[ScienceFold]:
     """تدريب متوسّع شهرًا فشهرًا على setup فريد؛ الاختبار = الشهر التالي."""
     if frame.height == 0 or ts_col not in frame.columns:
         return []
+    if purge_samples < 0:
+        raise ValueError("purge_samples must be non-negative")
     work = attach_segment_keys(frame.sort(ts_col), ts_col=ts_col)
     # جدول setup فريد لحساب الشهور
     setups = (
@@ -221,6 +224,12 @@ def build_expanding_month_folds(
         if test_start < train_end + int(embargo_ns):
             cutoff = test_start - int(embargo_ns)
             train_setup_idx = train_setup_idx[setup_times[train_setup_idx] <= cutoff]
+            if train_setup_idx.size == 0:
+                continue
+            train_end = int(setup_times[train_setup_idx].max())
+        if purge_samples > 0:
+            # احذف آخر setups من التدريب على مستوى الطابع الفريد، لا outcome rows.
+            train_setup_idx = train_setup_idx[: max(0, train_setup_idx.size - purge_samples)]
             if train_setup_idx.size == 0:
                 continue
             train_end = int(setup_times[train_setup_idx].max())
@@ -260,7 +269,11 @@ def build_contract_aware_folds(
     purge_samples: int = 1,
     min_train_size: int = 12,
 ) -> list[ScienceFold]:
-    """طيّات زمنية على setup فريد؛ تُوسم بالعقد إن وُجد."""
+    """طيّات زمنية على setup فريد مع تشخيص تعدد الأدوات/العقود.
+
+    وجود أكثر من ``instrument_id`` لا يجعل الاختبار leave-one-contract-out؛
+    الزمن يبقى وحدة الفصل لمنع ادعاء تعميم عقدي غير مقاس.
+    """
     if frame.height == 0:
         return []
     work = attach_segment_keys(frame.sort(ts_col), ts_col=ts_col)
@@ -283,7 +296,7 @@ def build_contract_aware_folds(
             train_end_ts=f.train_end_ts,
             test_start_ts=f.test_start_ts,
             test_end_ts=f.test_end_ts,
-            segment=f"multi_contract({n_contracts})",
+            segment=f"time_multi_instrument({n_contracts})",
         )
         for f in folds
     ]

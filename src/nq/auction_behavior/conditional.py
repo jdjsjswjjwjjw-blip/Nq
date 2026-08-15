@@ -50,6 +50,8 @@ class ConditionalModel:
     n_pos: dict[str, int] = field(default_factory=dict)
     n_neg: dict[str, int] = field(default_factory=dict)
     status: dict[str, str] = field(default_factory=dict)
+    feature_names_by_outcome: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    base_rate: dict[str, float] = field(default_factory=dict)
     detail: str = ""
 
     def is_usable(self, outcome: str) -> bool:
@@ -63,7 +65,8 @@ class ConditionalModel:
         w = self.weights[outcome]
         if w.size == 0:
             return np.full(n, np.nan, dtype=np.float64)
-        x = _design_matrix(frame, self.feature_names)
+        names = self.feature_names_by_outcome.get(outcome, self.feature_names)
+        x = _design_matrix(frame, names)
         return _sigmoid(x @ w)
 
 
@@ -203,8 +206,7 @@ def select_feature_names_by_family(
             taken += 1
             budget -= 1
 
-    # حصص إلزامية أولًا للعائلات الحرجة في المراجعة
-    for fam in (
+    family_order = (
         "projection",
         "structure",
         "sequence",
@@ -213,8 +215,22 @@ def select_feature_names_by_family(
         "memory_roll",
         "state",
         "quality",
-    ):
-        _take(fam, int(q.get(fam, 0)))
+    )
+    # round-robin: حتى عند ميزانية صغيرة لا تستحوذ عائلة الإسقاط على كل السعة.
+    remaining = {fam: max(0, int(q.get(fam, 0))) for fam in family_order}
+    while budget > 0 and any(value > 0 for value in remaining.values()):
+        before = budget
+        for fam in family_order:
+            if remaining[fam] <= 0 or budget <= 0:
+                continue
+            old_n = len(chosen)
+            _take(fam, 1)
+            if len(chosen) > old_n:
+                remaining[fam] -= 1
+            else:
+                remaining[fam] = 0
+        if budget == before:
+            break
 
     # املأ الباقي بأي متغير ذي تباين من العائلات
     if budget > 0:
@@ -234,21 +250,23 @@ def fit_conditional_models(
     min_train: int = 12,
     min_pos: int = 3,
     min_neg: int = 3,
+    min_samples_per_feature: int = 2,
 ) -> ConditionalModel:
     """يدرّب نموذجًا شرطيًا لكل هدف على نتائج **محسومة** معروفة حتى ``train_end_ts``."""
     known = filter_outcomes_known_by(labeled, asof_ts=train_end_ts)
     known = filter_resolved_outcomes(known)
     if SETUP_AVAILABILITY_TS in known.columns:
         known = known.filter(pl.col(SETUP_AVAILABILITY_TS) <= int(train_end_ts))
-    # لا تدرّب بعدد ميزات أكبر من العينات
-    max_feat = max(1, min(len(feature_names), max(1, known.height // 2)))
-    feats = feature_names[:max_feat]
+    if min_samples_per_feature < 1:
+        raise ValueError("min_samples_per_feature must be >= 1")
 
     weights: dict[str, np.ndarray] = {}
     n_train: dict[str, int] = {}
     n_pos: dict[str, int] = {}
     n_neg: dict[str, int] = {}
     status: dict[str, str] = {}
+    features_by_outcome: dict[str, tuple[str, ...]] = {}
+    base_rate: dict[str, float] = {}
 
     for outcome in outcomes:
         part = known.filter(pl.col("outcome_name") == outcome)
@@ -261,34 +279,45 @@ def fit_conditional_models(
             n_pos[outcome] = 0
             n_neg[outcome] = 0
             status[outcome] = MODEL_STATUS_INSUFFICIENT
+            features_by_outcome[outcome] = ()
+            base_rate[outcome] = float("nan")
             continue
         y = part["y"].to_numpy().astype(np.float64)
         pos = int(np.sum(y >= _Y_POS_THRESHOLD))
         neg = int(np.sum(y < _Y_POS_THRESHOLD))
         n_pos[outcome] = pos
         n_neg[outcome] = neg
+        base_rate[outcome] = float((pos + 1.0) / (part.height + 2.0))
         if part.height < min_train or pos < min_pos or neg < min_neg:
             weights[outcome] = np.zeros(0, dtype=np.float64)
             status[outcome] = (
                 MODEL_STATUS_SINGLE_CLASS if pos == 0 or neg == 0 else MODEL_STATUS_INSUFFICIENT
             )
+            features_by_outcome[outcome] = ()
             continue
+        max_features_for_outcome = max(1, part.height // int(min_samples_per_feature))
+        feats = feature_names[: min(len(feature_names), max_features_for_outcome)]
+        features_by_outcome[outcome] = feats
         # smoothing خفيف للـintercept من base rate
-        p0 = float((pos + 1.0) / (part.height + 2.0))
+        p0 = base_rate[outcome]
         intercept_prior = float(np.log(p0 / max(1.0 - p0, _EPS)))
         x = _design_matrix(part, feats)
         weights[outcome] = _fit_logistic_l2(x, y, l2=l2, intercept_prior=intercept_prior)
         status[outcome] = MODEL_STATUS_OK
 
     return ConditionalModel(
-        feature_names=feats,
+        feature_names=feature_names,
         weights=weights,
         train_end_ts=int(train_end_ts),
         n_train=n_train,
         n_pos=n_pos,
         n_neg=n_neg,
         status=status,
-        detail=f"l2_logistic · train_end_ts={train_end_ts} · n_features={len(feats)}",
+        feature_names_by_outcome=features_by_outcome,
+        base_rate=base_rate,
+        detail=(
+            f"l2_logistic · train_end_ts={train_end_ts} · candidate_features={len(feature_names)}"
+        ),
     )
 
 
@@ -314,6 +343,10 @@ def score_conditional_models(
         "y": pl.Float64(),
         "p_hat": pl.Float64(),
         "model_status": pl.Utf8(),
+        "baseline_p": pl.Float64(),
+        "model_n_train": pl.Int64(),
+        "model_n_pos": pl.Int64(),
+        "model_n_neg": pl.Int64(),
     }
     work = filter_resolved_outcomes(labeled) if labeled.height else labeled
     if work.height == 0:
@@ -352,6 +385,10 @@ def score_conditional_models(
             part.with_columns(
                 pl.Series("p_hat", p),
                 pl.lit(status).alias("model_status"),
+                pl.lit(model.base_rate.get(outcome, np.nan)).alias("baseline_p"),
+                pl.lit(model.n_train.get(outcome, 0)).alias("model_n_train"),
+                pl.lit(model.n_pos.get(outcome, 0)).alias("model_n_pos"),
+                pl.lit(model.n_neg.get(outcome, 0)).alias("model_n_neg"),
             )
         )
     if not rows:
@@ -403,6 +440,9 @@ def predict_probabilities_at_states(
         for name in targets:
             schema[f"p_{name}"] = pl.Float64()
             schema[f"status_{name}"] = pl.Utf8()
+            schema[f"n_train_{name}"] = pl.Int64()
+            schema[f"n_pos_{name}"] = pl.Int64()
+            schema[f"n_neg_{name}"] = pl.Int64()
         return pl.DataFrame(schema=schema)
 
     work = states.sort(key)
@@ -412,6 +452,9 @@ def predict_probabilities_at_states(
         out = out.with_columns(
             pl.Series(f"p_{name}", p),
             pl.lit(model.status.get(name, MODEL_STATUS_MISSING)).alias(f"status_{name}"),
+            pl.lit(model.n_train.get(name, 0)).alias(f"n_train_{name}"),
+            pl.lit(model.n_pos.get(name, 0)).alias(f"n_pos_{name}"),
+            pl.lit(model.n_neg.get(name, 0)).alias(f"n_neg_{name}"),
         )
     return out.with_columns(
         pl.lit(meta["prediction_source"]).alias("prediction_source"),

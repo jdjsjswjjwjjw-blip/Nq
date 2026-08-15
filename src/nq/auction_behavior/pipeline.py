@@ -104,7 +104,8 @@ class BehaviorConfig:
     include_asia_london_projection: bool = True
     include_science: bool = True
     holdout_frac: float = 0.2
-    evaluate_holdout: bool = True
+    # الـholdout لا يُلمس تلقائيًا؛ فعّله صراحة بعد قفل التطوير.
+    evaluate_holdout: bool = False
     projection_config: AsiaLondonProjectionConfig = field(
         default_factory=AsiaLondonProjectionConfig
     )
@@ -141,6 +142,10 @@ class AuctionBehaviorResult:
     science: BehaviorScienceReport | None = None
     #: إطار تنبؤ منفصل: State(t)→p(outcome|state) — ليس behavior_state_frame.
     predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
+    base_rate_fold_metrics: pl.DataFrame = field(default_factory=pl.DataFrame)
+    conditional_fold_metrics: pl.DataFrame = field(default_factory=pl.DataFrame)
+    oof_predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
+    live_predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -700,6 +705,11 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
         "deceptive_scored_rows": scored_rows,
         "deceptive_filtered": False,
         "signal_quality_is_calibrated_probability": False,
+        "probabilities_source": "train_only_walk_forward_base_rates",
+        "conditional_probability_semantics": (
+            "independent_binary_outcomes_not_a_joint_competing-risk_distribution"
+        ),
+        "fold_metrics_alias": "conditional_when_available_else_base_rate",
         "base_rate_fold_metrics_rows": int(base_rate_fold_metrics.height),
         "conditional_fold_metrics_rows": int(0 if science is None else science.fold_frame.height),
         "science": None if science is None else science.diagnostics,
@@ -711,6 +721,7 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
             "validation": "purged_walk_forward",
             "outcomes": "outcome_available_ts_gated_censored_excluded",
             "holdout": "frozen_final_tail",
+            "holdout_evaluation": "explicit_opt_in_only",
             "prediction_vs_state": "separated",
             "oof_vs_live": "separated",
             "trade_outputs": False,
@@ -729,6 +740,7 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
             "include_asia_london_projection": cfg.include_asia_london_projection,
             "include_science": cfg.include_science,
             "holdout_frac": cfg.holdout_frac,
+            "evaluate_holdout": cfg.evaluate_holdout,
             "projection_interval_ns": cfg.projection_config.interval_ns,
             "memory_scope": "asia_london_story_then_reset_at_new_york_or_new_day",
         },
@@ -745,6 +757,12 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
         projection=projection,
         science=science,
         predictions=predictions,
+        base_rate_fold_metrics=base_rate_fold_metrics,
+        conditional_fold_metrics=(pl.DataFrame() if science is None else science.fold_frame),
+        oof_predictions=(
+            pl.DataFrame() if science is None else science.conditional_oof_predictions
+        ),
+        live_predictions=(pl.DataFrame() if science is None else science.live_model_predictions),
         diagnostics=diagnostics,
     )
 
@@ -817,6 +835,24 @@ def behavior_prediction_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
     )
 
 
+def behavior_oof_prediction_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
+    """السلسلة التاريخية OOF فقط؛ آمنة للباك تست من ناحية أوزان النموذج."""
+    if result.oof_predictions.height:
+        return result.oof_predictions
+    if result.science is not None:
+        return result.science.conditional_oof_predictions
+    return pl.DataFrame()
+
+
+def behavior_live_prediction_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
+    """تنبؤ النموذج النهائي للحالة الحية؛ لا يُستخدم كسلسلة باك تست تاريخية."""
+    if result.live_predictions.height:
+        return result.live_predictions
+    if result.science is not None:
+        return result.science.live_model_predictions
+    return pl.DataFrame()
+
+
 def behavior_probabilities_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
     """توافق قديم → يُفضَّل :func:`behavior_state_frame` للحالة أو
     :func:`behavior_prediction_frame` للتنبؤ. يُرجع الحالة فقط (بلا ``p_*``).
@@ -850,6 +886,8 @@ def behavior_probability_summary(result: AuctionBehaviorResult) -> pl.DataFrame:
             "p_return_to_value": [probs.p_return_to_value],
             "confidence": [probs.confidence],
             "confidence_is_calibrated_probability": [False],
+            "probability_source": ["train_only_walk_forward_base_rates"],
+            "probabilities_are_joint_distribution": [False],
             "n_samples": [probs.n_samples],
             "detail": [probs.detail],
         }
@@ -859,6 +897,8 @@ def behavior_probability_summary(result: AuctionBehaviorResult) -> pl.DataFrame:
 __all__ = [
     "AuctionBehaviorResult",
     "BehaviorConfig",
+    "behavior_live_prediction_frame",
+    "behavior_oof_prediction_frame",
     "behavior_prediction_frame",
     "behavior_probabilities_frame",
     "behavior_probability_summary",

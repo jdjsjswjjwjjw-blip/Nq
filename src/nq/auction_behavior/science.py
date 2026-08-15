@@ -9,10 +9,12 @@ import numpy as np
 import polars as pl
 
 from nq.auction_behavior.calibration import (
-    apply_calibrator,
+    PlattCalibrator,
+    apply_calibrators_by_outcome,
+    apply_calibrators_to_state_predictions,
     evaluate_calibration,
     evaluate_calibration_by_outcome,
-    fit_platt_calibrator,
+    fit_platt_calibrators_by_outcome,
 )
 from nq.auction_behavior.conditional import (
     ConditionalModel,
@@ -34,6 +36,7 @@ from nq.auction_behavior.outcomes import (
     SETUP_AVAILABILITY_TS,
     attach_outcome_availability_guard,
     build_labeled_outcomes,
+    filter_outcomes_known_by,
     filter_resolved_outcomes,
 )
 from nq.auction_behavior.walk_forward import (
@@ -61,7 +64,7 @@ class ScienceConfig:
     l2: float = 1.0
     max_features: int = 64
     use_month_folds: bool = True
-    evaluate_holdout: bool = True
+    evaluate_holdout: bool = False
     calibration_bins: int = 10
     min_pos: int = 3
     min_neg: int = 3
@@ -85,6 +88,7 @@ class BehaviorScienceReport:
     holdout: FrozenHoldout
     holdout_eval: HoldoutEvaluation | None
     final_model: ConditionalModel | None
+    final_calibrators: dict[str, PlattCalibrator] = field(default_factory=dict)
     #: تنبؤ حي من النموذج النهائي — ليس سلسلة باك تست.
     live_model_predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
     #: توافق قديم = live (غير مؤهل للباك تست).
@@ -101,12 +105,18 @@ def _calibration_tail_split(
     if train.height < _MIN_TRAIN_FOR_CAL_SPLIT or frac <= 0.0:
         return train, train.head(0)
     work = train.sort(SETUP_AVAILABILITY_TS)
-    n_cal = max(_MIN_CAL_ROWS, round(work.height * float(frac)))
-    n_cal = min(n_cal, max(0, work.height // 3))
-    if n_cal < _MIN_CAL_ROWS:
+    setup_times = work[SETUP_AVAILABILITY_TS].unique(maintain_order=True).sort()
+    n_cal_setups = max(1, round(setup_times.len() * float(frac)))
+    n_cal_setups = min(n_cal_setups, max(0, setup_times.len() // 3))
+    if n_cal_setups < 1:
         return work, work.head(0)
-    fit = work.head(work.height - n_cal)
-    cal = work.tail(n_cal)
+    cal_times = setup_times.tail(n_cal_setups).to_list()
+    cal = work.filter(pl.col(SETUP_AVAILABILITY_TS).is_in(cal_times))
+    fit = work.filter(~pl.col(SETUP_AVAILABILITY_TS).is_in(cal_times))
+    if cal.height < _MIN_CAL_ROWS:
+        return work, work.head(0)
+    if set(fit[SETUP_AVAILABILITY_TS].to_list()) & set(cal[SETUP_AVAILABILITY_TS].to_list()):
+        raise AssertionError("calibration split must not divide one setup timestamp")
     return fit, cal
 
 
@@ -130,6 +140,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         holdout=empty_holdout,
         holdout_eval=None,
         final_model=None,
+        final_calibrators={},
         live_model_predictions=pl.DataFrame(),
         state_predictions=pl.DataFrame(),
         diagnostics={"empty": True},
@@ -150,7 +161,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
     holdout_pack = carve_frozen_holdout(labeled, holdout_frac=cfg.holdout_frac)
     develop = holdout_pack.develop
 
-    feature_names = select_feature_names_by_family(
+    candidate_feature_names = select_feature_names_by_family(
         develop if develop.height else blended,
         max_features=cfg.max_features,
     )
@@ -162,6 +173,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             ts_col=SETUP_AVAILABILITY_TS,
             min_train_months=1,
             embargo_ns=int(cfg.embargo),
+            purge_samples=cfg.purge_samples,
         )
     if not folds:
         folds = build_contract_aware_folds(
@@ -192,10 +204,15 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 continue
         seen_setup_test |= set(int(x) for x in test[SETUP_AVAILABILITY_TS].unique().to_list())
 
-        fit_part, cal_part = _calibration_tail_split(train, frac=cfg.calibration_frac)
+        known_train = filter_outcomes_known_by(train, asof_ts=sf.train_end_ts)
+        fit_part, cal_part = _calibration_tail_split(known_train, frac=cfg.calibration_frac)
+        fold_features = select_feature_names_by_family(
+            fit_part if fit_part.height else known_train,
+            max_features=cfg.max_features,
+        )
         model = fit_conditional_models(
             fit_part,
-            feature_names=feature_names,
+            feature_names=fold_features,
             outcomes=OUTCOME_TARGETS,
             train_end_ts=sf.train_end_ts,
             l2=cfg.l2,
@@ -215,11 +232,10 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             if cal_part.height
             else pl.DataFrame()
         )
-        calibrator = None
+        calibrators: dict[str, PlattCalibrator] = {}
         if raw_cal.height and "p_hat" in raw_cal.columns and "y" in raw_cal.columns:
-            calibrator = fit_platt_calibrator(
-                raw_cal["y"].to_numpy().astype(np.float64),
-                raw_cal["p_hat"].to_numpy().astype(np.float64),
+            calibrators = fit_platt_calibrators_by_outcome(
+                raw_cal,
                 min_samples=max(10, cfg.min_train_size // 2),
             )
 
@@ -233,18 +249,19 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         # أعد فلترة إن حذفنا تكرارات
         if scored.height and overlap:
             scored = scored.filter(~pl.col(SETUP_AVAILABILITY_TS).is_in(list(overlap)))
-        scored = apply_calibrator(scored, calibrator)
+        scored = apply_calibrators_by_outcome(scored, calibrators)
         if "p_cal" in scored.columns:
             scored = scored.with_columns(pl.col("p_cal").alias("p_hat"))
 
         cal = evaluate_calibration(scored, n_bins=cfg.calibration_bins)
+        drift_features = model.feature_names
         drift = measure_drift(
-            train.select([c for c in feature_names if c in train.columns]),
-            test.select([c for c in feature_names if c in test.columns]),
-            feature_names=feature_names,
+            train.select([c for c in drift_features if c in train.columns]),
+            test.select([c for c in drift_features if c in test.columns]),
+            feature_names=drift_features,
             ref_outcomes=train,
             cmp_outcomes=test,
-            ref_calibration_ece=0.0,
+            ref_calibration_ece=evaluate_calibration(raw_cal).ece,
             cmp_calibration_ece=cal.ece,
         )
         drift_psis.append(drift.mean_psi)
@@ -282,16 +299,17 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         if test_ts_list and AVAILABILITY_TS in blended.columns:
             state_slice = blended.filter(pl.col(AVAILABILITY_TS).is_in(test_ts_list))
             if state_slice.height:
+                state_predictions = predict_probabilities_at_states(
+                    model,
+                    state_slice,
+                    outcomes=PRIMARY_OUTCOME_TARGETS
+                    + tuple(o for o in OUTCOME_TARGETS if o not in PRIMARY_OUTCOME_TARGETS),
+                    prediction_is_oof=True,
+                    fold=sf.fold,
+                    eligible_for_backtest=True,
+                )
                 oof_state_rows.append(
-                    predict_probabilities_at_states(
-                        model,
-                        state_slice,
-                        outcomes=PRIMARY_OUTCOME_TARGETS
-                        + tuple(o for o in OUTCOME_TARGETS if o not in PRIMARY_OUTCOME_TARGETS),
-                        prediction_is_oof=True,
-                        fold=sf.fold,
-                        eligible_for_backtest=True,
-                    )
+                    apply_calibrators_to_state_predictions(state_predictions, calibrators)
                 )
 
     fold_frame = pl.DataFrame(fold_metric_rows) if fold_metric_rows else folds_to_frame(folds)
@@ -316,22 +334,45 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
     }
 
     final_model: ConditionalModel | None = None
+    final_calibrators: dict[str, PlattCalibrator] = {}
     holdout_eval: HoldoutEvaluation | None = None
     holdout_state = holdout_pack
     live_preds = pl.DataFrame()
-    if develop.height >= cfg.min_train_size and feature_names:
-        max_dev = develop[SETUP_AVAILABILITY_TS].max()
-        assert max_dev is not None
-        final_train_end = int(np.asarray(max_dev).item())
+    if develop.height >= cfg.min_train_size and candidate_feature_names:
+        final_train_end = int(holdout_pack.cut_ts)
+        final_known = filter_outcomes_known_by(develop, asof_ts=final_train_end)
+        final_fit, final_cal = _calibration_tail_split(
+            final_known,
+            frac=cfg.calibration_frac,
+        )
+        final_features = select_feature_names_by_family(
+            final_fit if final_fit.height else final_known,
+            max_features=cfg.max_features,
+        )
         final_model = fit_conditional_models(
-            develop,
-            feature_names=feature_names,
+            final_fit,
+            feature_names=final_features,
             outcomes=OUTCOME_TARGETS,
             train_end_ts=final_train_end,
             l2=cfg.l2,
             min_train=max(8, cfg.min_train_size // 2),
             min_pos=cfg.min_pos,
             min_neg=cfg.min_neg,
+        )
+        raw_final_cal = (
+            score_conditional_models(
+                final_model,
+                final_cal,
+                test_idx=np.arange(final_cal.height, dtype=np.intp),
+                embargo=0.0,
+                enforce_temporal_split=False,
+            )
+            if final_cal.height
+            else pl.DataFrame()
+        )
+        final_calibrators = fit_platt_calibrators_by_outcome(
+            raw_final_cal,
+            min_samples=max(10, cfg.min_train_size // 2),
         )
         # حي فقط — غير مؤهل للباك تست التاريخي
         live_preds = predict_probabilities_at_states(
@@ -343,6 +384,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             fold=None,
             eligible_for_backtest=False,
         )
+        live_preds = apply_calibrators_to_state_predictions(live_preds, final_calibrators)
         if cfg.evaluate_holdout and holdout_pack.holdout.height > 0:
             ho_min = holdout_pack.holdout[SETUP_AVAILABILITY_TS].min()
             ho_max = holdout_pack.holdout[SETUP_AVAILABILITY_TS].max()
@@ -354,10 +396,14 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 test_end_ts=int(np.asarray(ho_max).item()),
                 embargo=0.0,
             )
+            scored_ho = apply_calibrators_by_outcome(scored_ho, final_calibrators)
             holdout_eval, holdout_state = evaluate_frozen_holdout_once(
                 holdout_pack, scored_ho, allow_retouch=False
             )
 
+    feature_names = (
+        final_model.feature_names if final_model is not None else candidate_feature_names
+    )
     n_lf = sum(1 for c in feature_names if c.startswith("lf_"))
     n_rel = sum(1 for c in feature_names if c.startswith("rel_"))
     n_mem = sum(
@@ -378,6 +424,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         holdout=holdout_state,
         holdout_eval=holdout_eval,
         final_model=final_model,
+        final_calibrators=final_calibrators,
         live_model_predictions=live_preds,
         state_predictions=live_preds,  # توافق: الحي فقط، موثّق كغير OOF
         diagnostics={
@@ -389,6 +436,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             "holdout_cut_ts": int(holdout_pack.cut_ts),
             "holdout_touched": bool(holdout_state.touched),
             "n_features": len(feature_names),
+            "n_final_calibrators": len(final_calibrators),
             "n_level_flow_features": n_lf,
             "n_reliability_features": n_rel,
             "n_memory_features": n_mem,
@@ -396,6 +444,9 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             "n_oof_prediction_rows": int(conditional_oof_predictions.height),
             "n_live_prediction_rows": int(live_preds.height),
             "primary_outcomes": list(PRIMARY_OUTCOME_TARGETS),
+            "conditional_probability_semantics": (
+                "independent_binary_outcomes_not_a_joint_competing-risk_distribution"
+            ),
             "signal_quality_is_calibrated_probability": False,
             "prediction_uses_oos_labels": False,
             "live_predictions_eligible_for_backtest": False,

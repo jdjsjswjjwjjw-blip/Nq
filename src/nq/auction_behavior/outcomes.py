@@ -169,6 +169,8 @@ def build_labeled_outcomes(  # noqa: PLR0912, PLR0915
         return pl.DataFrame(schema=schema)
     if outcome_window < 1:
         raise ValueError(f"outcome_window must be >= 1, got {outcome_window}")
+    if group_col is not None and group_col not in frame.columns:
+        raise ValueError(f"group_col is missing: {group_col}")
 
     work = frame.sort(AVAILABILITY_TS)
     n = work.height
@@ -234,7 +236,23 @@ def build_labeled_outcomes(  # noqa: PLR0912, PLR0915
             for j in range(i + 1, min(n, i + spec.window + 1)):
                 if groups[j] != groups[i]:
                     break
-                if success[j] and not fail[j]:
+                if success[j] and fail[j]:
+                    # حدثان متعارضان في نفس البرميل لا يملكان ترتيبًا داخليًا
+                    # يمكن إثباته من الإطار المجمّع؛ لا نحوّلهما إلى فشل صامت.
+                    rows.append(
+                        {
+                            SETUP_AVAILABILITY_TS: int(ts[i]),
+                            OUTCOME_AVAILABLE_TS: int(ts[j]),
+                            "outcome_name": spec.name,
+                            "y": float("nan"),
+                            "horizon_bars": int(j - i),
+                            "group_id": int(groups[i]),
+                            "label_status": "ambiguous",
+                        }
+                    )
+                    resolved = True
+                    break
+                if success[j]:
                     rows.append(
                         {
                             SETUP_AVAILABILITY_TS: int(ts[i]),
@@ -248,7 +266,7 @@ def build_labeled_outcomes(  # noqa: PLR0912, PLR0915
                     )
                     resolved = True
                     break
-                if fail[j] and not success[j]:
+                if fail[j]:
                     rows.append(
                         {
                             SETUP_AVAILABILITY_TS: int(ts[i]),
@@ -265,18 +283,17 @@ def build_labeled_outcomes(  # noqa: PLR0912, PLR0915
             if not resolved:
                 # نافذة غير مكتملة → right-censored (لا تُحسب فشلًا في التدريب/التقييم)
                 if not window_complete:
-                    if last_j > i:
-                        rows.append(
-                            {
-                                SETUP_AVAILABILITY_TS: int(ts[i]),
-                                OUTCOME_AVAILABLE_TS: int(ts[last_j]),
-                                "outcome_name": spec.name,
-                                "y": float("nan"),
-                                "horizon_bars": int(last_j - i),
-                                "group_id": int(groups[i]),
-                                "label_status": "censored",
-                            }
-                        )
+                    rows.append(
+                        {
+                            SETUP_AVAILABILITY_TS: int(ts[i]),
+                            OUTCOME_AVAILABLE_TS: int(ts[last_j]),
+                            "outcome_name": spec.name,
+                            "y": float("nan"),
+                            "horizon_bars": int(last_j - i),
+                            "group_id": int(groups[i]),
+                            "label_status": "censored",
+                        }
+                    )
                     continue
                 # نافذة مكتملة بلا حسم → فشل محسم عند آخر صف في النافذة
                 rows.append(
@@ -328,6 +345,11 @@ def attach_outcome_availability_guard(
     if AVAILABILITY_TS not in features.columns:
         raise ValueError("features require availability_ts")
     feat = features.sort(AVAILABILITY_TS)
+    if feat[AVAILABILITY_TS].n_unique() != feat.height:
+        raise ValueError(
+            "features require unique availability_ts for exact outcome join; "
+            "duplicate timestamps would multiply labeled setups"
+        )
     # exact join: الميزات المتاحة عند لحظة الإعداد — لا asof أمامي.
     return outcomes.join(
         feat,
