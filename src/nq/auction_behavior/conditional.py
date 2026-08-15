@@ -15,6 +15,7 @@ from nq.auction_behavior.outcomes import (
     filter_outcomes_known_by,
     filter_resolved_outcomes,
 )
+from nq.auction_behavior.path_confirm import PATH_CONFIRM_COLUMNS
 from nq.auction_behavior.projection import PROJECTION_NUMERIC_COLUMNS
 from nq.auction_behavior.reliability import RELIABILITY_COLUMNS
 from nq.auction_behavior.state import STATE_FEATURE_COLUMNS
@@ -146,7 +147,7 @@ def select_feature_names_by_family(
 ) -> tuple[str, ...]:
     """حصص إلزامية لكل عائلة ثم ملء الباقي — يزيل الثابت.
 
-    الافتراضي يضمن دخول projection / structure / sequence / level_flow / reliability
+    الافتراضي يضمن دخول projection / path / structure / sequence / level_flow / reliability
     قبل امتلاء السقف بأعمدة الحالة فقط.
     """
     mem_roll = tuple(
@@ -162,6 +163,7 @@ def select_feature_names_by_family(
         "state": tuple(c for c in STATE_FEATURE_COLUMNS if c in frame.columns),
         "structure": tuple(c for c in STRUCTURE_FEATURE_COLUMNS if c in frame.columns),
         "projection": tuple(c for c in PROJECTION_NUMERIC_COLUMNS if c in frame.columns),
+        "path": tuple(c for c in PATH_CONFIRM_COLUMNS if c in frame.columns),
         "sequence": tuple(c for c in SEQUENCE_MEMORY_COLUMNS if c in frame.columns),
         "level_flow": tuple(c for c in LEVEL_FLOW_COLUMNS if c in frame.columns),
         "reliability": tuple(c for c in RELIABILITY_COLUMNS if c in frame.columns),
@@ -179,6 +181,7 @@ def select_feature_names_by_family(
     }
     default_q = {
         "projection": 10,
+        "path": 8,
         "structure": 8,
         "sequence": 8,
         "level_flow": 10,
@@ -209,6 +212,7 @@ def select_feature_names_by_family(
 
     family_order = (
         "projection",
+        "path",
         "structure",
         "sequence",
         "level_flow",

@@ -25,6 +25,7 @@ from nq.auction_behavior.level_flow import (
 )
 from nq.auction_behavior.memory import attach_market_memory, attach_sequence_memory
 from nq.auction_behavior.model import estimate_behavior_probabilities
+from nq.auction_behavior.path_confirm import PATH_CONFIRM_COLUMNS, attach_path_depth_confirmation
 from nq.auction_behavior.projection import (
     PROJECTION_NUMERIC_COLUMNS,
     AsiaLondonProjectionConfig,
@@ -81,6 +82,7 @@ _MEMORY_BASE_COLS = (
     "lf_liquidity_withdrawal",
     "lf_arrival_intensity",
     *PROJECTION_NUMERIC_COLUMNS,
+    *PATH_CONFIRM_COLUMNS,
 )
 
 _HOLDOUT_FRAC_MIN = 0.05
@@ -383,7 +385,8 @@ def _london_scenario_summary(  # noqa: PLR0912, PLR0915
     """سيناريو لندن مقابل قيمة آسيا المكتملة (وصفي؛ بلا توصية صفقة).
 
     يستخدم الملف النهائي لآسيا عند انتقال الجلسة. نتائج مدى لندن تحمل
-    ``outcome_available_ts`` عند نهاية دورة لندن حتى لا تُعامل كمعلومة افتتاح.
+    ``outcome_available_ts`` عند نهاية دورة لندن في العينة — إذا الملف مقصوص
+    قبل 09:30 ET تُقفَل لندن عند آخر بار، وكذلك أي زون أخرى.
     """
     schema = {
         "asia_end_ts": pl.Int64(),
@@ -740,6 +743,8 @@ def _run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
     log.op("session runs + projection asof + story runs")
     blended = _with_session_runs(blended)
     blended = _attach_projection(blended, projection, progress=log)
+    log.op("attach_path_depth_confirmation")
+    blended = attach_path_depth_confirmation(blended, progress=log)
     blended = _with_behavior_story_runs(blended, progress=log)
     log.op(f"blended bars={blended.height:,}")
 

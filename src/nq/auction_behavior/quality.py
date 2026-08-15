@@ -53,14 +53,15 @@ def attach_signal_quality(
     early_flow = (_f("vp_early_imbalance").abs() > 0.0).cast(pl.Float64) * 0.15
     rejection = (_f("vp_look_fail").abs() > 0.0).cast(pl.Float64) * 0.15
     projection_story = (
-        (_f("proj_expansion_testing") > _ACTIVE_FLAG).cast(pl.Float64) * 0.05
-        + (_f("proj_expansion_accepting") > _ACTIVE_FLAG).cast(pl.Float64) * 0.12
-        + (_f("proj_value_transferred") > _ACTIVE_FLAG).cast(pl.Float64) * 0.15
-        + (_f("proj_rejection_to_asia") > _ACTIVE_FLAG).cast(pl.Float64) * 0.10
+        _f("proj_expansion_testing") * 0.05
+        + _f("proj_expansion_accepting") * 0.12
+        + _f("proj_value_transferred") * 0.15
+        + _f("proj_rejection_to_asia") * 0.10
     )
-    evidence = (break_strength + retest_q + early_flow + rejection + projection_story).clip(
-        0.0, 1.0
-    )
+    path_confirm = _f("path_depth_confirm") * 0.22 + _f("path_change_progress") * 0.18
+    evidence = (
+        break_strength + retest_q + early_flow + rejection + projection_story + path_confirm
+    ).clip(0.0, 1.0)
     liquidity_reliability = (
         _f("real_liquidity_ratio", 0.5).clip(0.0, 1.0) * 0.5
         + (1.0 - _f("deceptive_score", 0.5).clip(0.0, 1.0)) * 0.5
