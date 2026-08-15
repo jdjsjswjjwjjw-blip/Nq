@@ -150,8 +150,10 @@ def attach_sequence_memory(  # noqa: PLR0915
     break_p = _pulse("vp_fsm_break")
     retest_p = _pulse("vp_fsm_retest")
     absorb_p = _pulse("vp_absorb")
-    inside = _pulse("struct_close_in_value") if "struct_close_in_value" in work.columns else _pulse(
-        "vp_close_in_value"
+    inside = (
+        _pulse("struct_close_in_value")
+        if "struct_close_in_value" in work.columns
+        else _pulse("vp_close_in_value")
     )
     above = _pulse("struct_above_vah")
     below = _pulse("struct_below_val")

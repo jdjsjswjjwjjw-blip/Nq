@@ -60,8 +60,8 @@ def attach_signal_quality(frame: pl.DataFrame) -> pl.DataFrame:
     )
     # دمج اختياري لأدلة الموثوقية الإحصائية إن وُجدت (ليست حكم حذف).
     if "rel_credibility" in work.columns:
-        liquidity_reliability = (
-            0.7 * liquidity_reliability + 0.3 * _f("rel_credibility", 0.5).clip(0.0, 1.0)
+        liquidity_reliability = 0.7 * liquidity_reliability + 0.3 * _f("rel_credibility", 0.5).clip(
+            0.0, 1.0
         )
     quality = (evidence * (0.5 + 0.5 * liquidity_reliability)).clip(0.0, 1.0)
     return work.with_columns(

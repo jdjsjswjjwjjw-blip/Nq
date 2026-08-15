@@ -257,9 +257,8 @@ def run_behavior_science(  # noqa: PLR0915
         state_predictions = predict_probabilities_at_states(
             final_model,
             blended,
-            outcomes=PRIMARY_OUTCOME_TARGETS + tuple(
-                o for o in OUTCOME_TARGETS if o not in PRIMARY_OUTCOME_TARGETS
-            ),
+            outcomes=PRIMARY_OUTCOME_TARGETS
+            + tuple(o for o in OUTCOME_TARGETS if o not in PRIMARY_OUTCOME_TARGETS),
         )
         if cfg.evaluate_holdout and holdout_pack.holdout.height > 0:
             ho_min = holdout_pack.holdout[SETUP_AVAILABILITY_TS].min()

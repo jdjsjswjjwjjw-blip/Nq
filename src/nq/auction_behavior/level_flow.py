@@ -105,9 +105,7 @@ def attach_level_flow_features(  # noqa: PLR0912, PLR0915
             "decision_vah",
             "decision_val",
             "decision_poc",
-            *(
-                [c for c in ("asia_primary_hvn", "composite_primary_hvn") if c in states.columns]
-            ),
+            *([c for c in ("asia_primary_hvn", "composite_primary_hvn") if c in states.columns]),
         ).sort(AVAILABILITY_TS)
         st = st.with_columns(
             (pl.col(AVAILABILITY_TS) - int(cfg.interval_ns)).alias(BUCKET_START),
@@ -121,9 +119,7 @@ def attach_level_flow_features(  # noqa: PLR0912, PLR0915
             "decision_vah",
             "decision_val",
             "decision_poc",
-            *(
-                [c for c in ("asia_primary_hvn", "composite_primary_hvn") if c in states.columns]
-            ),
+            *([c for c in ("asia_primary_hvn", "composite_primary_hvn") if c in states.columns]),
         ).sort(BUCKET_START)
         if BUCKET_END not in st.columns:
             st = st.with_columns((pl.col(BUCKET_START) + int(cfg.interval_ns)).alias(BUCKET_END))
@@ -315,8 +311,7 @@ def attach_level_flow_features(  # noqa: PLR0912, PLR0915
         _intensity("_c_all").alias("lf_cancel_intensity"),
         # امتصاص: تداول عالي مع إلغاء منخفض قرب الحدود
         (
-            (pl.col("_t_near").cast(pl.Float64) + 1.0)
-            / (pl.col("_c_near").cast(pl.Float64) + 1.0)
+            (pl.col("_t_near").cast(pl.Float64) + 1.0) / (pl.col("_c_near").cast(pl.Float64) + 1.0)
         ).alias("lf_absorption_proxy"),
         # سحب سيولة: إلغاءات قرب المستوى بدون تداول
         (

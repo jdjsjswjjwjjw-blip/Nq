@@ -123,9 +123,7 @@ class BehaviorConfig:
         if len(set(self.memory_lags)) != len(self.memory_lags):
             raise ValueError("memory_lags must be unique")
         if not _HOLDOUT_FRAC_MIN <= self.holdout_frac <= _HOLDOUT_FRAC_MAX:
-            raise ValueError(
-                f"holdout_frac must be in [{_HOLDOUT_FRAC_MIN}, {_HOLDOUT_FRAC_MAX}]"
-            )
+            raise ValueError(f"holdout_frac must be in [{_HOLDOUT_FRAC_MIN}, {_HOLDOUT_FRAC_MAX}]")
 
 
 @dataclass(frozen=True, slots=True)
