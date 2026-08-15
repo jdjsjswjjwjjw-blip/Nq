@@ -783,6 +783,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 "competing_risk_softmax_joint",
                 "oof_conditional_predictions",
                 "feature_family_ablation",
+                "binary_feature_ablation_when_competing_sparse",
                 "outcomes_censored_and_group_onset",
                 "structure_features",
                 "market_memory_sequence_group_safe",
