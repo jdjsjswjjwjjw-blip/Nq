@@ -144,7 +144,7 @@ def _col_array(frame: pl.DataFrame, name: str, n: int) -> np.ndarray:
     return out
 
 
-def build_labeled_outcomes(  # noqa: PLR0912
+def build_labeled_outcomes(  # noqa: PLR0912, PLR0915
     frame: pl.DataFrame,
     *,
     outcome_window: int = 8,
@@ -163,6 +163,7 @@ def build_labeled_outcomes(  # noqa: PLR0912
         "y": pl.Float64(),
         "horizon_bars": pl.Int64(),
         "group_id": pl.Int64(),
+        "label_status": pl.Utf8(),
     }
     if frame.height == 0 or AVAILABILITY_TS not in frame.columns:
         return pl.DataFrame(schema=schema)
@@ -202,9 +203,13 @@ def build_labeled_outcomes(  # noqa: PLR0912
         trigger = np.zeros(n, dtype=bool)
         for col in trig_names:
             trigger |= _active(_col_array(work, col, n))
-        # onset فقط: فعّل عند انتقال إلى نشط (لا تكرار كل برميل طالما الإشارة مشتعلة)
-        prev = np.concatenate(([False], trigger[:-1]))
-        onset = trigger & ~prev
+        # onset داخل كل مجموعة: الصف الأول من القصة previous=False دائمًا
+        onset = np.zeros(n, dtype=bool)
+        for i in range(n):
+            if not trigger[i]:
+                continue
+            if i == 0 or groups[i] != groups[i - 1] or not trigger[i - 1]:
+                onset[i] = True
         success = np.zeros(n, dtype=bool)
         for col in spec.success_cols:
             success |= _active(_col_array(work, col, n))
@@ -215,7 +220,16 @@ def build_labeled_outcomes(  # noqa: PLR0912
         for i in range(n):
             if not onset[i]:
                 continue
-            # النتيجة تُحسم في صف لاحق فقط (عمر >= 1) — لا نفس برميل الإعداد.
+            # كم صفًا لاحقًا داخل المجموعة قبل انقطاع القصة؟
+            visible = 0
+            last_j = i
+            for j in range(i + 1, min(n, i + spec.window + 1)):
+                if groups[j] != groups[i]:
+                    break
+                visible += 1
+                last_j = j
+            window_complete = visible >= int(spec.window)
+
             resolved = False
             for j in range(i + 1, min(n, i + spec.window + 1)):
                 if groups[j] != groups[i]:
@@ -229,6 +243,7 @@ def build_labeled_outcomes(  # noqa: PLR0912
                             "y": 1.0,
                             "horizon_bars": int(j - i),
                             "group_id": int(groups[i]),
+                            "label_status": "resolved",
                         }
                     )
                     resolved = True
@@ -242,40 +257,65 @@ def build_labeled_outcomes(  # noqa: PLR0912
                             "y": 0.0,
                             "horizon_bars": int(j - i),
                             "group_id": int(groups[i]),
+                            "label_status": "resolved",
                         }
                     )
                     resolved = True
                     break
             if not resolved:
-                # نافذة انتهت بلا حسم → فشل افتراضي عند آخر صف مرئي في النافذة/المجموعة
-                end = i
-                for j in range(i + 1, min(n, i + spec.window + 1)):
-                    if groups[j] != groups[i]:
-                        break
-                    end = j
-                if end > i:
-                    rows.append(
-                        {
-                            SETUP_AVAILABILITY_TS: int(ts[i]),
-                            OUTCOME_AVAILABLE_TS: int(ts[end]),
-                            "outcome_name": spec.name,
-                            "y": 0.0,
-                            "horizon_bars": int(end - i),
-                            "group_id": int(groups[i]),
-                        }
-                    )
+                # نافذة غير مكتملة → right-censored (لا تُحسب فشلًا في التدريب/التقييم)
+                if not window_complete:
+                    if last_j > i:
+                        rows.append(
+                            {
+                                SETUP_AVAILABILITY_TS: int(ts[i]),
+                                OUTCOME_AVAILABLE_TS: int(ts[last_j]),
+                                "outcome_name": spec.name,
+                                "y": float("nan"),
+                                "horizon_bars": int(last_j - i),
+                                "group_id": int(groups[i]),
+                                "label_status": "censored",
+                            }
+                        )
+                    continue
+                # نافذة مكتملة بلا حسم → فشل محسم عند آخر صف في النافذة
+                rows.append(
+                    {
+                        SETUP_AVAILABILITY_TS: int(ts[i]),
+                        OUTCOME_AVAILABLE_TS: int(ts[last_j]),
+                        "outcome_name": spec.name,
+                        "y": 0.0,
+                        "horizon_bars": int(last_j - i),
+                        "group_id": int(groups[i]),
+                        "label_status": "resolved",
+                    }
+                )
 
     out = pl.DataFrame(rows) if rows else pl.DataFrame(schema=schema)
     if out.height:
-        assert_availability_not_before_event(
-            out[SETUP_AVAILABILITY_TS].to_numpy(),
-            out[OUTCOME_AVAILABLE_TS].to_numpy(),
-        )
-        if bool(
-            np.any(out[OUTCOME_AVAILABLE_TS].to_numpy() < out[SETUP_AVAILABILITY_TS].to_numpy())
-        ):
-            raise AssertionError("outcome_available_ts before setup_availability_ts")
+        # التحقق الزمني على الصفوف المحسومة فقط (censored قد يحمل NaN في y)
+        known = out.filter(pl.col("label_status") == "resolved")
+        if known.height:
+            assert_availability_not_before_event(
+                known[SETUP_AVAILABILITY_TS].to_numpy(),
+                known[OUTCOME_AVAILABLE_TS].to_numpy(),
+            )
+            if bool(
+                np.any(
+                    known[OUTCOME_AVAILABLE_TS].to_numpy() < known[SETUP_AVAILABILITY_TS].to_numpy()
+                )
+            ):
+                raise AssertionError("outcome_available_ts before setup_availability_ts")
     return out
+
+
+def filter_resolved_outcomes(outcomes: pl.DataFrame) -> pl.DataFrame:
+    """يستبعد right-censored من التدريب والتقييم الكمي."""
+    if outcomes.height == 0:
+        return outcomes
+    if "label_status" not in outcomes.columns:
+        return outcomes
+    return outcomes.filter(pl.col("label_status") == "resolved")
 
 
 def attach_outcome_availability_guard(
@@ -301,7 +341,8 @@ def filter_outcomes_known_by(outcomes: pl.DataFrame, *, asof_ts: int) -> pl.Data
     """صفوف النتائج التي أصبحت معروفة عند/قبل ``asof_ts`` (للتدريب فقط)."""
     if outcomes.height == 0 or OUTCOME_AVAILABLE_TS not in outcomes.columns:
         return outcomes
-    return outcomes.filter(pl.col(OUTCOME_AVAILABLE_TS) <= int(asof_ts))
+    known = outcomes.filter(pl.col(OUTCOME_AVAILABLE_TS) <= int(asof_ts))
+    return filter_resolved_outcomes(known)
 
 
 __all__ = [
@@ -313,4 +354,5 @@ __all__ = [
     "attach_outcome_availability_guard",
     "build_labeled_outcomes",
     "filter_outcomes_known_by",
+    "filter_resolved_outcomes",
 ]

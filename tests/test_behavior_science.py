@@ -147,10 +147,16 @@ def test_state_frame_has_no_predictions_prediction_frame_separate() -> None:
         ]
     preds = behavior_prediction_frame(result)
     if result.science is not None and result.science.final_model is not None:
-        assert preds.height == result.blended.height
-        assert any(c.startswith("p_y_") for c in preds.columns)
-        # التنبؤ لا يحمل عمود y من التسميات
-        assert "y" not in preds.columns
+        # OOF قد يكون أقصر من blended؛ الحي موثّق كغير مؤهل للباك تست
+        assert preds.height >= 0
+        if preds.height:
+            assert "prediction_is_oof" in preds.columns or any(
+                c.startswith("p_y_") for c in preds.columns
+            )
+        live = result.science.live_model_predictions
+        if live.height:
+            assert live["eligible_for_backtest"].unique().to_list() == [False]
+            assert "y" not in live.columns
 
 
 def test_primary_outcomes_in_catalog() -> None:

@@ -649,8 +649,8 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
     _assert_no_trade_columns(blended)
     _assert_no_trade_columns(events)
 
-    # Layers 10–11: base-rate OOS + science stack (1–9)
-    probs, fold_metrics = estimate_behavior_probabilities(
+    # Layers 10–11: base-rate OOS + science stack
+    probs, base_rate_fold_metrics = estimate_behavior_probabilities(
         blended,
         events,
         n_splits=cfg.n_splits,
@@ -660,6 +660,7 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
     )
     science: BehaviorScienceReport | None = None
     predictions = pl.DataFrame()
+    fold_metrics = base_rate_fold_metrics
     if cfg.include_science:
         science = run_behavior_science(
             blended,
@@ -674,9 +675,14 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
                 group_col="_behavior_story_run",
             ),
         )
+        # لا تخلط: fold_metrics الشرطي منفصل؛ base-rate يبقى في diagnostics
         if science.fold_frame.height:
             fold_metrics = science.fold_frame
-        predictions = science.state_predictions
+        # للتنبؤ التاريخي الصالح للباك تست فضّل OOF؛ وإلا الحي موثّق كغير مؤهل
+        if science.conditional_oof_predictions.height:
+            predictions = science.conditional_oof_predictions
+        else:
+            predictions = science.live_model_predictions
     validation = validate_behavior_frame(blended, fold_df=fold_metrics)
 
     diagnostics: dict[str, Any] = {
@@ -694,6 +700,8 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
         "deceptive_scored_rows": scored_rows,
         "deceptive_filtered": False,
         "signal_quality_is_calibrated_probability": False,
+        "base_rate_fold_metrics_rows": int(base_rate_fold_metrics.height),
+        "conditional_fold_metrics_rows": int(0 if science is None else science.fold_frame.height),
         "science": None if science is None else science.diagnostics,
         "causality": {
             "decision_columns_required": True,
@@ -701,9 +709,10 @@ def run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
             "deceptive_deletion": False,
             "reliability_deletion": False,
             "validation": "purged_walk_forward",
-            "outcomes": "outcome_available_ts_gated",
+            "outcomes": "outcome_available_ts_gated_censored_excluded",
             "holdout": "frozen_final_tail",
             "prediction_vs_state": "separated",
+            "oof_vs_live": "separated",
             "trade_outputs": False,
         },
         "config": {
@@ -785,19 +794,25 @@ def behavior_state_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
 
 
 def behavior_prediction_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
-    """بناءً على ما أعرفه الآن، ماذا أتوقع؟ — احتمالات شرطية منفصلة عن الحالة.
+    """احتمالات شرطية — يفضّل OOF المؤهل للباك تست إن وُجد.
 
-    الأعمدة ``p_y_*`` من النموذج الشرطي. ليست ``signal_quality``.
-    لا تُحسب من تسميات OOS؛ التدريب تعلّم العلاقة ثم التنبؤ يستخدم الميزات فقط.
+    راجع ``prediction_is_oof`` / ``eligible_for_backtest`` / ``model_train_end_ts``.
+    التنبؤ الحي (النموذج النهائي) ليس سلسلة تاريخية OOS.
     """
     if result.predictions.height > 0:
         return result.predictions
-    if result.science is not None and result.science.state_predictions.height > 0:
-        return result.science.state_predictions
+    if result.science is not None:
+        if result.science.conditional_oof_predictions.height > 0:
+            return result.science.conditional_oof_predictions
+        if result.science.live_model_predictions.height > 0:
+            return result.science.live_model_predictions
     return pl.DataFrame(
         schema={
             AVAILABILITY_TS: pl.Int64(),
             "prediction_source": pl.Utf8(),
+            "prediction_is_oof": pl.Boolean(),
+            "eligible_for_backtest": pl.Boolean(),
+            "model_train_end_ts": pl.Int64(),
         }
     )
 

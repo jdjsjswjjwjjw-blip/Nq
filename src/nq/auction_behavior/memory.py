@@ -62,7 +62,7 @@ def attach_causal_memory(
     return work.with_columns(exprs)
 
 
-def attach_market_memory(
+def attach_market_memory(  # noqa: PLR0912
     frame: pl.DataFrame,
     *,
     columns: Sequence[str],
@@ -96,9 +96,12 @@ def attach_market_memory(
                     raise ValueError(f"group_col is missing: {group_col}")
                 mean_expr = mean_expr.over(group_col)
                 sum_expr = sum_expr.over(group_col)
-            # ماضي صارم: لا تدخل قيمة الصف الحالي في ذاكرة القرار.
-            exprs.append(mean_expr.shift(1).alias(f"{col}__rmean{win}"))
-            exprs.append(sum_expr.shift(1).alias(f"{col}__rsum{win}"))
+                # ماضي صارم داخل المجموعة فقط — لا وراثة من قصة سابقة.
+                exprs.append(mean_expr.shift(1).over(group_col).alias(f"{col}__rmean{win}"))
+                exprs.append(sum_expr.shift(1).over(group_col).alias(f"{col}__rsum{win}"))
+            else:
+                exprs.append(mean_expr.shift(1).alias(f"{col}__rmean{win}"))
+                exprs.append(sum_expr.shift(1).alias(f"{col}__rsum{win}"))
     events = event_columns or ()
     for col in events:
         if col not in work.columns:
@@ -107,8 +110,12 @@ def attach_market_memory(
         for win in roll_windows:
             cnt = pulse.rolling_sum(window_size=win, min_samples=1)
             if group_col is not None:
+                if group_col not in work.columns:
+                    raise ValueError(f"group_col is missing: {group_col}")
                 cnt = cnt.over(group_col)
-            exprs.append(cnt.shift(1).alias(f"{col}__ecount{win}"))
+                exprs.append(cnt.shift(1).over(group_col).alias(f"{col}__ecount{win}"))
+            else:
+                exprs.append(cnt.shift(1).alias(f"{col}__ecount{win}"))
     if not exprs:
         return work
     return work.with_columns(exprs)

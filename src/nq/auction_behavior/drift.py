@@ -26,13 +26,21 @@ class DriftReport:
 
 
 def _psi_1d(ref: np.ndarray, cmp: np.ndarray, *, n_bins: int = 10) -> float:
-    """Population Stability Index لصفة واحدة."""
+    """Population Stability Index — حواف مفتوحة (-inf/+inf) لالتقاط القيم خارج المدى."""
     ref = ref[np.isfinite(ref)]
     cmp = cmp[np.isfinite(cmp)]
     if ref.size == 0 or cmp.size == 0:
         return 0.0
     qs = np.linspace(0.0, 1.0, n_bins + 1)
-    edges = np.unique(np.quantile(ref, qs))
+    # نقاط داخلية من كميات المرجع؛ الطرفان مفتوحان
+    inner = np.unique(np.quantile(ref, qs[1:-1]))
+    if inner.size == 0:
+        # مرجع ثابت تقريبًا — قارن هل المقارنة مختلفة
+        ref_med = float(np.median(ref))
+        if float(np.max(np.abs(cmp - ref_med))) < _EPS:
+            return 0.0
+        return 10.0  # انجراف حاد عند مرجع ثابت
+    edges = np.concatenate((np.asarray([-np.inf]), inner, np.asarray([np.inf])))
     if edges.size < _MIN_EDGES:
         return 0.0
     ref_hist, _ = np.histogram(ref, bins=edges)
@@ -41,7 +49,6 @@ def _psi_1d(ref: np.ndarray, cmp: np.ndarray, *, n_bins: int = 10) -> float:
     cmp_p = cmp_hist.astype(np.float64) / max(cmp.size, 1)
     ref_p = np.clip(ref_p, _EPS, None)
     cmp_p = np.clip(cmp_p, _EPS, None)
-    # أعد التطبيع بعد القص
     ref_p = ref_p / ref_p.sum()
     cmp_p = cmp_p / cmp_p.sum()
     return float(np.sum((cmp_p - ref_p) * np.log(cmp_p / ref_p)))

@@ -75,6 +75,115 @@ def _empty(keys: pl.DataFrame) -> pl.DataFrame:
     return base.with_columns(pl.lit(0.0).alias(c) for c in LEVEL_FLOW_COLUMNS)
 
 
+def _order_lifecycle_by_bucket(events: pl.DataFrame) -> pl.DataFrame:  # noqa: PLR0912, PLR0915
+    """آلة حالات سببية عبر البراميل: ADD→…→CANCEL/FILL يُصدر العمر عند الإغلاق.
+
+    المخرجات تُنسب إلى ``bucket_start`` لزمن الإغلاق (نقطة معرفة) — بلا look-ahead.
+    """
+    schema = {
+        BUCKET_START: pl.Int64(),
+        "lf_mean_order_lifetime_ns": pl.Float64(),
+        "lf_queue_survival_rate": pl.Float64(),
+        "lf_partial_exec_rate": pl.Float64(),
+        "lf_refill_rate": pl.Float64(),
+    }
+    if events.height == 0 or "order_id" not in events.columns:
+        return pl.DataFrame(schema=schema)
+
+    work = events.sort([EVENT_TS, "order_id"])
+    # حالة حية لكل order_id
+    open_ts: dict[int, int] = {}
+    open_size: dict[int, float] = {}
+    open_bucket: dict[int, int] = {}
+    n_mod: dict[int, int] = {}
+    had_trade: dict[int, bool] = {}
+    rows: list[dict[str, float | int]] = []
+
+    actions = work["action"].to_list()
+    oids = work["order_id"].to_list()
+    times = work[EVENT_TS].to_list()
+    sizes = work["size"].to_list()
+    buckets = work[BUCKET_START].to_list()
+
+    for action, oid_raw, ts_raw, size_raw, buck_raw in zip(
+        actions, oids, times, sizes, buckets, strict=True
+    ):
+        if oid_raw is None:
+            continue
+        oid = int(oid_raw)
+        ts = int(ts_raw)
+        size = float(size_raw) if size_raw is not None else 0.0
+        buck = int(buck_raw)
+        act = str(action)
+
+        if act == _ADD:
+            open_ts[oid] = ts
+            open_size[oid] = size
+            open_bucket[oid] = buck
+            n_mod[oid] = 0
+            had_trade[oid] = False
+            continue
+        if oid not in open_ts:
+            # أمر بلا ADD مرئي في النافذة — تجاهل
+            continue
+        if act == _MODIFY:
+            n_mod[oid] = n_mod.get(oid, 0) + 1
+            if size > open_size.get(oid, 0.0):
+                # refill تقريبي
+                n_mod[oid] = n_mod.get(oid, 0) + 1
+            open_size[oid] = size
+            continue
+        if act in (_TRADE, _FILL):
+            had_trade[oid] = True
+            if size < open_size.get(oid, size):
+                open_size[oid] = size
+            # لا تُغلق بالكامل إلا إن الحجم صفر تقريبًا
+            if size > 0:
+                continue
+        if act in (_CANCEL, _TRADE, _FILL):
+            life = float(ts - open_ts[oid])
+            sz0 = open_size.get(oid, size)
+            survived = 1.0 if had_trade.get(oid, False) and act != _CANCEL else 0.0
+            if act in (_TRADE, _FILL) and had_trade.get(oid, False):
+                survived = 1.0
+            if act == _CANCEL:
+                survived = 0.0
+            partial = (
+                1.0
+                if had_trade.get(oid, False) and act == _CANCEL and sz0 > size
+                else (1.0 if had_trade.get(oid, False) and act in (_TRADE, _FILL) else 0.0)
+            )
+            refill = 1.0 if n_mod.get(oid, 0) > 0 and had_trade.get(oid, False) else 0.0
+            # الإسناد لزمن الإغلاق (سببي)
+            rows.append(
+                {
+                    BUCKET_START: buck,
+                    "_life": life,
+                    "_survived": survived,
+                    "_partial": partial,
+                    "_refill": refill,
+                }
+            )
+            open_ts.pop(oid, None)
+            open_size.pop(oid, None)
+            open_bucket.pop(oid, None)
+            n_mod.pop(oid, None)
+            had_trade.pop(oid, None)
+
+    if not rows:
+        return pl.DataFrame(schema=schema)
+    return (
+        pl.DataFrame(rows)
+        .group_by(BUCKET_START, maintain_order=True)
+        .agg(
+            pl.col("_life").mean().alias("lf_mean_order_lifetime_ns"),
+            pl.col("_survived").mean().alias("lf_queue_survival_rate"),
+            pl.col("_partial").mean().alias("lf_partial_exec_rate"),
+            pl.col("_refill").mean().alias("lf_refill_rate"),
+        )
+    )
+
+
 def attach_level_flow_features(  # noqa: PLR0912, PLR0915
     mbo: pl.DataFrame,
     states: pl.DataFrame,
@@ -208,7 +317,7 @@ def attach_level_flow_features(  # noqa: PLR0912, PLR0915
 
     grouped = joined.group_by(BUCKET_START, maintain_order=True).agg(aggs)
 
-    # عمر الأمر / بقاء الطابور / refill — على أوامر لمست المستويات
+    # عمر الأمر عبر البراميل: آلة حالات سببية order_id → يُصدَر عند الإغلاق
     life_frame = pl.DataFrame(
         schema={
             BUCKET_START: pl.Int64(),
@@ -219,45 +328,7 @@ def attach_level_flow_features(  # noqa: PLR0912, PLR0915
         }
     )
     if "order_id" in joined.columns:
-        order_stats = (
-            joined.filter(near_any)
-            .group_by(BUCKET_START, "order_id", maintain_order=True)
-            .agg(
-                pl.col(EVENT_TS).min().alias("_first"),
-                pl.col(EVENT_TS).max().alias("_last"),
-                is_add.any().alias("_had_add"),
-                is_cancel.any().alias("_had_cancel"),
-                is_trade.any().alias("_had_trade"),
-                is_modify.sum().alias("_n_mod"),
-                pl.col("size").first().alias("_sz0"),
-                pl.col("size").last().alias("_sz1"),
-            )
-            .with_columns(
-                (pl.col("_last") - pl.col("_first")).cast(pl.Float64).alias("_life"),
-                (
-                    pl.col("_had_add")
-                    & pl.col("_had_trade")
-                    & (pl.col("_sz1") < pl.col("_sz0"))
-                    & ~pl.col("_had_cancel")
-                )
-                .cast(pl.Float64)
-                .alias("_partial"),
-                (pl.col("_had_add") & (pl.col("_n_mod") > 0) & ~pl.col("_had_cancel"))
-                .cast(pl.Float64)
-                .alias("_refill"),
-                (pl.col("_had_add") & ~pl.col("_had_cancel") & pl.col("_had_trade"))
-                .cast(pl.Float64)
-                .alias("_survived"),
-            )
-            .group_by(BUCKET_START, maintain_order=True)
-            .agg(
-                pl.col("_life").mean().alias("lf_mean_order_lifetime_ns"),
-                pl.col("_survived").mean().alias("lf_queue_survival_rate"),
-                pl.col("_partial").mean().alias("lf_partial_exec_rate"),
-                pl.col("_refill").mean().alias("lf_refill_rate"),
-            )
-        )
-        life_frame = order_stats
+        life_frame = _order_lifecycle_by_bucket(joined.filter(near_any))
 
     def _intensity(count: str) -> pl.Expr:
         return (pl.col(count).cast(pl.Float64) / pl.col("_dur")).fill_null(0.0)

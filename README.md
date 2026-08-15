@@ -542,14 +542,17 @@ if science is not None and science.holdout_eval is not None:
 
 **خطوات العلم:**
 1. Conditional logistic: State(t) → احتمالات شرطية (بلا تسميات OOS داخل p)  
-2. نتائج موسومة + `outcome_available_ts` (onset → حل لاحق)  
+2. نتائج موسومة + `outcome_available_ts`؛ **censored** عند نافذة ناقصة (لا y=0)  
 3. FE بنيوي حول `decision_*` / HVN (`struct_*`)  
-4. ذاكرة: lags + rolling + تسلسل (`mem_time_since_*`, dwell, هجرة)  
-5. Level-anchored OF + reliability evidence (Raw MBO محفوظ)  
-6. Asia→London projection داخل متجه الحالة  
-7. معايرة ECE + Brier (احتمال معاير ≠ signal_quality)  
-8. Walk-forward على التطوير فقط  
-9. Drift (PSI) + استقرار · Final frozen holdout مرة واحدة  
+4. ذاكرة: lags + rolling + تسلسل — `shift` داخل المجموعة فقط  
+5. Level-anchored OF + reliability evidence (Raw MBO محفوظ) + lifecycle عبر البراميل  
+6. اختيار ميزات بعائلات إلزامية (projection/structure/sequence/lf/rel)  
+7. Asia→London projection داخل متجه الحالة  
+8. Platt على ذيل قطار سببي + ECE/Brier/**BSS** (`signal_quality ≠` احتمال)  
+9. Walk-forward على **setup فريد** · **OOF** للباك تست · live منفصل · holdout مرة واحدة  
+
+> `behavior_prediction_frame` يفضّل تنبؤات OOF (`eligible_for_backtest=True`).  
+> التنبؤ الحي من النموذج النهائي يحمل `eligible_for_backtest=False` و`model_train_end_ts`.  
 
 **إسقاط آسيا→لندن:** يبني `build_asia_london_projection` ملف آسيا تراكميًا بلا
 تصفير، ويجمّده عند أول برميل لندن كـ`asia_poc/vah/val/HVN`. بعد ذلك يضيف كل
