@@ -12,6 +12,7 @@ from nq.auction_behavior.outcomes import (
     SETUP_AVAILABILITY_TS,
     filter_outcomes_known_by,
 )
+from nq.contracts.temporal import AVAILABILITY_TS
 from nq.validation.leakage import assert_temporal_split
 
 _EPS = 1e-12
@@ -180,9 +181,40 @@ def score_conditional_models(
     return pl.concat(rows, how="diagonal_relaxed").sort(SETUP_AVAILABILITY_TS)
 
 
+def predict_probabilities_at_states(
+    model: ConditionalModel,
+    states: pl.DataFrame,
+    *,
+    outcomes: tuple[str, ...] | None = None,
+    ts_col: str = "availability_ts",
+) -> pl.DataFrame:
+    """State(t) → احتمالات شرطية — بلا استخدام تسميات النتائج أو المستقبل.
+
+    الناتج إطار تنبؤ منفصل عن ``behavior_state_frame``.
+    الأعمدة ``p_*`` احتمال النموذج الشرطي — ليست ``signal_quality``.
+    """
+
+    key = ts_col if ts_col in states.columns else AVAILABILITY_TS
+    targets = outcomes if outcomes is not None else tuple(model.weights.keys())
+    if states.height == 0:
+        schema: dict[str, pl.DataType] = {key: pl.Int64()}
+        for name in targets:
+            schema[f"p_{name}"] = pl.Float64()
+        schema["prediction_source"] = pl.Utf8()
+        return pl.DataFrame(schema=schema)
+
+    work = states.sort(key)
+    out = work.select(key)
+    for name in targets:
+        p = model.predict_proba(work, name)
+        out = out.with_columns(pl.Series(f"p_{name}", p))
+    return out.with_columns(pl.lit("conditional_logistic_l2").alias("prediction_source"))
+
+
 __all__ = [
     "ConditionalModel",
     "fit_conditional_models",
+    "predict_probabilities_at_states",
     "score_conditional_models",
     "select_feature_names",
 ]

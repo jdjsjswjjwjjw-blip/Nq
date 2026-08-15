@@ -15,6 +15,7 @@ from nq.auction_behavior.calibration import (
 from nq.auction_behavior.conditional import (
     ConditionalModel,
     fit_conditional_models,
+    predict_probabilities_at_states,
     score_conditional_models,
     select_feature_names,
 )
@@ -25,14 +26,17 @@ from nq.auction_behavior.holdout import (
     carve_frozen_holdout,
     evaluate_frozen_holdout_once,
 )
-from nq.auction_behavior.memory import list_memory_columns
+from nq.auction_behavior.level_flow import LEVEL_FLOW_COLUMNS
+from nq.auction_behavior.memory import SEQUENCE_MEMORY_COLUMNS, list_memory_columns
 from nq.auction_behavior.outcomes import (
     OUTCOME_TARGETS,
+    PRIMARY_OUTCOME_TARGETS,
     SETUP_AVAILABILITY_TS,
     attach_outcome_availability_guard,
     build_labeled_outcomes,
 )
 from nq.auction_behavior.projection import PROJECTION_NUMERIC_COLUMNS
+from nq.auction_behavior.reliability import RELIABILITY_COLUMNS
 from nq.auction_behavior.state import STATE_FEATURE_COLUMNS
 from nq.auction_behavior.structure import STRUCTURE_FEATURE_COLUMNS
 from nq.auction_behavior.walk_forward import (
@@ -47,6 +51,13 @@ _PREFERRED_FEATURES: tuple[str, ...] = (
     *STATE_FEATURE_COLUMNS,
     *STRUCTURE_FEATURE_COLUMNS,
     *PROJECTION_NUMERIC_COLUMNS,
+    *SEQUENCE_MEMORY_COLUMNS,
+    *LEVEL_FLOW_COLUMNS,
+    *RELIABILITY_COLUMNS,
+    "signal_quality",
+    "signal_evidence",
+    "deceptive_score",
+    "real_liquidity_ratio",
 )
 
 
@@ -61,7 +72,7 @@ class ScienceConfig:
     min_train_size: int = 16
     holdout_frac: float = 0.2
     l2: float = 1.0
-    max_features: int = 48
+    max_features: int = 64
     use_month_folds: bool = True
     evaluate_holdout: bool = True
     calibration_bins: int = 10
@@ -82,6 +93,8 @@ class BehaviorScienceReport:
     holdout: FrozenHoldout
     holdout_eval: HoldoutEvaluation | None
     final_model: ConditionalModel | None
+    #: State(t)→probs من النموذج النهائي على إطار الميزات (بلا تسميات OOS داخل p).
+    state_predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -91,7 +104,7 @@ def _preferred_with_memory(frame: pl.DataFrame) -> tuple[str, ...]:
     return tuple(dict.fromkeys([*_PREFERRED_FEATURES, *mem]))
 
 
-def run_behavior_science(
+def run_behavior_science(  # noqa: PLR0915
     blended: pl.DataFrame,
     *,
     config: ScienceConfig | None = None,
@@ -111,6 +124,7 @@ def run_behavior_science(
             holdout=empty_holdout,
             holdout_eval=None,
             final_model=None,
+            state_predictions=pl.DataFrame(),
             diagnostics={"empty": True},
         )
 
@@ -226,6 +240,7 @@ def run_behavior_science(
     final_model: ConditionalModel | None = None
     holdout_eval: HoldoutEvaluation | None = None
     holdout_state = holdout_pack
+    state_predictions = pl.DataFrame()
     if develop.height >= cfg.min_train_size and feature_names:
         max_dev = develop[SETUP_AVAILABILITY_TS].max()
         assert max_dev is not None
@@ -237,6 +252,14 @@ def run_behavior_science(
             train_end_ts=final_train_end,
             l2=cfg.l2,
             min_train=max(8, cfg.min_train_size // 2),
+        )
+        # تنبؤ على كل صف حالة: الميزات فقط — لا تُمرَّر تسميات y إلى predict
+        state_predictions = predict_probabilities_at_states(
+            final_model,
+            blended,
+            outcomes=PRIMARY_OUTCOME_TARGETS + tuple(
+                o for o in OUTCOME_TARGETS if o not in PRIMARY_OUTCOME_TARGETS
+            ),
         )
         if cfg.evaluate_holdout and holdout_pack.holdout.height > 0:
             ho_min = holdout_pack.holdout[SETUP_AVAILABILITY_TS].min()
@@ -264,6 +287,7 @@ def run_behavior_science(
         holdout=holdout_state,
         holdout_eval=holdout_eval,
         final_model=final_model,
+        state_predictions=state_predictions,
         diagnostics={
             "n_labeled": int(labeled.height),
             "n_develop": int(develop.height),
@@ -272,11 +296,16 @@ def run_behavior_science(
             "holdout_touched": bool(holdout_state.touched),
             "n_features": len(feature_names),
             "n_folds": len(folds),
+            "primary_outcomes": list(PRIMARY_OUTCOME_TARGETS),
+            "signal_quality_is_calibrated_probability": False,
+            "prediction_uses_oos_labels": False,
             "science_steps": (
-                "conditional_model",
+                "conditional_model_state_to_probs",
                 "outcomes_outcome_available_ts",
                 "structure_features",
-                "market_memory",
+                "market_memory_sequence",
+                "level_anchored_order_flow",
+                "reliability_evidence_no_delete",
                 "asia_london_projection_state",
                 "calibration_ece_brier",
                 "walk_forward_multi_segment",

@@ -82,6 +82,8 @@ def test_science_stack_runs_end_to_end() -> None:
             signal_interval_ns=200,
             fixed_range=False,
             include_deceptive_scores=False,
+            include_level_flow=True,
+            include_reliability_evidence=False,
             include_asia_london_projection=False,
             include_science=True,
             evaluate_holdout=True,
@@ -94,12 +96,69 @@ def test_science_stack_runs_end_to_end() -> None:
     assert result.validation.ok
     assert result.science is not None
     assert "struct_dist_vah_ticks" in result.blended.columns
+    assert "mem_time_since_break" in result.blended.columns
+    assert "lf_arrival_intensity" in result.blended.columns
     mem_cols = [c for c in result.blended.columns if "__rmean" in c or "__lag" in c]
     assert mem_cols
     diag = result.science.diagnostics
-    assert "conditional_model" in diag["science_steps"]
+    assert "conditional_model_state_to_probs" in diag["science_steps"]
     assert "frozen_final_holdout" in diag["science_steps"]
+    assert diag["signal_quality_is_calibrated_probability"] is False
+    assert diag["prediction_uses_oos_labels"] is False
     assert diag["holdout_cut_ts"] != 0 or result.science.labeled.height == 0
+
+
+@pytest.mark.leakage
+def test_state_frame_has_no_predictions_prediction_frame_separate() -> None:
+    from nq.auction_behavior import behavior_prediction_frame, behavior_state_frame
+
+    frame = _long_stream(120)
+    result = run_auction_behavior_analysis(
+        frame,
+        config=BehaviorConfig(
+            profile_interval_ns=1000,
+            signal_interval_ns=200,
+            fixed_range=False,
+            include_deceptive_scores=False,
+            include_level_flow=False,
+            include_reliability_evidence=False,
+            include_asia_london_projection=False,
+            include_science=True,
+            evaluate_holdout=False,
+            n_splits=3,
+            min_train_size=8,
+            holdout_frac=0.2,
+        ),
+    )
+    state = behavior_state_frame(result)
+    assert not any(c.startswith("p_y_") for c in state.columns)
+    assert "signal_quality" in state.columns
+    if "signal_quality_is_calibrated_probability" in result.blended.columns:
+        assert result.blended["signal_quality_is_calibrated_probability"].unique().to_list() == [
+            False
+        ]
+    preds = behavior_prediction_frame(result)
+    if result.science is not None and result.science.final_model is not None:
+        assert preds.height == result.blended.height
+        assert any(c.startswith("p_y_") for c in preds.columns)
+        # التنبؤ لا يحمل عمود y من التسميات
+        assert "y" not in preds.columns
+
+
+def test_primary_outcomes_in_catalog() -> None:
+    from nq.auction_behavior.outcomes import OUTCOME_TARGETS, PRIMARY_OUTCOME_TARGETS
+
+    for name in PRIMARY_OUTCOME_TARGETS:
+        assert name in OUTCOME_TARGETS
+
+
+def test_reliability_never_filters_mbo() -> None:
+    """أدلة الموثوقية لا تستدعي filter_deceptive_liquidity."""
+    import nq.auction_behavior.reliability as rel_mod
+
+    src = open(rel_mod.__file__, encoding="utf-8").read()
+    assert "filter_deceptive_liquidity" not in src
+    assert "score_deceptive_events" in src
 
 
 def test_ece_bounds_and_perfect_calibration() -> None:

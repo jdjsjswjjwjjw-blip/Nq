@@ -20,8 +20,16 @@ from nq.validation.leakage import assert_availability_not_before_event, assert_c
 OUTCOME_AVAILABLE_TS = "outcome_available_ts"
 SETUP_AVAILABILITY_TS = "setup_availability_ts"
 
-#: مخرجات احتمالية أساسية للنموذج الشرطي.
+#: أهداف الإسقاط الأساسية (Asia→London) — أولوية التعلم الشرطي.
+PRIMARY_OUTCOME_TARGETS = (
+    "y_expansion_accepting",
+    "y_rejection_return_to_asia",
+    "y_repriced_balance",
+)
+
+#: مخرجات احتمالية كاملة للنموذج الشرطي (أساسي + أحداث VP/FSM).
 OUTCOME_TARGETS = (
+    *PRIMARY_OUTCOME_TARGETS,
     "y_true_break",
     "y_false_break",
     "y_retest_success",
@@ -35,16 +43,44 @@ _ACTIVE = 0.5
 
 @dataclass(frozen=True, slots=True)
 class OutcomeSpec:
-    """تعريف نتيجة واحدة: محفّز إعداد + محكّات حل لاحقة."""
+    """تعريف نتيجة واحدة: محفّز إعداد + محكّات حل لاحقة.
+
+    ``trigger_cols`` إن وُجدت تُفعّل الإعداد عند أي عمود نشط؛ وإلا ``trigger_col``.
+    """
 
     name: str
     trigger_col: str
     success_cols: tuple[str, ...]
     fail_cols: tuple[str, ...]
     window: int
+    trigger_cols: tuple[str, ...] | None = None
 
 
 _DEFAULT_SPECS: tuple[OutcomeSpec, ...] = (
+    # —— أهداف الإسقاط الصارمة: prediction عند onset · outcome_available_ts لاحقًا ——
+    OutcomeSpec(
+        name="y_expansion_accepting",
+        trigger_col="proj_expansion_testing",
+        success_cols=("proj_expansion_accepting",),
+        fail_cols=("proj_rejection_to_asia", "proj_repriced_balance"),
+        window=30,
+    ),
+    OutcomeSpec(
+        name="y_rejection_return_to_asia",
+        trigger_col="proj_expansion_testing",
+        trigger_cols=("proj_expansion_testing", "proj_expansion_accepting"),
+        success_cols=("proj_rejection_to_asia",),
+        fail_cols=("proj_repriced_balance", "proj_value_transferred"),
+        window=30,
+    ),
+    OutcomeSpec(
+        name="y_repriced_balance",
+        trigger_col="proj_expansion_testing",
+        trigger_cols=("proj_expansion_testing", "proj_expansion_accepting"),
+        success_cols=("proj_repriced_balance",),
+        fail_cols=("proj_rejection_to_asia",),
+        window=30,
+    ),
     OutcomeSpec(
         name="y_true_break",
         trigger_col="vp_fsm_break",
@@ -151,7 +187,10 @@ def build_labeled_outcomes(  # noqa: PLR0912
                 trigger_col=s.trigger_col,
                 success_cols=s.success_cols,
                 fail_cols=s.fail_cols,
-                window=int(outcome_window),
+                window=int(outcome_window)
+                if s.name not in PRIMARY_OUTCOME_TARGETS
+                else max(int(outcome_window), s.window),
+                trigger_cols=s.trigger_cols,
             )
             for s in _DEFAULT_SPECS
         )
@@ -159,7 +198,13 @@ def build_labeled_outcomes(  # noqa: PLR0912
 
     rows: list[dict[str, object]] = []
     for spec in active_specs:
-        trigger = _active(_col_array(work, spec.trigger_col, n))
+        trig_names = spec.trigger_cols if spec.trigger_cols else (spec.trigger_col,)
+        trigger = np.zeros(n, dtype=bool)
+        for col in trig_names:
+            trigger |= _active(_col_array(work, col, n))
+        # onset فقط: فعّل عند انتقال إلى نشط (لا تكرار كل برميل طالما الإشارة مشتعلة)
+        prev = np.concatenate(([False], trigger[:-1]))
+        onset = trigger & ~prev
         success = np.zeros(n, dtype=bool)
         for col in spec.success_cols:
             success |= _active(_col_array(work, col, n))
@@ -168,7 +213,7 @@ def build_labeled_outcomes(  # noqa: PLR0912
             fail |= _active(_col_array(work, col, n))
 
         for i in range(n):
-            if not trigger[i]:
+            if not onset[i]:
                 continue
             # النتيجة تُحسم في صف لاحق فقط (عمر >= 1) — لا نفس برميل الإعداد.
             resolved = False
@@ -262,6 +307,7 @@ def filter_outcomes_known_by(outcomes: pl.DataFrame, *, asof_ts: int) -> pl.Data
 __all__ = [
     "OUTCOME_AVAILABLE_TS",
     "OUTCOME_TARGETS",
+    "PRIMARY_OUTCOME_TARGETS",
     "SETUP_AVAILABILITY_TS",
     "OutcomeSpec",
     "attach_outcome_availability_guard",
