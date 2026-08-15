@@ -8,7 +8,11 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from nq.auction_behavior.ablation import AblationFoldSlice, run_feature_ablation
+from nq.auction_behavior.ablation import (
+    AblationFoldSlice,
+    run_binary_feature_ablation,
+    run_feature_ablation,
+)
 from nq.auction_behavior.calibration import (
     PlattCalibrator,
     apply_calibrators_by_outcome,
@@ -110,6 +114,7 @@ class BehaviorScienceReport:
     state_predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
     competing_fold_scores: pl.DataFrame = field(default_factory=pl.DataFrame)
     ablation: pl.DataFrame = field(default_factory=pl.DataFrame)
+    binary_ablation: pl.DataFrame = field(default_factory=pl.DataFrame)
     final_competing: CompetingRiskModel | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
@@ -501,6 +506,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         "n_folds": float(len(folds)),
     }
     ablation = pl.DataFrame()
+    binary_ablation = pl.DataFrame()
     if cfg.run_ablation and ablation_slices:
         if progress is not None:
             progress.op(f"science: feature ablation specs={len(ablation_slices)} folds")
@@ -509,6 +515,19 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             max_features=cfg.max_features,
             l2=cfg.l2,
             min_train=max(8, cfg.min_train_size // 2),
+            embargo=float(cfg.embargo),
+            progress=progress,
+        )
+        if progress is not None:
+            progress.op("science: binary feature ablation on primary outcomes")
+        binary_ablation = run_binary_feature_ablation(
+            ablation_slices,
+            outcomes=PRIMARY_OUTCOME_TARGETS,
+            max_features=cfg.max_features,
+            l2=cfg.l2,
+            min_train=max(8, cfg.min_train_size // 2),
+            min_pos=cfg.min_pos,
+            min_neg=cfg.min_neg,
             embargo=float(cfg.embargo),
             progress=progress,
         )
@@ -631,6 +650,16 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         if labeled.height and SETUP_AVAILABILITY_TS in labeled.columns
         else 0
     )
+    n_by_outcome: dict[str, dict[str, int]] = {}
+    if labeled.height and "outcome_name" in labeled.columns:
+        for name, part in labeled.group_by("outcome_name", maintain_order=True):
+            key = str(name[0] if isinstance(name, tuple) else name)
+            y_pos = 0
+            n_rows = int(part.height)
+            if "y" in part.columns:
+                y_arr = np.asarray(part["y"].fill_null(0.0).to_numpy(), dtype=np.float64)
+                y_pos = int(np.nansum(y_arr))
+            n_by_outcome[key] = {"n": n_rows, "n_pos": y_pos, "n_neg": n_rows - y_pos}
     competing_develop = pivot_competing_labels(develop) if develop.height else pl.DataFrame()
     n_competing_setups = int(competing_develop.height)
     n_competing_conflicts = (
@@ -672,6 +701,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         state_predictions=live_preds,  # توافق: الحي فقط، موثّق كغير OOF
         competing_fold_scores=competing_fold_scores,
         ablation=ablation,
+        binary_ablation=binary_ablation,
         final_competing=final_competing,
         diagnostics={
             "n_labeled": int(labeled_all.height),
@@ -691,6 +721,16 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 "labeled rows are setup×outcome, not MBO events; "
                 "conditional model is identified on competing setups, not 5M MBO rows"
             ),
+            "n_by_outcome": n_by_outcome,
+            "calibration_by_outcome": [
+                {
+                    key: (None if isinstance(val, float) and not np.isfinite(val) else val)
+                    for key, val in row.items()
+                }
+                for row in (
+                    calibration_by_outcome.to_dicts() if calibration_by_outcome.height else []
+                )
+            ],
             "holdout_cut_ts": int(holdout_pack.cut_ts),
             "holdout_touched": bool(holdout_state.touched),
             "n_features": n_features,
@@ -726,6 +766,13 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                     for key, val in row.items()
                 }
                 for row in (ablation.to_dicts() if ablation.height else [])
+            ],
+            "binary_ablation": [
+                {
+                    key: (None if isinstance(val, float) and not np.isfinite(val) else val)
+                    for key, val in row.items()
+                }
+                for row in (binary_ablation.to_dicts() if binary_ablation.height else [])
             ],
             "signal_quality_is_calibrated_probability": False,
             "prediction_uses_oos_labels": False,

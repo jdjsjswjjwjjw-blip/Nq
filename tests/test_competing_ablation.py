@@ -10,6 +10,7 @@ from nq.auction_behavior.ablation import (
     ABLATION_SPECS,
     AblationFoldSlice,
     ablation_nested_families,
+    run_binary_feature_ablation,
     run_feature_ablation,
 )
 from nq.auction_behavior.calibration import log_loss, roc_auc
@@ -215,6 +216,23 @@ def test_ablation_runner_returns_five_specs() -> None:
     )
     assert table.height == 5
     assert set(table["spec"].to_list()) == {spec.name for spec in ABLATION_SPECS}
+    binary = run_binary_feature_ablation(
+        [
+            AblationFoldSlice(
+                fold=1,
+                segment="test",
+                train_end_ts=19,
+                train=train,
+                test=test,
+            )
+        ],
+        max_features=8,
+        min_train=6,
+        min_pos=1,
+        min_neg=1,
+    )
+    assert binary.height >= 5
+    assert "__pooled__" in binary["outcome_name"].to_list()
 
 
 def test_log_loss_and_auc_bounds() -> None:
@@ -326,6 +344,7 @@ def test_probabilities_from_science_prefers_oof_not_base_rate() -> None:
         state_predictions=science.state_predictions,
         competing_fold_scores=competing,
         ablation=science.ablation,
+        binary_ablation=science.binary_ablation,
         final_competing=science.final_competing,
         diagnostics={"probabilities_are_joint_distribution": True},
     )

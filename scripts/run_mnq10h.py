@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """تشغيل الملف الكامل كما هو — بلا max_rows وبلا قص زمني."""
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
+
+import pyarrow.parquet as pq
 
 from nq.auction_behavior import (
     BehaviorConfig,
@@ -65,9 +68,7 @@ def _summarize(name: str, result, *, n_raw: int) -> dict:
         "max_rows": None,
         "probabilities": {
             "probability_source": probs.probability_source,
-            "probabilities_are_joint_distribution": (
-                probs.probabilities_are_joint_distribution
-            ),
+            "probabilities_are_joint_distribution": (probs.probabilities_are_joint_distribution),
             "p_expansion_accepting": probs.p_expansion_accepting,
             "p_rejection_return_to_asia": probs.p_rejection_return_to_asia,
             "p_repriced_balance": probs.p_repriced_balance,
@@ -110,6 +111,9 @@ def _summarize(name: str, result, *, n_raw: int) -> dict:
             "competing_oof_metrics": science.diagnostics.get("competing_oof_metrics"),
             "competing_stability": science.diagnostics.get("competing_stability"),
             "ablation": science.diagnostics.get("ablation"),
+            "binary_ablation": science.diagnostics.get("binary_ablation"),
+            "n_by_outcome": science.diagnostics.get("n_by_outcome"),
+            "calibration_by_outcome": science.diagnostics.get("calibration_by_outcome"),
             "live_eligible_for_backtest": science.diagnostics.get(
                 "live_predictions_eligible_for_backtest"
             ),
@@ -129,8 +133,6 @@ def main() -> None:
     progress.attach_log(log_path)
     progress.begin("mnq10h-full-file")
     progress.op(f"load full file (no max_rows, no time cut): {SRC}")
-    import pyarrow.parquet as pq
-
     n_raw = int(pq.ParquetFile(SRC).metadata.num_rows)
     progress.op(f"parquet rows on disk={n_raw:,}")
     mbo = load_mbo_frame(SRC, progress=progress)

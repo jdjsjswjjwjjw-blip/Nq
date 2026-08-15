@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
+from nq.auction_behavior.calibration import evaluate_calibration_by_outcome
 from nq.auction_behavior.competing import (
     competing_known_by,
     evaluate_competing_scores,
@@ -18,7 +19,13 @@ from nq.auction_behavior.competing import (
     pivot_competing_labels,
     score_competing_risk,
 )
-from nq.auction_behavior.conditional import MODEL_STATUS_OK, select_feature_names_by_family
+from nq.auction_behavior.conditional import (
+    MODEL_STATUS_OK,
+    fit_conditional_models,
+    score_conditional_models,
+    select_feature_names_by_family,
+)
+from nq.auction_behavior.outcomes import PRIMARY_OUTCOME_TARGETS
 from nq.research.progress import ProgressLike
 
 _A = ("state", "structure", "quality")
@@ -172,6 +179,130 @@ def run_feature_ablation(
     return pl.DataFrame(rows)
 
 
+def run_binary_feature_ablation(
+    slices: list[AblationFoldSlice],
+    *,
+    outcomes: tuple[str, ...] = PRIMARY_OUTCOME_TARGETS,
+    max_features: int = 64,
+    l2: float = 1.0,
+    min_train: int = 12,
+    min_pos: int = 3,
+    min_neg: int = 3,
+    embargo: float = 0.0,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
+    """Ablation ثنائي مستقل — يعمل عندما لا يكفي competing-risk الكامل."""
+    schema = {
+        "spec": pl.Utf8(),
+        "outcome_name": pl.Utf8(),
+        "detail": pl.Utf8(),
+        "families": pl.Utf8(),
+        "n_features_mean": pl.Float64(),
+        "n_oof": pl.Int64(),
+        "n_folds_used": pl.Int64(),
+        "log_loss": pl.Float64(),
+        "brier": pl.Float64(),
+        "brier_skill": pl.Float64(),
+        "ece": pl.Float64(),
+        "auc": pl.Float64(),
+        "status": pl.Utf8(),
+    }
+    if not slices:
+        return pl.DataFrame(schema=schema)
+    rows: list[dict[str, float | int | str]] = []
+    n_specs = len(ABLATION_SPECS)
+    for i, spec in enumerate(ABLATION_SPECS, start=1):
+        if progress is not None:
+            progress.op(f"binary-ablation {spec.name} ({i}/{n_specs})")
+        per_outcome: dict[str, list[dict[str, float]]] = {name: [] for name in outcomes}
+        n_feat: list[int] = []
+        n_ok = 0
+        for sl in slices:
+            feats = select_feature_names_by_family(
+                sl.train,
+                max_features=max_features,
+                include_families=spec.families,
+            )
+            n_feat.append(len(feats))
+            model = fit_conditional_models(
+                sl.train,
+                feature_names=feats,
+                outcomes=outcomes,
+                train_end_ts=sl.train_end_ts,
+                l2=l2,
+                min_train=min_train,
+                min_pos=min_pos,
+                min_neg=min_neg,
+            )
+            if sl.test.height == 0:
+                continue
+            scored = score_conditional_models(
+                model,
+                sl.test,
+                test_idx=np.arange(sl.test.height, dtype=np.intp),
+                embargo=float(embargo),
+                enforce_temporal_split=True,
+            )
+            if scored.height == 0:
+                continue
+            n_ok += 1
+            by_out = evaluate_calibration_by_outcome(scored)
+            for rec in by_out.iter_rows(named=True):
+                name = str(rec["outcome_name"])
+                auc_val = rec.get("auc")
+                per_outcome.setdefault(name, []).append(
+                    {
+                        "n": float(rec["n"]),
+                        "log_loss": float(rec["log_loss"]),
+                        "brier": float(rec["brier"]),
+                        "brier_skill": float(rec["brier_skill"]),
+                        "ece": float(rec["ece"]),
+                        "auc": float(auc_val) if auc_val is not None else float("nan"),
+                    }
+                )
+        feat_mean = float(np.mean(n_feat)) if n_feat else 0.0
+        pooled_rows: list[dict[str, float]] = []
+        for outcome, metrics in per_outcome.items():
+            if not metrics:
+                continue
+            pooled_rows.extend(metrics)
+            rows.append(
+                {
+                    "spec": spec.name,
+                    "outcome_name": outcome,
+                    "detail": spec.detail,
+                    "families": ",".join(spec.families),
+                    "n_features_mean": feat_mean,
+                    "n_oof": int(sum(m["n"] for m in metrics)),
+                    "n_folds_used": len(metrics),
+                    "log_loss": _mean_metric(metrics, "log_loss"),
+                    "brier": _mean_metric(metrics, "brier"),
+                    "brier_skill": _mean_metric(metrics, "brier_skill"),
+                    "ece": _mean_metric(metrics, "ece"),
+                    "auc": _mean_metric(metrics, "auc"),
+                    "status": MODEL_STATUS_OK,
+                }
+            )
+        rows.append(
+            {
+                "spec": spec.name,
+                "outcome_name": "__pooled__",
+                "detail": spec.detail,
+                "families": ",".join(spec.families),
+                "n_features_mean": feat_mean,
+                "n_oof": int(sum(m["n"] for m in pooled_rows)),
+                "n_folds_used": n_ok,
+                "log_loss": _mean_metric(pooled_rows, "log_loss"),
+                "brier": _mean_metric(pooled_rows, "brier"),
+                "brier_skill": _mean_metric(pooled_rows, "brier_skill"),
+                "ece": _mean_metric(pooled_rows, "ece"),
+                "auc": _mean_metric(pooled_rows, "auc"),
+                "status": MODEL_STATUS_OK if pooled_rows else "insufficient_support",
+            }
+        )
+    return pl.DataFrame(rows) if rows else pl.DataFrame(schema=schema)
+
+
 def ablation_nested_families() -> bool:
     """A ⊂ B ⊂ C ⊂ D ⊂ E."""
     prev: set[str] = set()
@@ -188,5 +319,6 @@ __all__ = [
     "AblationFoldSlice",
     "AblationSpec",
     "ablation_nested_families",
+    "run_binary_feature_ablation",
     "run_feature_ablation",
 ]
