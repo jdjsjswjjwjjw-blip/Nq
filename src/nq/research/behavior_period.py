@@ -11,6 +11,9 @@
 خطر يُعالَج صراحة: ``_behavior_story_run`` عدّاد محلي لكل يوم (1، 2، 3…).
 بدون إعادة الترقيم، آخر قصة يوم 1 وأول قصة يوم 2 قد تشتركان في نفس المعرّف
 فتمتد نافذة التسمية عبر منتصف الليل.
+
+هذه الوحدة **لا** تستورد ``orderbook`` ولا ``load_mbo_frame`` ولا تعيد حساب
+طبقات التدفق. المدخل الوحيد: حالات ``blended`` المكتملة من المرحلة 1.
 """
 
 from __future__ import annotations
@@ -43,6 +46,8 @@ _DAY_DIR_NAME_LEN = 10  # YYYY-MM-DD
 _PERIOD_DAY_ID = "_period_day_id"
 _ASIA_LONDON = {int(VpLiquiditySession.ASIA), int(VpLiquiditySession.LONDON)}
 _PERIOD_HELPER_COLS = frozenset({_PERIOD_DAY_ID, "_liquidity_run", "_behavior_story_run"})
+#: توقيع تدفق MBO خام — المرحلة 2 ترفضه بدل إعادة بناء الدفتر.
+_RAW_MBO_SIGNATURE = frozenset({"order_id", "action"})
 
 
 def discover_day_blended(output_root: Path | str) -> tuple[Path, ...]:
@@ -58,6 +63,19 @@ def discover_day_blended(output_root: Path | str) -> tuple[Path, ...]:
     if not days:
         raise FileNotFoundError(f"no per-day blended.parquet under {root.resolve()}")
     return tuple(days)
+
+
+def assert_not_raw_mbo_stream(frame: pl.DataFrame, *, source: str = "") -> None:
+    """يرفض تدفق MBO خام. المرحلة 2 لا تعيد بناء الدفتر ولا تعيد مشي الأوامر."""
+    present = _RAW_MBO_SIGNATURE.intersection(frame.columns)
+    if present != _RAW_MBO_SIGNATURE:
+        return
+    where = f" in {source}" if source else ""
+    raise ValueError(
+        "phase 2 refuses raw MBO streams "
+        f"(found {sorted(present)}{where}); "
+        "it reads completed blended states only — no book reconstruction"
+    )
 
 
 def _run_ids_from_keys(keys: Sequence[str]) -> list[int]:
@@ -133,6 +151,7 @@ def load_period_blended(
         frame = pl.read_parquet(path)
         if AVAILABILITY_TS not in frame.columns:
             raise ValueError(f"{path} missing {AVAILABILITY_TS}")
+        assert_not_raw_mbo_stream(frame, source=str(path))
         if frame.height == 0:
             continue
         day_id = Path(day_dir).name
@@ -342,6 +361,7 @@ def run_behavior_period_science(
         dirs = tuple(day_dirs) if day_dirs is not None else discover_day_blended(output_root or ".")
         pooled, ids = load_period_blended(dirs, progress=progress)
     else:
+        assert_not_raw_mbo_stream(blended, source="provided blended")
         pooled = remint_period_story_runs(blended, progress=progress)
         ids = tuple(day_ids) if day_ids is not None else ()
         if AVAILABILITY_TS in pooled.columns and pooled.height:
@@ -366,6 +386,9 @@ def run_behavior_period_science(
         "n_bars": int(pooled.height),
         "pooled_not_averaged_daily_probabilities": True,
         "raw_mbo_not_concatenated": True,
+        "raw_mbo_not_loaded": True,
+        "book_not_reconstructed": True,
+        "features_not_recomputed_from_mbo": True,
         "story_runs_reminted_globally": True,
         "phase1_day_files_not_rejoined": True,
         "oof_predictions_eligible_for_backtest": True,
@@ -374,7 +397,7 @@ def run_behavior_period_science(
         "ablation": None if ablation is None else ablation.diagnostics,
         "principles": (
             "phase1: each day is an isolated causal universe (MBO/book never pooled)",
-            "phase2: pool completed blended states + labels; one walk-forward",
+            "phase2: pool completed blended states only; never reload MBO or reconstruct",
             "not a mean of per-day p_*; OOF is from period folds on unique setups",
             "story runs reminted so label windows cannot cross session dates or phase-1 day files",
             "holdout is the frozen temporal tail of the period, single-touch",
@@ -460,6 +483,7 @@ def write_behavior_period_report(
     lines = [
         "# auction_behavior — period science (phase 2)",
         "",
+        "Completed blended states only. No MBO reload. No book reconstruction.",
         "Not a mean of per-day probabilities. One walk-forward on pooled setups.",
         "",
         f"- days: {len(report.day_ids)}",
@@ -492,6 +516,7 @@ __all__ = [
     "BehaviorPeriodReport",
     "assert_labels_do_not_cross_period_days",
     "assert_labels_do_not_cross_session_dates",
+    "assert_not_raw_mbo_stream",
     "discover_day_blended",
     "load_period_blended",
     "remint_period_story_runs",

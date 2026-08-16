@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """مرحلة 1: auction_behavior يوم-بيوم متوازٍ — كل يوم كون سببي مغلق.
 
-لا يخلط MBO عبر الأيام. مخرج كل يوم: blended + labels + OOF داخل اليوم.
-مرحلة 2 (علم الفترة) منفصلة: scripts/run_auction_behavior_period.py
+لا يخلط MBO عبر الأيام. الأيام التي لديها ``blended.parquet`` تُتخطّى
+(لا إعادة بناء) ما لم يُمرَّر ``--rebuild``.
 
     .venv/bin/python scripts/run_auction_behavior_days.py \\
       --nq-glob /data/glbx-mdp3-*.mbo.continuous.clean.parquet \\
@@ -225,6 +225,11 @@ def main() -> None:
         action="store_true",
         help="disable deceptive + level_flow + reliability (ops smoke only)",
     )
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="re-run days that already have blended.parquet (default: skip them)",
+    )
     args = parser.parse_args()
 
     paths = _expand_nq_globs(args.nq_glob)
@@ -234,9 +239,9 @@ def main() -> None:
 
     out_root = args.output
     out_root.mkdir(parents=True, exist_ok=True)
-    jobs = max(1, min(args.jobs, len(paths)))
     heavy = not bool(args.fast)
-    payloads = []
+    payloads: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
     seen_days: dict[str, str] = {}
     for p in sorted(paths, key=day_id_from_path):
         day_id = day_id_from_path(p)
@@ -245,48 +250,68 @@ def main() -> None:
                 f"duplicate day_id {day_id}: {seen_days[day_id]} and {p} — refusing overwrite"
             )
         seen_days[day_id] = str(p)
+        out_dir = (out_root / day_id).resolve()
+        if (out_dir / "blended.parquet").is_file() and not bool(args.rebuild):
+            skipped.append(
+                {
+                    "day_id": day_id,
+                    "ok": True,
+                    "skipped_existing": True,
+                    "nq_path": str(p),
+                    "output_dir": str(out_dir),
+                    "error": None,
+                }
+            )
+            print(f"[nq] SKIP {day_id} existing blended.parquet", flush=True)
+            continue
         payloads.append(
             {
                 "day_id": day_id,
                 "nq_path": str(p),
-                "output_dir": str((out_root / day_id).resolve()),
+                "output_dir": str(out_dir),
                 "threads_per_worker": args.threads_per_worker,
                 "max_rows": args.max_rows,
                 "n_splits": args.n_splits,
                 "full_mbo_layers": heavy,
             }
         )
+    jobs = max(1, min(args.jobs, len(payloads))) if payloads else 0
     print(
-        f"[nq] phase-1 day-parallel: {len(payloads)} days · jobs={jobs} · "
-        f"threads/worker={args.threads_per_worker} · full_mbo_layers={heavy}",
+        f"[nq] phase-1 day-parallel: run={len(payloads)} skip={len(skipped)} · jobs={jobs} · "
+        f"threads/worker={args.threads_per_worker} · full_mbo_layers={heavy} · "
+        f"rebuild={bool(args.rebuild)}",
         flush=True,
     )
-    results: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = list(skipped)
     t0 = time.perf_counter()
-    with ProcessPoolExecutor(max_workers=jobs) as pool:
-        futs = {pool.submit(_run_one_day, p): p["day_id"] for p in payloads}
-        for fut in as_completed(futs):
-            day = futs[fut]
-            try:
-                r = fut.result()
-            except Exception as exc:
-                r = {"day_id": day, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
-            results.append(r)
-            print(
-                f"[nq] DONE {r.get('day_id')} ok={r.get('ok')} "
-                f"elapsed={r.get('elapsed_sec')} labeled={r.get('science_n_labeled')}",
-                flush=True,
-            )
+    if payloads:
+        with ProcessPoolExecutor(max_workers=jobs) as pool:
+            futs = {pool.submit(_run_one_day, p): p["day_id"] for p in payloads}
+            for fut in as_completed(futs):
+                day = futs[fut]
+                try:
+                    r = fut.result()
+                except Exception as exc:
+                    r = {"day_id": day, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                results.append(r)
+                print(
+                    f"[nq] DONE {r.get('day_id')} ok={r.get('ok')} "
+                    f"elapsed={r.get('elapsed_sec')} labeled={r.get('science_n_labeled')}",
+                    flush=True,
+                )
     results_sorted = sorted(results, key=lambda r: str(r.get("day_id")))
     manifest = {
         "phase": 1,
         "jobs": jobs,
         "threads_per_worker": args.threads_per_worker,
-        "n_days": len(payloads),
+        "n_days": len(seen_days),
+        "n_run": len(payloads),
+        "n_skipped_existing": len(skipped),
         "n_ok": sum(1 for r in results_sorted if r.get("ok")),
         "n_failed": sum(1 for r in results_sorted if not r.get("ok")),
         "elapsed_sec": time.perf_counter() - t0,
         "full_mbo_layers": heavy,
+        "rebuild": bool(args.rebuild),
         "results": results_sorted,
         "next": (
             "phase 2: python scripts/run_auction_behavior_period.py "
@@ -295,6 +320,7 @@ def main() -> None:
         "principles": [
             "zero_temporal_leakage: each day is an isolated causal universe",
             "do not average per-day probabilities; run phase-2 period science",
+            "do not reconstruct days that already have blended.parquet unless --rebuild",
         ],
     }
     (out_root / "manifest.json").write_text(

@@ -591,13 +591,16 @@ assert report.diagnostics["holdout_untouched"]
 
 **مرحلتان لسنة/شهر (ليست متوسط احتمالات الأيام):**
 
-```text
-مرحلة 1 — يوم بيوم (ProcessPool، كل يوم كون سببي مغلق)
-  scripts/run_auction_behavior_days.py --nq-glob ... --output data/runs/year
+إن كانت أيام المرحلة 1 موجودة أصلًا (`YYYY-MM-DD/blended.parquet`) فتشغيل السنة
+هو المرحلة 2 فقط — **بلا تحميل MBO وبلا إعادة بناء دفتر وبلا إعادة حساب ميزات.**
 
-مرحلة 2 — علم الفترة على الحالات المجمّعة
+```text
+مرحلة 2 فقط (البيانات جاهزة)
   scripts/run_auction_behavior_period.py \
     --days-root data/runs/year --output data/runs/year/period
+
+مرحلة 1 — أيام ناقصة فقط (يتخطّى blended الموجود ما لم --rebuild)
+  scripts/run_auction_behavior_days.py --nq-glob ... --output data/runs/year
 ```
 
 المرحلة 2 تقرأ `YYYY-MM-DD/blended.parquet`، تعيد ترقيم قصص الجلسة عالميًا

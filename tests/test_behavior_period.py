@@ -18,8 +18,10 @@ from nq.auction_behavior.science import ScienceConfig
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.session import VP_LIQUIDITY_SESSION, VpLiquiditySession
 from nq.research.behavior_period import (
+    BehaviorPeriodReport,
     assert_labels_do_not_cross_period_days,
     assert_labels_do_not_cross_session_dates,
+    assert_not_raw_mbo_stream,
     load_period_blended,
     remint_period_story_runs,
     run_behavior_period_science,
@@ -60,6 +62,53 @@ def _day_bars(start_ts: int, *, story_run: int, n: int = 8, resolve: bool) -> pl
             }
         )
     return pl.DataFrame(rows)
+
+
+def _assert_period_report_contracts(report: BehaviorPeriodReport) -> None:
+    assert report.diagnostics["pooled_not_averaged_daily_probabilities"] is True
+    assert report.diagnostics["book_not_reconstructed"] is True
+    assert report.diagnostics["raw_mbo_not_loaded"] is True
+    assert report.diagnostics["features_not_recomputed_from_mbo"] is True
+    assert report.diagnostics["phase1_day_files_not_rejoined"] is True
+    assert report.blended["_behavior_story_run"].n_unique() > 1
+    assert report.diagnostics["live_predictions_eligible_for_backtest"] is False
+    assert report.diagnostics["oof_predictions_eligible_for_backtest"] is True
+    assert report.science.conditional_oof_predictions.height >= 1
+    assert report.science.diagnostics["holdout_touched"] is False
+    assert report.ablation is not None
+    assert report.ablation.diagnostics["holdout_untouched"] is True
+    assert_labels_do_not_cross_session_dates(report.science.labeled)
+    assert_labels_do_not_cross_period_days(report.science.labeled, report.blended)
+    assert_causal_order(report.blended[AVAILABILITY_TS].to_list(), strict=True)
+    assert_availability_not_before_event(
+        report.science.labeled[SETUP_AVAILABILITY_TS].to_list(),
+        report.science.labeled[OUTCOME_AVAILABLE_TS].to_list(),
+    )
+    helper_cols = {"_period_day_id", "_liquidity_run", "_behavior_story_run"}
+    assert helper_cols.isdisjoint(report.science.feature_names)
+    oof = report.science.conditional_oof_predictions
+    assert bool(oof["eligible_for_backtest"].all())
+    leaked_oof = oof.filter(pl.col(AVAILABILITY_TS) <= pl.col("model_train_end_ts"))
+    assert leaked_oof.height == 0
+    live = report.science.live_model_predictions
+    if live.height:
+        assert not bool(live["eligible_for_backtest"].any())
+    folds = report.science.fold_frame
+    if folds.height:
+        for row in folds.iter_rows(named=True):
+            if int(row["train_n"]) <= 0 or int(row["test_n"]) <= 0:
+                continue
+            assert_temporal_split(
+                [int(row["train_end_ts"])],
+                [int(row["test_start_ts"])],
+                embargo=0.0,
+            )
+    if report.science.competing_labeled.height:
+        assert_labels_do_not_cross_period_days(report.science.competing_labeled, report.blended)
+        assert_availability_not_before_event(
+            report.science.competing_labeled[SETUP_AVAILABILITY_TS].to_list(),
+            report.science.competing_labeled[OUTCOME_AVAILABLE_TS].to_list(),
+        )
 
 
 def test_remint_prevents_cross_day_label_window() -> None:
@@ -146,6 +195,27 @@ def test_load_period_blended_rejects_duplicate_availability_ts(tmp_path: Path) -
         load_period_blended([day_a, day_b])
 
 
+def test_period_load_rejects_raw_mbo_and_does_not_reconstruct(tmp_path: Path) -> None:
+    """مرحلة 2 ترفض تدفق MBO خام — لا إعادة بناء دفتر."""
+    raw = pl.DataFrame(
+        {
+            AVAILABILITY_TS: [_DAY1_START],
+            "order_id": [1],
+            "action": ["A"],
+            "side": ["B"],
+        }
+    )
+    with pytest.raises(ValueError, match="refuses raw MBO"):
+        assert_not_raw_mbo_stream(raw, source="test")
+    day = tmp_path / "2026-08-03"
+    day.mkdir()
+    raw.write_parquet(day / "blended.parquet")
+    with pytest.raises(ValueError, match="refuses raw MBO"):
+        load_period_blended([day])
+    blended = _day_bars(_DAY1_START, story_run=1, resolve=True)
+    assert_not_raw_mbo_stream(blended)
+
+
 def test_period_science_is_pooled_walk_forward_not_daily_average(tmp_path: Path) -> None:
     rows: list[dict[str, float | int]] = []
     ts = _DAY1_START
@@ -193,47 +263,7 @@ def test_period_science_is_pooled_walk_forward_not_daily_average(tmp_path: Path)
         config=cfg,
         include_ablation=True,
     )
-    assert report.diagnostics["pooled_not_averaged_daily_probabilities"] is True
-    assert report.diagnostics["phase1_day_files_not_rejoined"] is True
-    assert report.blended["_behavior_story_run"].n_unique() > 1
-    assert report.diagnostics["live_predictions_eligible_for_backtest"] is False
-    assert report.diagnostics["oof_predictions_eligible_for_backtest"] is True
-    assert report.science.conditional_oof_predictions.height >= 1
-    assert report.science.diagnostics["holdout_touched"] is False
-    assert report.ablation is not None
-    assert report.ablation.diagnostics["holdout_untouched"] is True
-    assert_labels_do_not_cross_session_dates(report.science.labeled)
-    assert_labels_do_not_cross_period_days(report.science.labeled, report.blended)
-    assert_causal_order(report.blended[AVAILABILITY_TS].to_list(), strict=True)
-    assert_availability_not_before_event(
-        report.science.labeled[SETUP_AVAILABILITY_TS].to_list(),
-        report.science.labeled[OUTCOME_AVAILABLE_TS].to_list(),
-    )
-    helper_cols = {"_period_day_id", "_liquidity_run", "_behavior_story_run"}
-    assert helper_cols.isdisjoint(report.science.feature_names)
-    oof = report.science.conditional_oof_predictions
-    assert bool(oof["eligible_for_backtest"].all())
-    leaked_oof = oof.filter(pl.col(AVAILABILITY_TS) <= pl.col("model_train_end_ts"))
-    assert leaked_oof.height == 0
-    live = report.science.live_model_predictions
-    if live.height:
-        assert not bool(live["eligible_for_backtest"].any())
-    folds = report.science.fold_frame
-    if folds.height:
-        for row in folds.iter_rows(named=True):
-            if int(row["train_n"]) <= 0 or int(row["test_n"]) <= 0:
-                continue
-            assert_temporal_split(
-                [int(row["train_end_ts"])],
-                [int(row["test_start_ts"])],
-                embargo=0.0,
-            )
-    if report.science.competing_labeled.height:
-        assert_labels_do_not_cross_period_days(report.science.competing_labeled, report.blended)
-        assert_availability_not_before_event(
-            report.science.competing_labeled[SETUP_AVAILABILITY_TS].to_list(),
-            report.science.competing_labeled[OUTCOME_AVAILABLE_TS].to_list(),
-        )
+    _assert_period_report_contracts(report)
 
     out = tmp_path / "period"
     write_behavior_period_report(report, out)
@@ -242,6 +272,7 @@ def test_period_science_is_pooled_walk_forward_not_daily_average(tmp_path: Path)
     assert (out / "oof_predictions.parquet").is_file()
     text = (out / "PERIOD.md").read_text(encoding="utf-8")
     assert "Not a mean of per-day probabilities" in text
+    assert "No book reconstruction" in text
 
 
 def test_period_helpers_not_reexported_from_package_init() -> None:

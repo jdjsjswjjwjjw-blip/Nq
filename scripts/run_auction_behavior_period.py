@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """مرحلة 2: علم الفترة على حالات الأيام المجمّعة — ليس متوسط احتمالات يومية.
 
-يقرأ ``<days-root>/YYYY-MM-DD/blended.parquet`` (مخرج المرحلة 1)، يوحّد القصص
-عالميًا، ثم walk-forward واحد + OOF + معايرة + holdout مجمّد + ablation.
+يقرأ ``<days-root>/YYYY-MM-DD/blended.parquet`` فقط.
+لا تحميل MBO، لا إعادة بناء دفتر، لا إعادة حساب ميزات المستوى.
 
     .venv/bin/python scripts/run_auction_behavior_period.py \\
       --days-root data/runs/auction_behavior_year \\
@@ -38,7 +38,12 @@ from nq.research.progress import PipelineProgress  # noqa: E402
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="auction_behavior period science (phase 2)")
+    parser = argparse.ArgumentParser(
+        description=(
+            "auction_behavior period science (phase 2): "
+            "pool per-day blended.parquet only — never reconstruct the book"
+        )
+    )
     parser.add_argument("--days-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--n-splits", type=int, default=4)
