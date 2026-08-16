@@ -589,6 +589,27 @@ assert report.diagnostics["holdout_untouched"]
 من كل الستاكات (مركّب يخلط الطبقات). إن لم يتحسن `plus_mbo_flow` على
 `plus_memory` خارج العينة فلا دليل أن MBO يضيف معلومات لهذا الهدف.
 
+**مرحلتان لسنة/شهر (ليست متوسط احتمالات الأيام):**
+
+إن كانت أيام المرحلة 1 موجودة أصلًا (`YYYY-MM-DD/blended.parquet`) فتشغيل السنة
+هو المرحلة 2 فقط — **بلا تحميل MBO وبلا إعادة بناء دفتر وبلا إعادة حساب ميزات.**
+
+```text
+مرحلة 2 فقط (البيانات جاهزة)
+  scripts/run_auction_behavior_period.py \
+    --days-root data/runs/year --output data/runs/year/period
+
+مرحلة 1 — أيام ناقصة فقط (يتخطّى blended الموجود ما لم --rebuild)
+  scripts/run_auction_behavior_days.py --nq-glob ... --output data/runs/year
+```
+
+المرحلة 2 تقرأ `YYYY-MM-DD/blended.parquet`، تعيد ترقيم قصص الجلسة عالميًا
+(حتى لا تمتد نافذة التسمية عبر منتصف الليل ولا تُدمَج شرائح نفس جلسة CME من
+ملفين يوميين)، ثم `run_behavior_science` + `run_behavior_ablation` **مرة واحدة**
+على كل الإعدادات. الناتج OOF الفترة (`eligible_for_backtest=true`) + holdout
+ذيل زمني مجمّد — لا متوسط `p_*` اليومي ولا concat لتدفق MBO الخام. لا تلمّس
+الـholdout في أول تشغيل (`--evaluate-holdout` بعد قفل التطوير فقط).
+
 **إسقاط آسيا→لندن:** يبني `build_asia_london_projection` ملف آسيا تراكميًا بلا
 تصفير، ويجمّده عند أول برميل لندن كـ`asia_poc/vah/val/HVN`. بعد ذلك يضيف كل
 برميل لندن المكتمل إلى **نفس** الملف ويقيس `proj_poc_shift_ticks`، انتقال HVN،
@@ -778,8 +799,10 @@ Nq/
 │   ├── run_fail_breakout.py   # FB منفصل (+ --search فوليوم/SSL / --understand)
 │   ├── run_fail_breakout_days.py  # FB يوم-بيوم متوازٍ (ProcessPool · عزل سببي)
 │   ├── run_symbolic_search.py # DEAP + gplearn (معادلات بلا if · nq[gp])
-│   └── run_vp_auction.py      # VP متصل: إشارة + تضليل + هولد + R:R
-│   └── run_vp_auction_days.py # VP يوم-بيوم متوازٍ (شهر)
+│   ├── run_vp_auction.py      # VP متصل: إشارة + تضليل + هولد + R:R
+│   ├── run_vp_auction_days.py # VP يوم-بيوم متوازٍ (شهر)
+│   ├── run_auction_behavior_days.py    # سلوك المزاد يوم-بيوم (مرحلة 1)
+│   ├── run_auction_behavior_period.py  # علم الفترة على الحالات المجمّعة (مرحلة 2)
 │   └── run_liquidity_edge.py  # غلاف توافق → نفس vp_auction
 ├── docs/
 │   ├── architecture.md
