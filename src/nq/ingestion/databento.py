@@ -110,15 +110,13 @@ def normalize_databento_frame(frame: pl.DataFrame) -> pl.DataFrame:
             pl.arange(0, renamed.height, dtype=pl.UInt64).alias(SEQUENCE)
         )
 
-    action_expr = pl.col("action").cast(pl.Utf8).str.to_lowercase()
-    for raw, canonical in _ACTION_MAP.items():
-        action_expr = pl.when(action_expr == raw).then(pl.lit(canonical)).otherwise(action_expr)
-    renamed = renamed.with_columns(action_expr.alias("action"))
-
-    side_expr = pl.col("side").cast(pl.Utf8).str.to_lowercase()
-    for raw, canonical in _SIDE_MAP.items():
-        side_expr = pl.when(side_expr == raw).then(pl.lit(canonical)).otherwise(side_expr)
-    renamed = renamed.with_columns(side_expr.alias("side"))
+    # `replace` بدل سلسلة when/then/otherwise: السلسلة تُضمّن التعبير السابق
+    # مرتين كل دورة فتتضخم شجرة التعبير أُسّيًا (~2^len(map)) وتخنق التحميل
+    # على ملفات MBO الحقيقية (دقائق/عمود بدل أجزاء من الثانية).
+    renamed = renamed.with_columns(
+        pl.col("action").cast(pl.Utf8).str.to_lowercase().replace(_ACTION_MAP).alias("action"),
+        pl.col("side").cast(pl.Utf8).str.to_lowercase().replace(_SIDE_MAP).alias("side"),
+    )
 
     renamed = _sanitize_prices(renamed)
 
