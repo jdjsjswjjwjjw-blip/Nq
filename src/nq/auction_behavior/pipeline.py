@@ -155,6 +155,79 @@ class AuctionBehaviorResult:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+def _clip01(value: float) -> float:
+    return float(min(1.0, max(0.0, value)))
+
+
+def _mean_finite(frame: pl.DataFrame, column: str) -> float | None:
+    if frame.height == 0 or column not in frame.columns:
+        return None
+    vals = frame[column].to_numpy().astype(np.float64)
+    mask = np.isfinite(vals)
+    if not np.any(mask):
+        return None
+    return float(np.mean(vals[mask]))
+
+
+def probabilities_from_science(
+    science: BehaviorScienceReport,
+    fallback: BehaviorProbabilities,
+) -> BehaviorProbabilities:
+    """الاحتمالات المعلنة = متوسط OOF الشرطي (competing إن وُجد)، لا base-rate."""
+    competing = science.competing_fold_scores
+    oof = science.conditional_oof_predictions
+    joint_src = competing if competing.height else oof
+    joint = bool(science.diagnostics.get("probabilities_are_joint_distribution", False))
+    if competing.height:
+        joint = True
+
+    def _take(column: str, default: float, source: pl.DataFrame | None = None) -> float:
+        found = _mean_finite(source if source is not None else oof, column)
+        return default if found is None else _clip01(found)
+
+    p_exp = _take("p_y_expansion_accepting", fallback.p_expansion_accepting, joint_src)
+    p_rej = _take("p_y_rejection_return_to_asia", fallback.p_rejection_return_to_asia, joint_src)
+    p_rep = _take("p_y_repriced_balance", fallback.p_repriced_balance, joint_src)
+    p_res = _take("p_residual", fallback.p_residual, joint_src)
+    if joint and (p_exp + p_rej + p_rep + p_res) > 0.0:
+        mass = p_exp + p_rej + p_rep + p_res
+        p_exp, p_rej, p_rep, p_res = (p_exp / mass, p_rej / mass, p_rep / mass, p_res / mass)
+        joint = True
+    elif not competing.height:
+        joint = False
+
+    n_oof = int(oof.height)
+    n_comp = int(competing.height)
+    if n_oof == 0 and n_comp == 0:
+        return fallback
+    return BehaviorProbabilities(
+        p_balanced=_take("p_y_balanced", fallback.p_balanced),
+        p_imbalanced=_take("p_y_imbalanced", fallback.p_imbalanced),
+        p_true_break=_take("p_y_true_break", fallback.p_true_break),
+        p_false_break=_take("p_y_false_break", fallback.p_false_break),
+        p_retest_success=_take("p_y_retest_success", fallback.p_retest_success),
+        p_retest_fail=_take("p_y_retest_fail", fallback.p_retest_fail),
+        p_expansion_continue=_take("p_y_expansion_continue", fallback.p_expansion_continue),
+        p_return_to_value=_take("p_y_return_to_value", fallback.p_return_to_value),
+        confidence=fallback.confidence,
+        n_samples=n_comp if n_comp else n_oof,
+        detail=(
+            "state-conditional competing-risk OOF; "
+            "P(expansion)+P(rejection)+P(repriced)+P(residual)=1; "
+            "base-rate kept only as BSS baseline"
+            if joint
+            else "state-conditional independent-binary OOF; competing-risk insufficient"
+        ),
+        p_expansion_accepting=p_exp,
+        p_rejection_return_to_asia=p_rej,
+        p_repriced_balance=p_rep,
+        p_residual=p_res,
+        probability_source="state_conditional_oof",
+        probabilities_are_joint_distribution=joint,
+        n_oof_rows=n_oof,
+    )
+
+
 def _as_float(value: object) -> float:
     if isinstance(value, bool):
         return float(value)
@@ -828,6 +901,11 @@ def _run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
             f"oof={science.conditional_oof_predictions.height} "
             f"live={science.live_model_predictions.height}"
         )
+        probs = probabilities_from_science(science, probs)
+        log.op(
+            f"headline probs source={probs.probability_source} "
+            f"joint={probs.probabilities_are_joint_distribution} n={probs.n_samples}"
+        )
     else:
         log.op("science skipped")
 
@@ -850,10 +928,17 @@ def _run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
         "deceptive_scored_rows": scored_rows,
         "deceptive_filtered": False,
         "signal_quality_is_calibrated_probability": False,
-        "probabilities_source": "train_only_walk_forward_base_rates",
-        "conditional_probability_semantics": (
-            "independent_binary_outcomes_not_a_joint_competing-risk_distribution"
+        "probabilities_source": (
+            probs.probability_source
+            if science is not None
+            else "train_only_walk_forward_base_rates"
         ),
+        "conditional_probability_semantics": (
+            None
+            if science is None
+            else science.diagnostics.get("conditional_probability_semantics")
+        ),
+        "probabilities_are_joint_distribution": bool(probs.probabilities_are_joint_distribution),
         "fold_metrics_alias": "conditional_when_available_else_base_rate",
         "base_rate_fold_metrics_rows": int(base_rate_fold_metrics.height),
         "conditional_fold_metrics_rows": int(0 if science is None else science.fold_frame.height),
@@ -1031,11 +1116,16 @@ def behavior_probability_summary(result: AuctionBehaviorResult) -> pl.DataFrame:
             "p_retest_fail": [probs.p_retest_fail],
             "p_expansion_continue": [probs.p_expansion_continue],
             "p_return_to_value": [probs.p_return_to_value],
+            "p_expansion_accepting": [probs.p_expansion_accepting],
+            "p_rejection_return_to_asia": [probs.p_rejection_return_to_asia],
+            "p_repriced_balance": [probs.p_repriced_balance],
+            "p_residual": [probs.p_residual],
             "confidence": [probs.confidence],
             "confidence_is_calibrated_probability": [False],
-            "probability_source": ["train_only_walk_forward_base_rates"],
-            "probabilities_are_joint_distribution": [False],
+            "probability_source": [probs.probability_source],
+            "probabilities_are_joint_distribution": [probs.probabilities_are_joint_distribution],
             "n_samples": [probs.n_samples],
+            "n_oof_rows": [probs.n_oof_rows],
             "detail": [probs.detail],
         }
     )
@@ -1050,5 +1140,6 @@ __all__ = [
     "behavior_probabilities_frame",
     "behavior_probability_summary",
     "behavior_state_frame",
+    "probabilities_from_science",
     "run_auction_behavior_analysis",
 ]

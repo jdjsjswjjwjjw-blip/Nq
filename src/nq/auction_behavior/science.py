@@ -8,6 +8,11 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from nq.auction_behavior.ablation import (
+    AblationFoldSlice,
+    run_binary_feature_ablation,
+    run_feature_ablation,
+)
 from nq.auction_behavior.calibration import (
     PlattCalibrator,
     apply_calibrators_by_outcome,
@@ -15,6 +20,16 @@ from nq.auction_behavior.calibration import (
     evaluate_calibration,
     evaluate_calibration_by_outcome,
     fit_platt_calibrators_by_outcome,
+)
+from nq.auction_behavior.competing import (
+    COMPETING_CLASS_NAMES,
+    CompetingRiskModel,
+    attach_competing_to_states,
+    competing_known_by,
+    evaluate_competing_scores,
+    fit_competing_risk,
+    pivot_competing_labels,
+    score_competing_risk,
 )
 from nq.auction_behavior.conditional import (
     ConditionalModel,
@@ -46,6 +61,7 @@ from nq.auction_behavior.walk_forward import (
     build_contract_aware_folds,
     build_expanding_month_folds,
     folds_to_frame,
+    labeled_fold_order,
 )
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.progress import ProgressLike
@@ -68,6 +84,7 @@ class ScienceConfig:
     max_features: int = 64
     use_month_folds: bool = True
     evaluate_holdout: bool = False
+    run_ablation: bool = True
     calibration_bins: int = 10
     min_pos: int = 3
     min_neg: int = 3
@@ -96,6 +113,10 @@ class BehaviorScienceReport:
     live_model_predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
     #: توافق قديم = live (غير مؤهل للباك تست).
     state_predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
+    competing_fold_scores: pl.DataFrame = field(default_factory=pl.DataFrame)
+    ablation: pl.DataFrame = field(default_factory=pl.DataFrame)
+    binary_ablation: pl.DataFrame = field(default_factory=pl.DataFrame)
+    final_competing: CompetingRiskModel | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -148,9 +169,7 @@ def _log_feature_weights(
         if not rows:
             progress.op(f"science knowledge {outcome}: no fitted weights")
             continue
-        detail = ", ".join(
-            f"{row['name']}={float(row['weight']):+.3f}" for row in rows[:8]
-        )
+        detail = ", ".join(f"{row['name']}={float(row['weight']):+.3f}" for row in rows[:8])
         progress.op(f"science knowledge {outcome}: {detail}")
 
 
@@ -208,7 +227,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
     if progress is not None:
         progress.op(f"science: carve holdout frac={cfg.holdout_frac}")
     holdout_pack = carve_frozen_holdout(labeled, holdout_frac=cfg.holdout_frac)
-    develop = holdout_pack.develop
+    develop = labeled_fold_order(holdout_pack.develop)
     if progress is not None:
         progress.op(f"science: develop={develop.height:,} holdout={holdout_pack.holdout.height:,}")
 
@@ -249,6 +268,8 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
 
     fold_score_rows: list[pl.DataFrame] = []
     oof_state_rows: list[pl.DataFrame] = []
+    competing_score_rows: list[pl.DataFrame] = []
+    ablation_slices: list[AblationFoldSlice] = []
     fold_metric_rows: list[dict[str, float | int | str]] = []
     drift_psis: list[float] = []
     seen_setup_test: set[int] = set()
@@ -316,21 +337,16 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
 
         if progress is not None:
             progress.op(f"science fold {fold_i}: score + calibrate + drift")
-        # سجّل الاختبار بمؤشرات الصفوف داخل develop
         scored = score_conditional_models(
             model,
-            develop,
-            test_idx=sf.test_idx,
+            test,
+            test_idx=np.arange(test.height, dtype=np.intp),
             embargo=float(cfg.embargo),
         )
-        # أعد فلترة إن حذفنا تكرارات
-        if scored.height and overlap:
-            scored = scored.filter(~pl.col(SETUP_AVAILABILITY_TS).is_in(list(overlap)))
         scored = apply_calibrators_by_outcome(scored, calibrators)
-        if "p_cal" in scored.columns:
-            scored = scored.with_columns(pl.col("p_cal").alias("p_hat"))
-
-        cal = evaluate_calibration(scored, n_bins=cfg.calibration_bins)
+        cal = evaluate_calibration(
+            scored, n_bins=cfg.calibration_bins, probability_column="p_hat"
+        )
         drift_features = model.feature_names
         drift = measure_drift(
             train.select([c for c in drift_features if c in train.columns]),
@@ -355,12 +371,67 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 "ece": cal.ece,
                 "mae": cal.mae,
                 "brier_skill": cal.brier_skill,
+                "log_loss": cal.log_loss,
+                "auc": cal.auc,
                 "mean_psi": drift.mean_psi,
                 "max_psi": drift.max_psi,
                 "outcome_rate_l1": drift.outcome_rate_l1,
                 "n_calibration_rows": int(scored.height),
             }
         )
+        if progress is not None:
+            progress.op(f"science fold {fold_i}: competing-risk softmax")
+        comp_train = competing_known_by(
+            pivot_competing_labels(fit_part if fit_part.height else known_train),
+            asof_ts=sf.train_end_ts,
+        )
+        competing_model = fit_competing_risk(
+            comp_train,
+            feature_names=fold_features,
+            train_end_ts=sf.train_end_ts,
+            l2=cfg.l2,
+            min_train=max(8, cfg.min_train_size // 2),
+            progress=progress,
+        )
+        comp_test = pivot_competing_labels(test)
+        competing_metrics = evaluate_competing_scores(pl.DataFrame())
+        if competing_model.is_usable() and comp_test.height:
+            competing_scored = score_competing_risk(
+                competing_model,
+                comp_test,
+                embargo=float(cfg.embargo),
+            )
+            competing_metrics = evaluate_competing_scores(competing_scored)
+            competing_score_rows.append(
+                competing_scored.with_columns(
+                    pl.lit(sf.fold).alias("fold"),
+                    pl.lit(True).alias("prediction_is_oof"),
+                    pl.lit(True).alias("eligible_for_backtest"),
+                    pl.lit(sf.train_end_ts).alias("model_train_end_ts"),
+                )
+            )
+        fold_metric_rows[-1].update(
+            {
+                "competing_status": competing_model.status,
+                "competing_n": competing_metrics["n"],
+                "competing_log_loss": competing_metrics["log_loss"],
+                "competing_brier": competing_metrics["brier"],
+                "competing_brier_skill": competing_metrics["brier_skill"],
+                "competing_ece": competing_metrics["ece"],
+                "competing_auc_macro": competing_metrics["auc_macro"],
+                "competing_accuracy": competing_metrics["accuracy"],
+            }
+        )
+        ablation_slices.append(
+            AblationFoldSlice(
+                fold=int(sf.fold),
+                segment=str(sf.segment),
+                train_end_ts=int(sf.train_end_ts),
+                train=fit_part if fit_part.height else known_train,
+                test=test,
+            )
+        )
+
         if scored.height:
             fold_score_rows.append(
                 scored.with_columns(
@@ -385,9 +456,19 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                     fold=sf.fold,
                     eligible_for_backtest=True,
                 )
-                oof_state_rows.append(
-                    apply_calibrators_to_state_predictions(state_predictions, calibrators)
+                state_predictions = apply_calibrators_to_state_predictions(
+                    state_predictions, calibrators
                 )
+                if competing_model.is_usable():
+                    state_predictions = attach_competing_to_states(
+                        competing_model,
+                        state_slice,
+                        state_predictions,
+                        prediction_is_oof=True,
+                        fold=sf.fold,
+                        eligible_for_backtest=True,
+                    )
+                oof_state_rows.append(state_predictions)
 
     fold_frame = pl.DataFrame(fold_metric_rows) if fold_metric_rows else folds_to_frame(folds)
     fold_scores = (
@@ -401,16 +482,61 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         else pl.DataFrame()
     )
     calibration_by_outcome = evaluate_calibration_by_outcome(
-        fold_scores, n_bins=cfg.calibration_bins
+        fold_scores, n_bins=cfg.calibration_bins, probability_column="p_hat"
+    )
+    calibration_by_outcome_calibrated = (
+        evaluate_calibration_by_outcome(
+            fold_scores, n_bins=cfg.calibration_bins, probability_column="p_cal"
+        )
+        if fold_scores.height and "p_cal" in fold_scores.columns
+        else pl.DataFrame()
     )
     stability = fold_stability(fold_frame, column="ece")
+    competing_fold_scores = (
+        pl.concat(competing_score_rows, how="diagonal_relaxed")
+        if competing_score_rows
+        else pl.DataFrame()
+    )
+    competing_oof_metrics = evaluate_competing_scores(competing_fold_scores)
+    competing_stability = (
+        fold_stability(fold_frame, column="competing_brier")
+        if fold_frame.height and "competing_brier" in fold_frame.columns
+        else {"n": 0.0, "mean": 0.0, "std": 0.0, "cv": 0.0}
+    )
     drift_summary = {
         "mean_psi_across_folds": float(np.mean(drift_psis)) if drift_psis else 0.0,
         "max_psi_across_folds": float(np.max(drift_psis)) if drift_psis else 0.0,
         "n_folds": float(len(folds)),
     }
+    ablation = pl.DataFrame()
+    binary_ablation = pl.DataFrame()
+    if cfg.run_ablation and ablation_slices:
+        if progress is not None:
+            progress.op(f"science: feature ablation specs={len(ablation_slices)} folds")
+        ablation = run_feature_ablation(
+            ablation_slices,
+            max_features=cfg.max_features,
+            l2=cfg.l2,
+            min_train=max(8, cfg.min_train_size // 2),
+            embargo=float(cfg.embargo),
+            progress=progress,
+        )
+        if progress is not None:
+            progress.op("science: binary feature ablation on all outcome targets")
+        binary_ablation = run_binary_feature_ablation(
+            ablation_slices,
+            outcomes=OUTCOME_TARGETS,
+            max_features=cfg.max_features,
+            l2=cfg.l2,
+            min_train=max(8, cfg.min_train_size // 2),
+            min_pos=cfg.min_pos,
+            min_neg=cfg.min_neg,
+            embargo=float(cfg.embargo),
+            progress=progress,
+        )
 
     final_model: ConditionalModel | None = None
+    final_competing: CompetingRiskModel | None = None
     final_calibrators: dict[str, PlattCalibrator] = {}
     holdout_eval: HoldoutEvaluation | None = None
     holdout_state = holdout_pack
@@ -440,9 +566,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             min_neg=cfg.min_neg,
             progress=progress,
         )
-        _log_feature_names(
-            final_features, progress=progress, label="science final features"
-        )
+        _log_feature_names(final_features, progress=progress, label="science final features")
         knowledge_weights = rank_feature_weights(final_model)
         _log_feature_weights(knowledge_weights, progress=progress)
         raw_final_cal = (
@@ -473,6 +597,27 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             eligible_for_backtest=False,
         )
         live_preds = apply_calibrators_to_state_predictions(live_preds, final_calibrators)
+        if progress is not None:
+            progress.op("science: fit final competing-risk model")
+        final_competing = fit_competing_risk(
+            competing_known_by(
+                pivot_competing_labels(final_fit if final_fit.height else final_known),
+                asof_ts=final_train_end,
+            ),
+            feature_names=final_features,
+            train_end_ts=final_train_end,
+            l2=cfg.l2,
+            min_train=max(8, cfg.min_train_size // 2),
+            progress=progress,
+        )
+        if final_competing.is_usable() and live_preds.height:
+            live_preds = attach_competing_to_states(
+                final_competing,
+                blended,
+                live_preds,
+                prediction_is_oof=False,
+                eligible_for_backtest=False,
+            )
         if cfg.evaluate_holdout and holdout_pack.holdout.height > 0:
             if progress is not None:
                 progress.op(f"science: frozen holdout n={holdout_pack.holdout.height:,}")
@@ -503,10 +648,50 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         if c.startswith("mem_") or "__lag" in c or "__rmean" in c or "__rsum" in c
     )
 
+    n_unique_setups = (
+        int(labeled[SETUP_AVAILABILITY_TS].n_unique())
+        if labeled.height and SETUP_AVAILABILITY_TS in labeled.columns
+        else 0
+    )
+    n_by_outcome: dict[str, dict[str, int]] = {}
+    if labeled.height and "outcome_name" in labeled.columns:
+        for name, part in labeled.group_by("outcome_name", maintain_order=True):
+            key = str(name[0] if isinstance(name, tuple) else name)
+            y_pos = 0
+            n_rows = int(part.height)
+            if "y" in part.columns:
+                y_arr = np.asarray(part["y"].fill_null(0.0).to_numpy(), dtype=np.float64)
+                y_pos = int(np.nansum(y_arr))
+            n_by_outcome[key] = {"n": n_rows, "n_pos": y_pos, "n_neg": n_rows - y_pos}
+    competing_develop = pivot_competing_labels(develop) if develop.height else pl.DataFrame()
+    n_competing_setups = int(competing_develop.height)
+    n_competing_conflicts = (
+        int(competing_develop["conflict"].sum())
+        if competing_develop.height and "conflict" in competing_develop.columns
+        else 0
+    )
+    n_features = len(feature_names)
+    joint_ok = bool(
+        (final_competing is not None and final_competing.is_usable())
+        or (
+            conditional_oof_predictions.height
+            and "probabilities_are_joint_distribution" in conditional_oof_predictions.columns
+            and bool(conditional_oof_predictions["probabilities_are_joint_distribution"].any())
+        )
+    )
+    sample_caution = bool(
+        n_features > 0
+        and (
+            (n_competing_setups > 0 and n_competing_setups < 10 * n_features)
+            or (n_unique_setups > 0 and n_unique_setups < 10 * n_features)
+        )
+    )
+
     if progress is not None:
         progress.op(
             f"science done folds={len(folds)} oof={conditional_oof_predictions.height:,} "
-            f"live={live_preds.height:,}"
+            f"live={live_preds.height:,} competing={n_competing_setups} "
+            f"joint={joint_ok}"
         )
     return BehaviorScienceReport(
         labeled=labeled_all,
@@ -523,15 +708,54 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         final_calibrators=final_calibrators,
         live_model_predictions=live_preds,
         state_predictions=live_preds,  # توافق: الحي فقط، موثّق كغير OOF
+        competing_fold_scores=competing_fold_scores,
+        ablation=ablation,
+        binary_ablation=binary_ablation,
+        final_competing=final_competing,
         diagnostics={
             "n_labeled": int(labeled_all.height),
+            "n_labeled_rows": int(labeled_all.height),
+            "n_unique_setups": n_unique_setups,
             "n_resolved": int(labeled.height),
             "n_censored": n_censored,
             "n_develop": int(develop.height),
             "n_holdout": int(holdout_pack.holdout.height),
+            "n_competing_setups": n_competing_setups,
+            "n_competing_conflicts": n_competing_conflicts,
+            "n_features_per_competing_setup": (
+                float(n_features) / float(n_competing_setups) if n_competing_setups else None
+            ),
+            "sample_size_caution": sample_caution,
+            "sample_size_note": (
+                "labeled rows are setup×outcome, not MBO events; "
+                "conditional model is identified on competing setups, not 5M MBO rows"
+            ),
+            "n_by_outcome": n_by_outcome,
+            "calibration_by_outcome": [
+                {
+                    key: (None if isinstance(val, float) and not np.isfinite(val) else val)
+                    for key, val in row.items()
+                }
+                for row in (
+                    calibration_by_outcome.to_dicts() if calibration_by_outcome.height else []
+                )
+            ],
+            "calibration_by_outcome_calibrated": [
+                {
+                    key: (None if isinstance(val, float) and not np.isfinite(val) else val)
+                    for key, val in row.items()
+                }
+                for row in (
+                    calibration_by_outcome_calibrated.to_dicts()
+                    if calibration_by_outcome_calibrated.height
+                    else []
+                )
+            ],
+            "oos_skill_probability_column": "p_hat",
+            "platt_overwrites_oof_p_hat": False,
             "holdout_cut_ts": int(holdout_pack.cut_ts),
             "holdout_touched": bool(holdout_state.touched),
-            "n_features": len(feature_names),
+            "n_features": n_features,
             "feature_names": list(feature_names),
             "feature_names_by_family": group_feature_names_by_family(feature_names),
             "feature_weights_by_outcome": knowledge_weights,
@@ -543,16 +767,45 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             "n_folds": len(folds),
             "n_oof_prediction_rows": int(conditional_oof_predictions.height),
             "n_live_prediction_rows": int(live_preds.height),
+            "n_competing_oof_rows": int(competing_fold_scores.height),
             "primary_outcomes": list(PRIMARY_OUTCOME_TARGETS),
+            "competing_classes": list(COMPETING_CLASS_NAMES),
             "conditional_probability_semantics": (
-                "independent_binary_outcomes_not_a_joint_competing-risk_distribution"
+                "joint_softmax_competing_risk_primary_outcomes"
+                if joint_ok
+                else "independent_binary_fallback_competing_insufficient"
             ),
+            "probabilities_are_joint_distribution": joint_ok,
+            "base_rate_is_bss_baseline_only": True,
+            "competing_oof_metrics": {
+                key: (None if isinstance(val, float) and not np.isfinite(val) else val)
+                for key, val in competing_oof_metrics.items()
+            },
+            "competing_stability": competing_stability,
+            "ablation": [
+                {
+                    key: (None if isinstance(val, float) and not np.isfinite(val) else val)
+                    for key, val in row.items()
+                }
+                for row in (ablation.to_dicts() if ablation.height else [])
+            ],
+            "binary_ablation": [
+                {
+                    key: (None if isinstance(val, float) and not np.isfinite(val) else val)
+                    for key, val in row.items()
+                }
+                for row in (binary_ablation.to_dicts() if binary_ablation.height else [])
+            ],
             "signal_quality_is_calibrated_probability": False,
             "prediction_uses_oos_labels": False,
             "live_predictions_eligible_for_backtest": False,
             "oof_predictions_eligible_for_backtest": True,
             "science_steps": (
                 "conditional_model_state_to_probs",
+                "competing_risk_softmax_joint",
+                "oof_conditional_predictions",
+                "feature_family_ablation",
+                "binary_feature_ablation_when_competing_sparse",
                 "outcomes_censored_and_group_onset",
                 "structure_features",
                 "market_memory_sequence_group_safe",
@@ -563,7 +816,8 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 "asia_london_projection_state",
                 "path_depth_confirmation_no_if",
                 "platt_calibration_causal_tail",
-                "calibration_ece_brier_bss",
+                "calibration_ece_brier_bss_logloss",
+                "oos_skill_on_raw_p_hat_not_platt",
                 "walk_forward_unique_setup",
                 "oof_vs_live_predictions",
                 "drift_stability_open_psi",

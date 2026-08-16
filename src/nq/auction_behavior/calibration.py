@@ -26,6 +26,8 @@ class CalibrationReport:
     mae: float
     base_rate: float
     brier_skill: float = 0.0
+    log_loss: float = 0.0
+    auc: float = float("nan")
     detail: str = ""
 
 
@@ -45,6 +47,32 @@ class PlattCalibrator:
         logits = np.clip(self.a + self.b * z, -_MAX_LOGIT, _MAX_LOGIT)
         out = 1.0 / (1.0 + np.exp(-logits))
         return np.asarray(out, dtype=np.float64)
+
+
+def log_loss(y: np.ndarray, p: np.ndarray) -> float:
+    """Binary log loss; يتجاهل NaN."""
+    mask = np.isfinite(y) & np.isfinite(p)
+    if not np.any(mask):
+        return 0.0
+    yy = y[mask].astype(np.float64)
+    pp = np.clip(p[mask].astype(np.float64), _EPS, 1.0 - _EPS)
+    return float(-np.mean(yy * np.log(pp) + (1.0 - yy) * np.log(1.0 - pp)))
+
+
+def roc_auc(y: np.ndarray, p: np.ndarray) -> float:
+    """Mann–Whitney AUC؛ NaN إن بقيت فئة واحدة."""
+    mask = np.isfinite(y) & np.isfinite(p)
+    if not np.any(mask):
+        return float("nan")
+    yy = y[mask].astype(np.float64)
+    pp = p[mask].astype(np.float64)
+    pos = pp[yy >= _POSITIVE_THRESHOLD]
+    neg = pp[yy < _POSITIVE_THRESHOLD]
+    if pos.size == 0 or neg.size == 0:
+        return float("nan")
+    gt = float(np.sum(pos[:, None] > neg[None, :]))
+    eq = float(np.sum(pos[:, None] == neg[None, :]))
+    return float((gt + 0.5 * eq) / (float(pos.size) * float(neg.size)))
 
 
 def brier_score(y: np.ndarray, p: np.ndarray) -> float:
@@ -292,13 +320,37 @@ def apply_calibrators_to_state_predictions(
     return predictions.with_columns(exprs) if exprs else predictions
 
 
-def evaluate_calibration(scored: pl.DataFrame, *, n_bins: int = 10) -> CalibrationReport:
-    """معايرة من إطار فيه ``y`` و ``p_hat`` (يتجاهل NaN)."""
-    if scored.height == 0 or "y" not in scored.columns or "p_hat" not in scored.columns:
+def evaluate_calibration(
+    scored: pl.DataFrame,
+    *,
+    n_bins: int = 10,
+    probability_column: str | None = None,
+) -> CalibrationReport:
+    """معايرة من إطار فيه ``y`` وعمود احتمال (يتجاهل NaN).
+
+    الافتراضي ``p_hat`` (النموذج الشرطي الخام). لا تُستخدم ``p_cal`` إلا بطلب
+    صريح — Platt على ذيل صغير يقلب BSS دون أن يعني فشل النموذج نفسه.
+    """
+    if probability_column is not None:
+        col = probability_column
+    elif "p_hat" in scored.columns:
+        col = "p_hat"
+    elif "p_cal" in scored.columns:
+        col = "p_cal"
+    else:
+        col = "p_hat"
+    if scored.height == 0 or "y" not in scored.columns or col not in scored.columns:
         return CalibrationReport(
-            n=0, brier=0.0, ece=0.0, mae=0.0, base_rate=0.0, brier_skill=0.0, detail="empty"
+            n=0,
+            brier=0.0,
+            ece=0.0,
+            mae=0.0,
+            base_rate=0.0,
+            brier_skill=0.0,
+            log_loss=0.0,
+            auc=float("nan"),
+            detail="empty",
         )
-    col = "p_cal" if "p_cal" in scored.columns else "p_hat"
     y = scored["y"].to_numpy().astype(np.float64)
     p = scored[col].to_numpy().astype(np.float64)
     baseline = (
@@ -309,7 +361,15 @@ def evaluate_calibration(scored: pl.DataFrame, *, n_bins: int = 10) -> Calibrati
     mask = np.isfinite(y) & np.isfinite(p)
     if not np.any(mask):
         return CalibrationReport(
-            n=0, brier=0.0, ece=0.0, mae=0.0, base_rate=0.0, brier_skill=0.0, detail="all_nan"
+            n=0,
+            brier=0.0,
+            ece=0.0,
+            mae=0.0,
+            base_rate=0.0,
+            brier_skill=0.0,
+            log_loss=0.0,
+            auc=float("nan"),
+            detail="all_nan",
         )
     yy, pp = y[mask], p[mask]
     return CalibrationReport(
@@ -323,6 +383,8 @@ def evaluate_calibration(scored: pl.DataFrame, *, n_bins: int = 10) -> Calibrati
             pp,
             None if baseline is None else baseline[mask],
         ),
+        log_loss=log_loss(yy, pp),
+        auc=roc_auc(yy, pp),
         detail=f"reliability_bins={n_bins}·col={col}",
     )
 
@@ -331,6 +393,7 @@ def evaluate_calibration_by_outcome(
     scored: pl.DataFrame,
     *,
     n_bins: int = 10,
+    probability_column: str | None = None,
 ) -> pl.DataFrame:
     schema = {
         "outcome_name": pl.Utf8(),
@@ -340,13 +403,15 @@ def evaluate_calibration_by_outcome(
         "mae": pl.Float64(),
         "base_rate": pl.Float64(),
         "brier_skill": pl.Float64(),
+        "log_loss": pl.Float64(),
+        "auc": pl.Float64(),
     }
     if scored.height == 0 or "outcome_name" not in scored.columns:
         return pl.DataFrame(schema=schema)
     rows: list[dict[str, float | int | str]] = []
     for name, g in scored.group_by("outcome_name", maintain_order=True):
         outcome = name[0] if isinstance(name, tuple) else name
-        rep = evaluate_calibration(g, n_bins=n_bins)
+        rep = evaluate_calibration(g, n_bins=n_bins, probability_column=probability_column)
         rows.append(
             {
                 "outcome_name": str(outcome),
@@ -356,6 +421,8 @@ def evaluate_calibration_by_outcome(
                 "mae": rep.mae,
                 "base_rate": rep.base_rate,
                 "brier_skill": rep.brier_skill,
+                "log_loss": rep.log_loss,
+                "auc": rep.auc,
             }
         )
     return pl.DataFrame(rows)
@@ -374,5 +441,7 @@ __all__ = [
     "expected_calibration_error",
     "fit_platt_calibrator",
     "fit_platt_calibrators_by_outcome",
+    "log_loss",
     "reliability_table",
+    "roc_auc",
 ]
