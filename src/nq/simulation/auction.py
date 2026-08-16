@@ -627,12 +627,15 @@ def auction_fsm_columns(  # noqa: PLR0912, PLR0915
     balanced = states["is_balanced"].to_numpy()
     close = states["close"].to_numpy().astype(np.float64)
     # الـFSM يقرر على آخر ملف مكتمل، لا على VA الحالية التي تضم حجم البرميل نفسه.
-    vah_col = "decision_vah" if "decision_vah" in states.columns else "vah"
-    poc_col = "decision_poc" if "decision_poc" in states.columns else "poc"
-    val_col = "decision_val" if "decision_val" in states.columns else "val"
-    vah = states[vah_col].to_numpy().astype(np.float64)
-    poc = states[poc_col].to_numpy().astype(np.float64)
-    val = states[val_col].to_numpy().astype(np.float64)
+    has_decision = "decision_vah" in states.columns
+    vah = states["decision_vah" if has_decision else "vah"].to_numpy().astype(np.float64)
+    poc = states["decision_poc" if has_decision else "poc"].to_numpy().astype(np.float64)
+    val = states["decision_val" if has_decision else "val"].to_numpy().astype(np.float64)
+    if not has_decision and n > 0:
+        # حدود قرار مشتقة بتأخير صف واحد — لا VA نفس البار (تسريب نفس البار).
+        vah = np.concatenate(([np.nan], vah[:-1]))
+        poc = np.concatenate(([np.nan], poc[:-1]))
+        val = np.concatenate(([np.nan], val[:-1]))
     vol = states["bucket_volume"].to_numpy().astype(np.float64)
     expansion = states["is_expansion"].to_numpy()
     pullback = states["pullback_defended"].to_numpy()
@@ -908,12 +911,25 @@ def auction_signals_from_states(
 
     ordered = states.sort(BUCKET_START)
     if "decision_vah" not in ordered.columns:
-        # توافق اختبارات/مستهلكين يبنون states يدويًا. مسار الإنتاج يمر دائمًا
-        # بـauction_states ويملك الحدود المتأخرة صراحةً.
-        ordered = ordered.with_columns(
-            pl.col("vah").alias("decision_vah"),
-            pl.col("poc").alias("decision_poc"),
-            pl.col("val").alias("decision_val"),
+        # توافق مستهلكين يبنون states يدويًا. مسار الإنتاج يمر دائمًا
+        # بـauction_states ويملك الحدود المتأخرة صراحةً. هنا نشتقها بتأخير
+        # صف واحد — لا يجوز أبدًا معاملة VA البرميل الحالي كحدود قرار
+        # (حجم البرميل نفسه شارك في صنعها = تسريب نفس البار).
+        run_expr = (
+            (pl.col(VP_LIQUIDITY_SESSION) != pl.col(VP_LIQUIDITY_SESSION).shift(1).fill_null(-1))
+            .cast(pl.Int64)
+            .cum_sum()
+            if VP_LIQUIDITY_SESSION in ordered.columns
+            else pl.lit(1, dtype=pl.Int64)
+        )
+        ordered = (
+            ordered.with_columns(run_expr.alias("_decision_run"))
+            .with_columns(
+                pl.col("vah").shift(1).over("_decision_run").alias("decision_vah"),
+                pl.col("poc").shift(1).over("_decision_run").alias("decision_poc"),
+                pl.col("val").shift(1).over("_decision_run").alias("decision_val"),
+            )
+            .drop("_decision_run")
         )
     if "order_accel_rate" not in ordered.columns or "early_imbalance" not in ordered.columns:
         # حالات مركّبة يدويًا (اختبارات FSM): صفّر الأداة دون كسر المخطط.

@@ -55,16 +55,24 @@ class MarketTruthConfig:
 
 
 def _thesis_direction(states: pl.DataFrame) -> pl.Series:
-    """اتجاه الثيسيس من المزاد: اختلال صاعد/هابط عبر close مقابل POC."""
-    # +1 = ثيسيس صاعد (اختلال مع إغلاق فوق POC أو تمدّد لأعلى)
-    # -1 = ثيسيس هابط
-    close = states["close"].cast(pl.Float64)
-    poc = states["poc"].cast(pl.Float64)
-    imbalanced = ~states["is_balanced"]
-    above = close > poc
-    below = close < poc
+    """اتجاه الثيسيس من المزاد: اختلال صاعد/هابط عبر close مقابل POC القرار.
+
+    يقارن ``close`` بـ``decision_poc`` (آخر ملف مكتمل) — POC البرميل الحالي
+    يتضمن حجم نفس البرميل، ومقارنته بإغلاقه تسريب نفس البار في بوابة الدخول.
+    عند غياب ``decision_poc`` (states يدوية) نشتقه بتأخير صف واحد.
+    """
+    poc_expr = (
+        pl.col("decision_poc") if "decision_poc" in states.columns else pl.col("poc").shift(1)
+    ).cast(pl.Float64)
+    close = pl.col("close").cast(pl.Float64)
+    imbalanced = ~pl.col("is_balanced")
+    known = poc_expr.is_not_null()
     dir_expr = (
-        pl.when(imbalanced & above).then(1.0).when(imbalanced & below).then(-1.0).otherwise(0.0)
+        pl.when(imbalanced & known & (close > poc_expr))
+        .then(1.0)
+        .when(imbalanced & known & (close < poc_expr))
+        .then(-1.0)
+        .otherwise(0.0)
     )
     return states.select(dir_expr.alias("thesis_dir"))["thesis_dir"]
 
