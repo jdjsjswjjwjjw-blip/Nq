@@ -8,6 +8,10 @@
 (``min(نهاية الجلسة التقويمية، نهاية الداتا)``). تغطية آسيا تُقاس على النافذة
 الموجودة في الملف، لا على 9 ساعات تقويمية ثابتة. فجوات *داخل* النافذة ما زالت
 تخفّض ``proj_asia_coverage_ratio``.
+
+المرساة تُقفل **مرة واحدة** عند أول برميل لندن ومن حجم آسيا فقط. قصة بلا أي
+صفقة آسيا لا تملك مرساة: لا تُنشر صفوف ``london_extend`` لها إطلاقًا — لا
+يُسمح بمرساة زائفة مبنية من حجم لندن نفسه.
 """
 
 from __future__ import annotations
@@ -267,7 +271,7 @@ def build_asia_london_projection(  # noqa: PLR0912, PLR0915
     london_id = int(VpLiquiditySession.LONDON)
     stories = list(trades.group_by("projection_story_date", maintain_order=True))
     n_stories = len(stories)
-    packed: list[tuple[str, pl.DataFrame, list[tuple[object, pl.DataFrame]]]] = []
+    packed: list[tuple[str, pl.DataFrame, list[tuple[tuple[Any, ...], pl.DataFrame]]]] = []
     n_buckets = 0
     n_trades = 0
     for story_key, story in stories:
@@ -293,6 +297,7 @@ def build_asia_london_projection(  # noqa: PLR0912, PLR0915
             continue
         running = DevelopingVolumeProfile(fraction=cfg.value_fraction)
         anchor: ValueArea | None = None
+        anchor_latched = False
         anchor_primary = 0
         anchor_hvns: list[int] = []
         break_dir = 0
@@ -315,7 +320,12 @@ def build_asia_london_projection(  # noqa: PLR0912, PLR0915
             bucket_start = int(bucket_key[0] if isinstance(bucket_key, tuple) else bucket_key)
             bucket = raw_bucket.sort(EVENT_TS)
             session_id = int(bucket[VP_LIQUIDITY_SESSION][0])
-            if session_id == london_id and anchor is None:
+            if session_id == london_id and not anchor_latched:
+                # المرساة تُقفل مرة واحدة عند أول برميل لندن، قبل إضافة أي صفقة
+                # لندن إلى الملف الجاري. لا إعادة محاولة لاحقًا: إعادة القفل بعد
+                # أن دخل حجم لندن في ``running`` كانت تُنتج «مرساة آسيا» زائفة
+                # مبنية من صفقات لندن (قصة بلا آسيا إطلاقًا).
+                anchor_latched = True
                 anchor = running.value_area()
                 if asia_span_start is None or asia_bucket_count == 0:
                     asia_coverage = 0.0

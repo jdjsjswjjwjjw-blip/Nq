@@ -176,6 +176,40 @@ def _dense_truncated_asia_london_stream() -> pl.DataFrame:
     return make_stream(events, event_ts=times, sequence=list(range(1, len(events) + 1)))
 
 
+def _london_only_stream() -> pl.DataFrame:
+    """صفقات لندن فقط (لا آسيا إطلاقًا) — لا يجوز اختلاق مرساة آسيا."""
+    events: list[tuple[str, str, int, int, int]] = []
+    times: list[int] = []
+    london = _ns_et(2024, 6, 4, 3, 30)
+    for bar in range(6):
+        for j in range(3):
+            events.append(("T", "B", _BASE + (bar + j) * _TICK, 4, 0))
+            times.append(london + bar * 3 * _MINUTE + j * 1_000_000)
+    return make_stream(events, event_ts=times, sequence=list(range(1, len(events) + 1)))
+
+
+def test_london_only_story_never_fakes_asia_anchor() -> None:
+    """قصة بلا أي صفقة آسيا: لا صفوف ``london_extend`` ولا مرساة زائفة.
+
+    قبل الإصلاح كانت المرساة تُعاد محاولتها بعد أن دخل حجم لندن في الملف
+    الجاري، فتُنشر ``asia_poc/vah/val`` مبنية فعليًا من صفقات لندن.
+    """
+    projection = build_asia_london_projection(_london_only_stream(), config=_config())
+    assert projection.filter(pl.col("projection_stage") == "london_extend").height == 0
+    assert projection.filter(pl.col("asia_poc").is_not_null()).height == 0
+
+
+def test_anchor_latches_from_asia_volume_only() -> None:
+    """المرساة المقفولة تساوي ملف آسيا المكتمل — لا صفقة لندن داخلها."""
+    projection = build_asia_london_projection(_asia_london_repricing_stream(), config=_config())
+    asia = projection.filter(pl.col("projection_stage") == "asia_build")
+    london = projection.filter(pl.col("projection_stage") == "london_extend")
+    assert london.height > 0
+    assert int(london["asia_poc"][0]) == int(asia["composite_poc"][-1])
+    assert int(london["asia_vah"][0]) == int(asia["composite_vah"][-1])
+    assert int(london["asia_val"][0]) == int(asia["composite_val"][-1])
+
+
 def test_truncated_file_window_completes_dense_asia_anchor() -> None:
     projection = build_asia_london_projection(_dense_truncated_asia_london_stream())
     london = projection.filter(pl.col("projection_stage") == "london_extend")
