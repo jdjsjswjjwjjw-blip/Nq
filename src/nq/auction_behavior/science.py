@@ -16,6 +16,14 @@ from nq.auction_behavior.calibration import (
     evaluate_calibration_by_outcome,
     fit_platt_calibrators_by_outcome,
 )
+from nq.auction_behavior.competing import (
+    CompetingRiskModel,
+    calibrate_competing_temperature,
+    evaluate_competing_scores,
+    fit_competing_risk_model,
+    predict_competing_at_states,
+    score_competing_risk_model,
+)
 from nq.auction_behavior.conditional import (
     ConditionalModel,
     fit_conditional_models,
@@ -31,10 +39,13 @@ from nq.auction_behavior.holdout import (
     evaluate_frozen_holdout_once,
 )
 from nq.auction_behavior.outcomes import (
+    FIRST_TRANSITION_CLASSES,
+    OUTCOME_AVAILABLE_TS,
     OUTCOME_TARGETS,
     PRIMARY_OUTCOME_TARGETS,
     SETUP_AVAILABILITY_TS,
     attach_outcome_availability_guard,
+    build_first_transition_outcomes,
     build_labeled_outcomes,
     filter_outcomes_known_by,
     filter_resolved_outcomes,
@@ -71,6 +82,11 @@ class ScienceConfig:
     min_neg: int = 3
     calibration_frac: float = 0.2
     group_col: str | None = "_behavior_story_run"
+    #: رأس المخاطر المتنافسة (توزيع أول انتقال بمجموع 1) فوق الثنائيات.
+    include_competing_risk: bool = True
+    competing_window: int = 30
+    competing_min_train: int = 24
+    competing_min_class: int = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +110,11 @@ class BehaviorScienceReport:
     live_model_predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
     #: توافق قديم = live (غير مؤهل للباك تست).
     state_predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
+    #: رأس المخاطر المتنافسة: تسميات أول انتقال + OOF/live بمجموع احتمالات 1.
+    competing_labeled: pl.DataFrame = field(default_factory=pl.DataFrame)
+    competing_oof_predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
+    competing_live_predictions: pl.DataFrame = field(default_factory=pl.DataFrame)
+    final_competing_model: CompetingRiskModel | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -179,6 +200,42 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
     if progress is not None:
         progress.op(f"science: develop={develop.height:,} holdout={holdout_pack.holdout.height:,}")
 
+    # رأس المخاطر المتنافسة: تسميات أول انتقال (فئة واحدة لكل إعداد، مجموع 1)
+    competing_labeled_all = pl.DataFrame()
+    competing_develop = pl.DataFrame()
+    competing_holdout = pl.DataFrame()
+    if cfg.include_competing_risk:
+        if progress is not None:
+            progress.op("science: first-transition competing labels")
+        ft_outcomes = build_first_transition_outcomes(
+            blended,
+            window=max(int(cfg.competing_window), int(cfg.outcome_window)),
+            group_col=cfg.group_col if cfg.group_col in blended.columns else None,
+            progress=progress,
+        )
+        competing_labeled_all = attach_outcome_availability_guard(blended, ft_outcomes)
+        competing_resolved = (
+            competing_labeled_all.filter(pl.col("label_status") == "resolved")
+            if competing_labeled_all.height
+            else competing_labeled_all
+        )
+        # نفس حدّ الـholdout الزمني تمامًا — لا حدود عزل ثانية متضاربة.
+        if competing_resolved.height and holdout_pack.cut_ts >= 0:
+            competing_develop = competing_resolved.filter(
+                pl.col(SETUP_AVAILABILITY_TS) <= holdout_pack.cut_ts
+            )
+            competing_holdout = competing_resolved.filter(
+                pl.col(SETUP_AVAILABILITY_TS) > holdout_pack.cut_ts
+            )
+        else:
+            competing_develop = competing_resolved
+            competing_holdout = competing_resolved.head(0)
+        if progress is not None:
+            progress.op(
+                f"science: competing develop={competing_develop.height:,} "
+                f"holdout={competing_holdout.height:,}"
+            )
+
     if progress is not None:
         progress.op("science: family feature selection")
     candidate_feature_names = select_feature_names_by_family(
@@ -215,6 +272,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
 
     fold_score_rows: list[pl.DataFrame] = []
     oof_state_rows: list[pl.DataFrame] = []
+    competing_oof_rows: list[pl.DataFrame] = []
     fold_metric_rows: list[dict[str, float | int | str]] = []
     drift_psis: list[float] = []
     seen_setup_test: set[int] = set()
@@ -297,6 +355,38 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             scored = scored.with_columns(pl.col("p_cal").alias("p_hat"))
 
         cal = evaluate_calibration(scored, n_bins=cfg.calibration_bins)
+
+        # رأس المخاطر المتنافسة على نفس حدود الطيّة الزمنية (بلا مؤشرات مشتركة)
+        competing_metrics = {"n": 0.0, "brier": 0.0, "log_loss": 0.0, "accuracy": 0.0}
+        competing_model: CompetingRiskModel | None = None
+        if cfg.include_competing_risk and competing_develop.height:
+            ft_train = competing_develop.filter(
+                (pl.col(SETUP_AVAILABILITY_TS) <= sf.train_end_ts)
+                & (pl.col(OUTCOME_AVAILABLE_TS) <= sf.train_end_ts)
+            )
+            ft_fit, ft_cal = _calibration_tail_split(ft_train, frac=cfg.calibration_frac)
+            competing_model = fit_competing_risk_model(
+                ft_fit,
+                feature_names=fold_features,
+                train_end_ts=sf.train_end_ts,
+                l2=cfg.l2,
+                min_train=cfg.competing_min_train,
+                min_class_count=cfg.competing_min_class,
+                progress=progress,
+            )
+            competing_model = calibrate_competing_temperature(competing_model, ft_cal)
+            ft_test = competing_develop.filter(
+                (pl.col(SETUP_AVAILABILITY_TS) >= sf.test_start_ts)
+                & (pl.col(SETUP_AVAILABILITY_TS) <= sf.test_end_ts)
+            )
+            if competing_model.is_usable() and ft_test.height:
+                ft_scored = score_competing_risk_model(
+                    competing_model, ft_test, embargo=float(cfg.embargo)
+                )
+                competing_metrics = evaluate_competing_scores(
+                    ft_scored, classes=FIRST_TRANSITION_CLASSES
+                )
+
         drift_features = model.feature_names
         drift = measure_drift(
             train.select([c for c in drift_features if c in train.columns]),
@@ -321,6 +411,12 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 "ece": cal.ece,
                 "mae": cal.mae,
                 "brier_skill": cal.brier_skill,
+                "log_loss": cal.log_loss,
+                "auc": cal.auc,
+                "competing_n": competing_metrics["n"],
+                "competing_brier": competing_metrics["brier"],
+                "competing_log_loss": competing_metrics["log_loss"],
+                "competing_accuracy": competing_metrics["accuracy"],
                 "mean_psi": drift.mean_psi,
                 "max_psi": drift.max_psi,
                 "outcome_rate_l1": drift.outcome_rate_l1,
@@ -354,6 +450,16 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 oof_state_rows.append(
                     apply_calibrators_to_state_predictions(state_predictions, calibrators)
                 )
+                if competing_model is not None and competing_model.is_usable():
+                    competing_oof_rows.append(
+                        predict_competing_at_states(
+                            competing_model,
+                            state_slice,
+                            prediction_is_oof=True,
+                            fold=sf.fold,
+                            eligible_for_backtest=True,
+                        )
+                    )
 
     fold_frame = pl.DataFrame(fold_metric_rows) if fold_metric_rows else folds_to_frame(folds)
     fold_scores = (
@@ -364,6 +470,13 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             subset=[AVAILABILITY_TS], keep="first"
         )
         if oof_state_rows
+        else pl.DataFrame()
+    )
+    competing_oof_predictions = (
+        pl.concat(competing_oof_rows, how="diagonal_relaxed").unique(
+            subset=[AVAILABILITY_TS], keep="first"
+        )
+        if competing_oof_rows
         else pl.DataFrame()
     )
     calibration_by_outcome = evaluate_calibration_by_outcome(
@@ -378,9 +491,12 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
 
     final_model: ConditionalModel | None = None
     final_calibrators: dict[str, PlattCalibrator] = {}
+    final_competing: CompetingRiskModel | None = None
     holdout_eval: HoldoutEvaluation | None = None
     holdout_state = holdout_pack
     live_preds = pl.DataFrame()
+    competing_live_preds = pl.DataFrame()
+    competing_holdout_metrics: dict[str, float] = {}
     if develop.height >= cfg.min_train_size and candidate_feature_names:
         if progress is not None:
             progress.op("science: fit final live model")
@@ -433,6 +549,33 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             eligible_for_backtest=False,
         )
         live_preds = apply_calibrators_to_state_predictions(live_preds, final_calibrators)
+        if cfg.include_competing_risk and competing_develop.height:
+            if progress is not None:
+                progress.op("science: fit final competing-risk model")
+            ft_known = competing_develop.filter(
+                pl.col(OUTCOME_AVAILABLE_TS) <= int(final_train_end)
+            )
+            ft_fit_final, ft_cal_final = _calibration_tail_split(
+                ft_known, frac=cfg.calibration_frac
+            )
+            final_competing = fit_competing_risk_model(
+                ft_fit_final,
+                feature_names=final_features,
+                train_end_ts=final_train_end,
+                l2=cfg.l2,
+                min_train=cfg.competing_min_train,
+                min_class_count=cfg.competing_min_class,
+                progress=progress,
+            )
+            final_competing = calibrate_competing_temperature(final_competing, ft_cal_final)
+            if final_competing.is_usable():
+                competing_live_preds = predict_competing_at_states(
+                    final_competing,
+                    blended,
+                    prediction_is_oof=False,
+                    fold=None,
+                    eligible_for_backtest=False,
+                )
         if cfg.evaluate_holdout and holdout_pack.holdout.height > 0:
             if progress is not None:
                 progress.op(f"science: frozen holdout n={holdout_pack.holdout.height:,}")
@@ -450,6 +593,14 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             holdout_eval, holdout_state = evaluate_frozen_holdout_once(
                 holdout_pack, scored_ho, allow_retouch=False
             )
+            # نفس اللمسة الواحدة تشمل رأس المخاطر المتنافسة — لا لمسة ثانية.
+            if final_competing is not None and final_competing.is_usable():
+                ft_ho_scored = score_competing_risk_model(
+                    final_competing, competing_holdout, embargo=0.0
+                )
+                competing_holdout_metrics = evaluate_competing_scores(
+                    ft_ho_scored, classes=FIRST_TRANSITION_CLASSES
+                )
 
     feature_names = (
         final_model.feature_names if final_model is not None else candidate_feature_names
@@ -468,6 +619,17 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             f"science done folds={len(folds)} oof={conditional_oof_predictions.height:,} "
             f"live={live_preds.height:,}"
         )
+    competing_class_counts: dict[str, int] = {}
+    if competing_develop.height:
+        for key, part in competing_develop.group_by("first_transition_class"):
+            competing_class_counts[str(key[0] if isinstance(key, tuple) else key)] = int(
+                part.height
+            )
+    n_setups_unique = (
+        int(develop[SETUP_AVAILABILITY_TS].n_unique())
+        if develop.height and SETUP_AVAILABILITY_TS in develop.columns
+        else 0
+    )
     return BehaviorScienceReport(
         labeled=labeled_all,
         feature_names=feature_names,
@@ -483,6 +645,10 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         final_calibrators=final_calibrators,
         live_model_predictions=live_preds,
         state_predictions=live_preds,  # توافق: الحي فقط، موثّق كغير OOF
+        competing_labeled=competing_labeled_all,
+        competing_oof_predictions=competing_oof_predictions,
+        competing_live_predictions=competing_live_preds,
+        final_competing_model=final_competing,
         diagnostics={
             "n_labeled": int(labeled_all.height),
             "n_resolved": int(labeled.height),
@@ -492,6 +658,17 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             "holdout_cut_ts": int(holdout_pack.cut_ts),
             "holdout_touched": bool(holdout_state.touched),
             "n_features": len(feature_names),
+            "n_setups_unique": n_setups_unique,
+            "samples_per_feature": (float(labeled.height) / float(max(1, len(feature_names)))),
+            "competing_risk_enabled": bool(cfg.include_competing_risk),
+            "n_competing_labeled": int(competing_labeled_all.height),
+            "n_competing_develop": int(competing_develop.height),
+            "n_competing_holdout": int(competing_holdout.height),
+            "competing_class_counts": competing_class_counts,
+            "competing_probabilities_sum_to_one": True,
+            "n_competing_oof_rows": int(competing_oof_predictions.height),
+            "n_competing_live_rows": int(competing_live_preds.height),
+            "competing_holdout_metrics": competing_holdout_metrics,
             "n_final_calibrators": len(final_calibrators),
             "n_level_flow_features": n_lf,
             "n_reliability_features": n_rel,
@@ -510,6 +687,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             "oof_predictions_eligible_for_backtest": True,
             "science_steps": (
                 "conditional_model_state_to_probs",
+                "competing_risk_first_transition_softmax",
                 "outcomes_censored_and_group_onset",
                 "structure_features",
                 "market_memory_sequence_group_safe",

@@ -21,6 +21,23 @@ from nq.validation.leakage import assert_availability_not_before_event, assert_c
 OUTCOME_AVAILABLE_TS = "outcome_available_ts"
 SETUP_AVAILABILITY_TS = "setup_availability_ts"
 
+#: فئات «أول انتقال» من ``expansion_testing`` — توزيع مشترك مجموعه 1.
+#: ``no_transition`` = نافذة مكتملة بلا أي انتقال (فئة صريحة، ليست فشلًا صامتًا).
+FIRST_TRANSITION_CLASSES = (
+    "expansion_accepting",
+    "rejection_return_to_asia",
+    "repriced_balance",
+    "no_transition",
+)
+FIRST_TRANSITION_CLASS_COL = "first_transition_class"
+
+#: أعمدة الإسقاط التي تحسم فئة أول انتقال (بترتيب الفئات أعلاه).
+_FIRST_TRANSITION_SOURCES = (
+    ("expansion_accepting", "proj_expansion_accepting"),
+    ("rejection_return_to_asia", "proj_rejection_to_asia"),
+    ("repriced_balance", "proj_repriced_balance"),
+)
+
 #: أهداف الإسقاط الأساسية (Asia→London) — أولوية التعلم الشرطي.
 PRIMARY_OUTCOME_TARGETS = (
     "y_expansion_accepting",
@@ -340,6 +357,141 @@ def build_labeled_outcomes(  # noqa: PLR0912, PLR0915
     return out
 
 
+def build_first_transition_outcomes(  # noqa: PLR0912, PLR0915
+    frame: pl.DataFrame,
+    *,
+    window: int = 30,
+    group_col: str | None = None,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
+    """توزيع مشترك للنتائج المتنافسة: أول انتقال بعد onset ``expansion_testing``.
+
+    كل إعداد يُنسب إلى **فئة واحدة بالضبط** (أو censored عند نافذة ناقصة):
+    أول ظهور لأي من قبول/رفض/إعادة تسعير داخل النافذة يحسم الفئة عند لحظة
+    ظهوره (``outcome_available_ts``). نافذة مكتملة بلا انتقال = فئة صريحة
+    ``no_transition`` تُحسم عند نهاية النافذة. ظهور فئتين في نفس البرميل =
+    ``ambiguous`` (لا ترتيب داخلي مثبت) ولا يدخل التدريب.
+    """
+    schema = {
+        SETUP_AVAILABILITY_TS: pl.Int64(),
+        OUTCOME_AVAILABLE_TS: pl.Int64(),
+        FIRST_TRANSITION_CLASS_COL: pl.Utf8(),
+        "horizon_bars": pl.Int64(),
+        "group_id": pl.Int64(),
+        "label_status": pl.Utf8(),
+    }
+    if frame.height == 0 or AVAILABILITY_TS not in frame.columns:
+        return pl.DataFrame(schema=schema)
+    if window < 1:
+        raise ValueError(f"window must be >= 1, got {window}")
+    if group_col is not None and group_col not in frame.columns:
+        raise ValueError(f"group_col is missing: {group_col}")
+
+    work = frame.sort(AVAILABILITY_TS)
+    n = work.height
+    ts = work[AVAILABILITY_TS].to_numpy().astype(np.int64)
+    assert_causal_order(ts)
+    groups = (
+        work[group_col].fill_null(-1).to_numpy().astype(np.int64)
+        if group_col is not None
+        else np.zeros(n, dtype=np.int64)
+    )
+    trigger = _active(_col_array(work, "proj_expansion_testing", n))
+    class_active = {
+        name: _active(_col_array(work, col, n)) for name, col in _FIRST_TRANSITION_SOURCES
+    }
+
+    rows: list[dict[str, object]] = []
+    if progress is not None:
+        progress.op(f"build_first_transition_outcomes bars={n:,} window={window}")
+    for i in range(n):
+        if progress is not None:
+            progress.heartbeat(i + 1, n, label="first-transition")
+        if not trigger[i]:
+            continue
+        if i > 0 and groups[i] == groups[i - 1] and trigger[i - 1]:
+            continue  # onset فقط — لا إعداد جديد لكل بار داخل نفس الاختبار
+
+        visible = 0
+        last_j = i
+        resolved_class: str | None = None
+        resolved_j = -1
+        ambiguous = False
+        for j in range(i + 1, min(n, i + window + 1)):
+            if groups[j] != groups[i]:
+                break
+            visible += 1
+            last_j = j
+            hits = [name for name, active in class_active.items() if active[j]]
+            if len(hits) > 1:
+                ambiguous = True
+                resolved_j = j
+                break
+            if len(hits) == 1:
+                resolved_class = hits[0]
+                resolved_j = j
+                break
+
+        if ambiguous:
+            rows.append(
+                {
+                    SETUP_AVAILABILITY_TS: int(ts[i]),
+                    OUTCOME_AVAILABLE_TS: int(ts[resolved_j]),
+                    FIRST_TRANSITION_CLASS_COL: None,
+                    "horizon_bars": int(resolved_j - i),
+                    "group_id": int(groups[i]),
+                    "label_status": "ambiguous",
+                }
+            )
+            continue
+        if resolved_class is not None:
+            rows.append(
+                {
+                    SETUP_AVAILABILITY_TS: int(ts[i]),
+                    OUTCOME_AVAILABLE_TS: int(ts[resolved_j]),
+                    FIRST_TRANSITION_CLASS_COL: resolved_class,
+                    "horizon_bars": int(resolved_j - i),
+                    "group_id": int(groups[i]),
+                    "label_status": "resolved",
+                }
+            )
+            continue
+        if visible >= window:
+            rows.append(
+                {
+                    SETUP_AVAILABILITY_TS: int(ts[i]),
+                    OUTCOME_AVAILABLE_TS: int(ts[last_j]),
+                    FIRST_TRANSITION_CLASS_COL: "no_transition",
+                    "horizon_bars": int(last_j - i),
+                    "group_id": int(groups[i]),
+                    "label_status": "resolved",
+                }
+            )
+        else:
+            rows.append(
+                {
+                    SETUP_AVAILABILITY_TS: int(ts[i]),
+                    OUTCOME_AVAILABLE_TS: int(ts[last_j]),
+                    FIRST_TRANSITION_CLASS_COL: None,
+                    "horizon_bars": int(last_j - i),
+                    "group_id": int(groups[i]),
+                    "label_status": "censored",
+                }
+            )
+
+    out = pl.DataFrame(rows, schema=schema) if rows else pl.DataFrame(schema=schema)
+    if out.height:
+        known = out.filter(pl.col("label_status") == "resolved")
+        if known.height:
+            assert_availability_not_before_event(
+                known[SETUP_AVAILABILITY_TS].to_numpy(),
+                known[OUTCOME_AVAILABLE_TS].to_numpy(),
+            )
+    if progress is not None:
+        progress.op(f"first_transition rows={out.height:,}")
+    return out
+
+
 def filter_resolved_outcomes(outcomes: pl.DataFrame) -> pl.DataFrame:
     """يستبعد right-censored من التدريب والتقييم الكمي."""
     if outcomes.height == 0:
@@ -382,12 +534,15 @@ def filter_outcomes_known_by(outcomes: pl.DataFrame, *, asof_ts: int) -> pl.Data
 
 
 __all__ = [
+    "FIRST_TRANSITION_CLASSES",
+    "FIRST_TRANSITION_CLASS_COL",
     "OUTCOME_AVAILABLE_TS",
     "OUTCOME_TARGETS",
     "PRIMARY_OUTCOME_TARGETS",
     "SETUP_AVAILABILITY_TS",
     "OutcomeSpec",
     "attach_outcome_availability_guard",
+    "build_first_transition_outcomes",
     "build_labeled_outcomes",
     "filter_outcomes_known_by",
     "filter_resolved_outcomes",

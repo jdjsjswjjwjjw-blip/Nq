@@ -26,6 +26,9 @@ class CalibrationReport:
     mae: float
     base_rate: float
     brier_skill: float = 0.0
+    log_loss: float = 0.0
+    #: تمييز (Mann–Whitney AUC)؛ NaN عند صنف واحد فقط في العينة.
+    auc: float = float("nan")
     detail: str = ""
 
 
@@ -83,6 +86,45 @@ def brier_skill_score(
     if br_base < _EPS:
         return 0.0 if br < _EPS else -1.0
     return float(1.0 - br / br_base)
+
+
+def log_loss_score(y: np.ndarray, p: np.ndarray) -> float:
+    """Negative log-likelihood متوسط مع قصّ رقمي (يتجاهل NaN)."""
+    mask = np.isfinite(y) & np.isfinite(p)
+    if not np.any(mask):
+        return 0.0
+    yy = y[mask].astype(np.float64)
+    pp = np.clip(p[mask].astype(np.float64), _EPS, 1.0 - _EPS)
+    return float(-np.mean(yy * np.log(pp) + (1.0 - yy) * np.log(1.0 - pp)))
+
+
+def roc_auc(y: np.ndarray, p: np.ndarray) -> float:
+    """AUC عبر إحصاء الرتب (Mann–Whitney) مع تصحيح التعادلات.
+
+    يعيد NaN عند غياب أحد الصنفين — لا يُخترع تمييز من عينة أحادية الصنف.
+    """
+    mask = np.isfinite(y) & np.isfinite(p)
+    if not np.any(mask):
+        return float("nan")
+    yy = (y[mask].astype(np.float64) >= _POSITIVE_THRESHOLD).astype(np.float64)
+    pp = p[mask].astype(np.float64)
+    n_pos = int(np.sum(yy))
+    n_neg = int(yy.size - n_pos)
+    if n_pos == 0 or n_neg == 0:
+        return float("nan")
+    order = np.argsort(pp, kind="mergesort")
+    sorted_p = pp[order]
+    ranks = np.empty(pp.size, dtype=np.float64)
+    i = 0
+    while i < sorted_p.size:
+        j = i
+        while j + 1 < sorted_p.size and sorted_p[j + 1] == sorted_p[i]:
+            j += 1
+        ranks[order[i : j + 1]] = 0.5 * (i + j) + 1.0
+        i = j + 1
+    rank_sum_pos = float(np.sum(ranks[yy > 0]))
+    u = rank_sum_pos - n_pos * (n_pos + 1) / 2.0
+    return float(u / (n_pos * n_neg))
 
 
 def expected_calibration_error(
@@ -323,6 +365,8 @@ def evaluate_calibration(scored: pl.DataFrame, *, n_bins: int = 10) -> Calibrati
             pp,
             None if baseline is None else baseline[mask],
         ),
+        log_loss=log_loss_score(yy, pp),
+        auc=roc_auc(yy, pp),
         detail=f"reliability_bins={n_bins}·col={col}",
     )
 
@@ -340,6 +384,8 @@ def evaluate_calibration_by_outcome(
         "mae": pl.Float64(),
         "base_rate": pl.Float64(),
         "brier_skill": pl.Float64(),
+        "log_loss": pl.Float64(),
+        "auc": pl.Float64(),
     }
     if scored.height == 0 or "outcome_name" not in scored.columns:
         return pl.DataFrame(schema=schema)
@@ -356,6 +402,8 @@ def evaluate_calibration_by_outcome(
                 "mae": rep.mae,
                 "base_rate": rep.base_rate,
                 "brier_skill": rep.brier_skill,
+                "log_loss": rep.log_loss,
+                "auc": rep.auc,
             }
         )
     return pl.DataFrame(rows)
@@ -374,5 +422,7 @@ __all__ = [
     "expected_calibration_error",
     "fit_platt_calibrator",
     "fit_platt_calibrators_by_outcome",
+    "log_loss_score",
     "reliability_table",
+    "roc_auc",
 ]

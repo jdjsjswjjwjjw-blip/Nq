@@ -496,6 +496,7 @@ python scripts/run_week.py \
 | 8–9 | جودة إشارة (evidence) + متجه حالة | `signal_quality ≠` احتمال معاير |
 | 10–11 | base-rate تجريبي + علم شرطي | State(t)→probs؛ التدريب على علاقات؛ OOS للمعايرة فقط · بلا `edge_*` |
 | علم | نموذج شرطي + targets صارمة + ECE + WF + drift + holdout | `outcome_available_ts` · فصل `behavior_state_frame` عن `behavior_prediction_frame` |
+| علم+ | مخاطر متنافسة (softmax مجموعه 1) + ablation تراكمي | `p_first_*` توزيع مشترك · `run_behavior_ablation` على نفس الطيّات · holdout لا يُمس |
 
 ```python
 from nq.auction_behavior import (
@@ -559,11 +560,34 @@ if science is not None and science.holdout_eval is not None:
 5. Level-anchored OF + reliability evidence (Raw MBO محفوظ) + lifecycle عبر البراميل  
 6. اختيار ميزات بعائلات إلزامية (projection/structure/sequence/lf/rel)  
 7. Asia→London projection داخل متجه الحالة  
-8. Platt على ذيل قطار سببي + ECE/Brier/**BSS** (`signal_quality ≠` احتمال)  
+8. Platt على ذيل قطار سببي + ECE/Brier/**BSS**/log loss/**AUC** (`signal_quality ≠` احتمال)  
 9. Walk-forward على **setup فريد** · **OOF** للباك تست · live منفصل · holdout مرة واحدة  
+10. **مخاطر متنافسة**: softmax لأول انتقال من `expansion_testing` — توزيع مشترك
+    مجموعه 1 على {قبول، رفض، إعادة تسعير، لا انتقال} + temperature على ذيل سببي  
 
 > `behavior_prediction_frame` يفضّل تنبؤات OOF (`eligible_for_backtest=True`).  
 > التنبؤ الحي من النموذج النهائي يحمل `eligible_for_backtest=False` و`model_train_end_ts`.  
+> الثنائيات `p_y_*` **ليست** توزيعًا مشتركًا (قد يتجاوز مجموعها 1 لأن الأسئلة
+> مختلفة الآفاق)؛ التوزيع المشترك يأتي من `behavior_competing_prediction_frame`
+> (`p_first_*` يجمع لـ1 دائمًا).
+
+**دراسة ablation (هل كل طبقة تضيف قيمة OOS فعلًا؟):**
+
+```python
+from nq.auction_behavior import run_behavior_ablation
+
+report = run_behavior_ablation(result.blended)   # develop فقط؛ الـholdout لا يُمس
+print(report.frame)            # ستاك × هدف: Brier/log loss/AUC/ECE/BSS خارج العينة
+print(report.competing_frame)  # نفس المقارنة لرأس المخاطر المتنافسة
+assert report.diagnostics["holdout_untouched"]
+```
+
+الستاكات تراكمية على **نفس** التسميات ونفس طيّات purged walk-forward وبمعالجة
+متطابقة (خام بلا Platt): `vp_price` → `plus_projection` → `plus_memory` →
+`plus_mbo_flow` → `plus_reliability`. اختيار الميزات round-robin بين عائلات
+الستاك حتى لا تشبع الميزانية قبل وصول الطبقة الجديدة. `signal_quality` مستبعد
+من كل الستاكات (مركّب يخلط الطبقات). إن لم يتحسن `plus_mbo_flow` على
+`plus_memory` خارج العينة فلا دليل أن MBO يضيف معلومات لهذا الهدف.
 
 **إسقاط آسيا→لندن:** يبني `build_asia_london_projection` ملف آسيا تراكميًا بلا
 تصفير، ويجمّده عند أول برميل لندن كـ`asia_poc/vah/val/HVN`. بعد ذلك يضيف كل
