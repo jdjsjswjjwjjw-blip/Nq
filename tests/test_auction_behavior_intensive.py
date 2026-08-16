@@ -554,3 +554,9 @@ def test_pipeline_golden_future_perturbation_leaves_past_unchanged() -> None:
     lab_b = other.science.labeled.filter(pl.col("outcome_available_ts") <= cut_ts).sort(sort_keys)
     assert lab_a.height == lab_b.height
     assert lab_a.equals(lab_b), "resolved labels before the cut changed"
+    ft_a = base.science.competing_labeled
+    ft_b = other.science.competing_labeled
+    if ft_a.height or ft_b.height:
+        ft_a = ft_a.filter(pl.col("outcome_available_ts") <= cut_ts).sort("setup_availability_ts")
+        ft_b = ft_b.filter(pl.col("outcome_available_ts") <= cut_ts).sort("setup_availability_ts")
+        assert ft_a.equals(ft_b), "competing first-transition labels before the cut changed"
