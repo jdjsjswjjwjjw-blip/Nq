@@ -519,10 +519,10 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             progress=progress,
         )
         if progress is not None:
-            progress.op("science: binary feature ablation on primary outcomes")
+            progress.op("science: binary feature ablation on all outcome targets")
         binary_ablation = run_binary_feature_ablation(
             ablation_slices,
-            outcomes=PRIMARY_OUTCOME_TARGETS,
+            outcomes=OUTCOME_TARGETS,
             max_features=cfg.max_features,
             l2=cfg.l2,
             min_train=max(8, cfg.min_train_size // 2),
@@ -676,7 +676,13 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             and bool(conditional_oof_predictions["probabilities_are_joint_distribution"].any())
         )
     )
-    sample_caution = bool(n_competing_setups > 0 and n_competing_setups < 10 * max(n_features, 1))
+    sample_caution = bool(
+        n_features > 0
+        and (
+            (n_competing_setups > 0 and n_competing_setups < 10 * n_features)
+            or (n_unique_setups > 0 and n_unique_setups < 10 * n_features)
+        )
+    )
 
     if progress is not None:
         progress.op(

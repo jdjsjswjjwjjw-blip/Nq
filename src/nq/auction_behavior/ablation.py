@@ -25,7 +25,7 @@ from nq.auction_behavior.conditional import (
     score_conditional_models,
     select_feature_names_by_family,
 )
-from nq.auction_behavior.outcomes import PRIMARY_OUTCOME_TARGETS
+from nq.auction_behavior.outcomes import OUTCOME_TARGETS
 from nq.research.progress import ProgressLike
 
 _A = ("state", "structure", "quality")
@@ -87,6 +87,22 @@ class AblationFoldSlice:
 def _mean_metric(rows: list[dict[str, float]], key: str) -> float:
     vals = [float(r[key]) for r in rows if key in r and np.isfinite(float(r[key]))]
     return float(np.mean(vals)) if vals else float("nan")
+
+
+def _weighted_metric(rows: list[dict[str, float]], key: str) -> float:
+    """متوسط موزون بـ ``n`` حتى لا تُحسب طيّة فارغة أو صغيرة كطيّة كاملة."""
+    num = 0.0
+    den = 0.0
+    for row in rows:
+        if key not in row:
+            continue
+        n = float(row.get("n", 0.0))
+        val = float(row[key])
+        if n <= 0.0 or not np.isfinite(val):
+            continue
+        num += val * n
+        den += n
+    return float(num / den) if den > 0.0 else float("nan")
 
 
 def run_feature_ablation(
@@ -182,7 +198,7 @@ def run_feature_ablation(
 def run_binary_feature_ablation(
     slices: list[AblationFoldSlice],
     *,
-    outcomes: tuple[str, ...] = PRIMARY_OUTCOME_TARGETS,
+    outcomes: tuple[str, ...] = OUTCOME_TARGETS,
     max_features: int = 64,
     l2: float = 1.0,
     min_train: int = 12,
@@ -248,6 +264,8 @@ def run_binary_feature_ablation(
             n_ok += 1
             by_out = evaluate_calibration_by_outcome(scored)
             for rec in by_out.iter_rows(named=True):
+                if int(rec["n"]) <= 0:
+                    continue
                 name = str(rec["outcome_name"])
                 auc_val = rec.get("auc")
                 per_outcome.setdefault(name, []).append(
@@ -265,6 +283,9 @@ def run_binary_feature_ablation(
         for outcome, metrics in per_outcome.items():
             if not metrics:
                 continue
+            n_oof_out = int(sum(m["n"] for m in metrics))
+            if n_oof_out <= 0:
+                continue
             pooled_rows.extend(metrics)
             rows.append(
                 {
@@ -273,16 +294,17 @@ def run_binary_feature_ablation(
                     "detail": spec.detail,
                     "families": ",".join(spec.families),
                     "n_features_mean": feat_mean,
-                    "n_oof": int(sum(m["n"] for m in metrics)),
+                    "n_oof": n_oof_out,
                     "n_folds_used": len(metrics),
-                    "log_loss": _mean_metric(metrics, "log_loss"),
-                    "brier": _mean_metric(metrics, "brier"),
-                    "brier_skill": _mean_metric(metrics, "brier_skill"),
-                    "ece": _mean_metric(metrics, "ece"),
-                    "auc": _mean_metric(metrics, "auc"),
+                    "log_loss": _weighted_metric(metrics, "log_loss"),
+                    "brier": _weighted_metric(metrics, "brier"),
+                    "brier_skill": _weighted_metric(metrics, "brier_skill"),
+                    "ece": _weighted_metric(metrics, "ece"),
+                    "auc": _weighted_metric(metrics, "auc"),
                     "status": MODEL_STATUS_OK,
                 }
             )
+        pooled_n = int(sum(m["n"] for m in pooled_rows))
         rows.append(
             {
                 "spec": spec.name,
@@ -290,14 +312,14 @@ def run_binary_feature_ablation(
                 "detail": spec.detail,
                 "families": ",".join(spec.families),
                 "n_features_mean": feat_mean,
-                "n_oof": int(sum(m["n"] for m in pooled_rows)),
+                "n_oof": pooled_n,
                 "n_folds_used": n_ok,
-                "log_loss": _mean_metric(pooled_rows, "log_loss"),
-                "brier": _mean_metric(pooled_rows, "brier"),
-                "brier_skill": _mean_metric(pooled_rows, "brier_skill"),
-                "ece": _mean_metric(pooled_rows, "ece"),
-                "auc": _mean_metric(pooled_rows, "auc"),
-                "status": MODEL_STATUS_OK if pooled_rows else "insufficient_support",
+                "log_loss": _weighted_metric(pooled_rows, "log_loss"),
+                "brier": _weighted_metric(pooled_rows, "brier"),
+                "brier_skill": _weighted_metric(pooled_rows, "brier_skill"),
+                "ece": _weighted_metric(pooled_rows, "ece"),
+                "auc": _weighted_metric(pooled_rows, "auc"),
+                "status": MODEL_STATUS_OK if pooled_n > 0 else "insufficient_support",
             }
         )
     return pl.DataFrame(rows) if rows else pl.DataFrame(schema=schema)

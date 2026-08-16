@@ -28,6 +28,7 @@ from nq.auction_behavior.competing import (
 from nq.auction_behavior.conditional import select_feature_names_by_family
 from nq.auction_behavior.outcomes import (
     OUTCOME_AVAILABLE_TS,
+    OUTCOME_TARGETS,
     PRIMARY_OUTCOME_TARGETS,
     SETUP_AVAILABILITY_TS,
 )
@@ -233,6 +234,69 @@ def test_ablation_runner_returns_five_specs() -> None:
     )
     assert binary.height >= 5
     assert "__pooled__" in binary["outcome_name"].to_list()
+    ok_rows = binary.filter(pl.col("status") == "ok")
+    assert ok_rows.height > 0
+    assert (ok_rows["n_oof"] > 0).all()
+
+
+def test_binary_ablation_skips_unscored_outcomes_and_uses_all_targets() -> None:
+    """لا تُحسب صفوف n=0 / Brier=0 كدليل OOS؛ الأهداف الثانوية تُجرَّب إن وُجدت."""
+    rows: list[dict[str, object]] = []
+    for i in range(36):
+        exp = 1.0 if i % 2 == 0 else 0.0
+        rows.extend(
+            _labeled_setup(
+                i,
+                expansion=exp,
+                rejection=1.0 - exp,
+                repriced=0.0,
+                feat=0.85 if exp else 0.15,
+                available_at=i + 2,
+            )
+        )
+        rows.append(
+            {
+                SETUP_AVAILABILITY_TS: i,
+                OUTCOME_AVAILABLE_TS: i + 2,
+                AVAILABILITY_TS: i,
+                "outcome_name": "y_retest_success",
+                "y": 1.0 if i % 3 == 0 else 0.0,
+                "label_status": "resolved",
+                "group_id": 0,
+                "feat_a": 0.7 if i % 3 == 0 else 0.2,
+                "feat_b": 0.3,
+            }
+        )
+    labeled = pl.DataFrame(rows).with_columns(
+        pl.col("feat_a").alias("vp_balance"),
+        pl.col("feat_b").alias("struct_dist_vah_ticks"),
+    )
+    train = labeled.filter(pl.col(SETUP_AVAILABILITY_TS) < 24)
+    test = labeled.filter(pl.col(SETUP_AVAILABILITY_TS) >= 24)
+    table = run_binary_feature_ablation(
+        [
+            AblationFoldSlice(
+                fold=1,
+                segment="test",
+                train_end_ts=23,
+                train=train,
+                test=test,
+            )
+        ],
+        outcomes=OUTCOME_TARGETS,
+        max_features=8,
+        min_train=6,
+        min_pos=1,
+        min_neg=1,
+    )
+    names = set(table["outcome_name"].to_list())
+    assert "y_retest_success" in names
+    assert "y_false_break" not in names
+    fake_ok = table.filter((pl.col("status") == "ok") & (pl.col("n_oof") <= 0))
+    assert fake_ok.height == 0
+    retest = table.filter(pl.col("outcome_name") == "y_retest_success")
+    assert retest.height == 5
+    assert (retest["n_oof"] > 0).all()
 
 
 def test_log_loss_and_auc_bounds() -> None:
