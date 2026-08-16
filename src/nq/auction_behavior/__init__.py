@@ -9,6 +9,13 @@
 
 from __future__ import annotations
 
+from nq.auction_behavior.ablation import (
+    ABLATION_STACKS,
+    AblationReport,
+    run_behavior_ablation,
+)
+from nq.auction_behavior.competing import CompetingRiskModel
+from nq.auction_behavior.outcomes import FIRST_TRANSITION_CLASSES
 from nq.auction_behavior.path_confirm import (
     PATH_CONFIRM_COLUMNS,
     attach_path_depth_confirmation,
@@ -16,6 +23,7 @@ from nq.auction_behavior.path_confirm import (
 from nq.auction_behavior.pipeline import (
     AuctionBehaviorResult,
     BehaviorConfig,
+    behavior_competing_prediction_frame,
     behavior_live_prediction_frame,
     behavior_oof_prediction_frame,
     behavior_prediction_frame,
@@ -35,8 +43,11 @@ from nq.auction_behavior.types import BehaviorProbabilities, BehaviorStateSnapsh
 from nq.auction_behavior.validate import BehaviorValidationReport
 
 __all__ = [
+    "ABLATION_STACKS",
+    "FIRST_TRANSITION_CLASSES",
     "PATH_CONFIRM_COLUMNS",
     "PROJECTION_NUMERIC_COLUMNS",
+    "AblationReport",
     "AsiaLondonProjectionConfig",
     "AuctionBehaviorResult",
     "BehaviorConfig",
@@ -44,8 +55,10 @@ __all__ = [
     "BehaviorScienceReport",
     "BehaviorStateSnapshot",
     "BehaviorValidationReport",
+    "CompetingRiskModel",
     "ScienceConfig",
     "attach_path_depth_confirmation",
+    "behavior_competing_prediction_frame",
     "behavior_live_prediction_frame",
     "behavior_oof_prediction_frame",
     "behavior_prediction_frame",
@@ -55,6 +68,7 @@ __all__ = [
     "build_asia_london_projection",
     "latest_state_snapshot",
     "run_auction_behavior_analysis",
+    "run_behavior_ablation",
     "run_behavior_science",
     "state_matrix",
 ]
