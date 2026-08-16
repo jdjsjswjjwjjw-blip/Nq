@@ -12,6 +12,7 @@ from nq.auction_behavior.calibration import (
     apply_calibrators_by_outcome,
     apply_calibrators_to_state_predictions,
     brier_skill_score,
+    evaluate_calibration,
     fit_platt_calibrators_by_outcome,
 )
 from nq.auction_behavior.conditional import (
@@ -20,6 +21,7 @@ from nq.auction_behavior.conditional import (
     fit_conditional_models,
     group_feature_names_by_family,
     rank_feature_weights,
+    score_conditional_models,
     select_feature_names_by_family,
 )
 from nq.auction_behavior.drift import _psi_1d
@@ -486,3 +488,50 @@ def test_month_folds_apply_setup_level_purge() -> None:
     assert len(folds) == 1
     train_times = frame[folds[0].train_idx][SETUP_AVAILABILITY_TS].to_list()
     assert max(train_times) == times[3]
+
+
+def test_evaluate_calibration_uses_raw_p_hat_not_platt() -> None:
+    """Platt مقلوب يجب ألا يُحسب كمهارة النموذج الشرطي."""
+    scored = pl.DataFrame(
+        {
+            "y": [0.0, 0.0, 1.0, 1.0],
+            "p_hat": [0.1, 0.2, 0.8, 0.9],
+            "p_cal": [0.9, 0.8, 0.2, 0.1],
+            "baseline_p": [0.5, 0.5, 0.5, 0.5],
+        }
+    )
+    raw = evaluate_calibration(scored)
+    calibrated = evaluate_calibration(scored, probability_column="p_cal")
+    assert raw.brier < calibrated.brier
+    assert raw.brier_skill > calibrated.brier_skill
+
+
+def test_score_test_idx_does_not_shift_after_dropping_censored() -> None:
+    """test_idx يشير لصفوف الإطار الأصلي، لا بعد حذف censored."""
+    labeled = pl.DataFrame(
+        {
+            SETUP_AVAILABILITY_TS: [10, 20, 30],
+            OUTCOME_AVAILABLE_TS: [11, 21, 31],
+            "outcome_name": ["y_true_break", "y_true_break", "y_true_break"],
+            "y": [0.0, 1.0, 0.0],
+            "label_status": ["censored", "resolved", "resolved"],
+            "feat_a": [0.1, 0.9, 0.2],
+        }
+    )
+    model = fit_conditional_models(
+        labeled,
+        feature_names=("feat_a",),
+        outcomes=("y_true_break",),
+        train_end_ts=15,
+        min_train=1,
+        min_pos=1,
+        min_neg=1,
+    )
+    scored = score_conditional_models(
+        model,
+        labeled,
+        test_idx=np.array([1], dtype=np.intp),
+        enforce_temporal_split=False,
+    )
+    assert scored.height == 1
+    assert float(scored["y"][0]) == pytest.approx(1.0)

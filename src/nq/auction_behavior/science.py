@@ -61,6 +61,7 @@ from nq.auction_behavior.walk_forward import (
     build_contract_aware_folds,
     build_expanding_month_folds,
     folds_to_frame,
+    labeled_fold_order,
 )
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.progress import ProgressLike
@@ -226,7 +227,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
     if progress is not None:
         progress.op(f"science: carve holdout frac={cfg.holdout_frac}")
     holdout_pack = carve_frozen_holdout(labeled, holdout_frac=cfg.holdout_frac)
-    develop = holdout_pack.develop
+    develop = labeled_fold_order(holdout_pack.develop)
     if progress is not None:
         progress.op(f"science: develop={develop.height:,} holdout={holdout_pack.holdout.height:,}")
 
@@ -336,21 +337,16 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
 
         if progress is not None:
             progress.op(f"science fold {fold_i}: score + calibrate + drift")
-        # سجّل الاختبار بمؤشرات الصفوف داخل develop
         scored = score_conditional_models(
             model,
-            develop,
-            test_idx=sf.test_idx,
+            test,
+            test_idx=np.arange(test.height, dtype=np.intp),
             embargo=float(cfg.embargo),
         )
-        # أعد فلترة إن حذفنا تكرارات
-        if scored.height and overlap:
-            scored = scored.filter(~pl.col(SETUP_AVAILABILITY_TS).is_in(list(overlap)))
         scored = apply_calibrators_by_outcome(scored, calibrators)
-        if "p_cal" in scored.columns:
-            scored = scored.with_columns(pl.col("p_cal").alias("p_hat"))
-
-        cal = evaluate_calibration(scored, n_bins=cfg.calibration_bins)
+        cal = evaluate_calibration(
+            scored, n_bins=cfg.calibration_bins, probability_column="p_hat"
+        )
         drift_features = model.feature_names
         drift = measure_drift(
             train.select([c for c in drift_features if c in train.columns]),
@@ -486,7 +482,14 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         else pl.DataFrame()
     )
     calibration_by_outcome = evaluate_calibration_by_outcome(
-        fold_scores, n_bins=cfg.calibration_bins
+        fold_scores, n_bins=cfg.calibration_bins, probability_column="p_hat"
+    )
+    calibration_by_outcome_calibrated = (
+        evaluate_calibration_by_outcome(
+            fold_scores, n_bins=cfg.calibration_bins, probability_column="p_cal"
+        )
+        if fold_scores.height and "p_cal" in fold_scores.columns
+        else pl.DataFrame()
     )
     stability = fold_stability(fold_frame, column="ece")
     competing_fold_scores = (
@@ -737,6 +740,19 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                     calibration_by_outcome.to_dicts() if calibration_by_outcome.height else []
                 )
             ],
+            "calibration_by_outcome_calibrated": [
+                {
+                    key: (None if isinstance(val, float) and not np.isfinite(val) else val)
+                    for key, val in row.items()
+                }
+                for row in (
+                    calibration_by_outcome_calibrated.to_dicts()
+                    if calibration_by_outcome_calibrated.height
+                    else []
+                )
+            ],
+            "oos_skill_probability_column": "p_hat",
+            "platt_overwrites_oof_p_hat": False,
             "holdout_cut_ts": int(holdout_pack.cut_ts),
             "holdout_touched": bool(holdout_state.touched),
             "n_features": n_features,
@@ -801,6 +817,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 "path_depth_confirmation_no_if",
                 "platt_calibration_causal_tail",
                 "calibration_ece_brier_bss_logloss",
+                "oos_skill_on_raw_p_hat_not_platt",
                 "walk_forward_unique_setup",
                 "oof_vs_live_predictions",
                 "drift_stability_open_psi",

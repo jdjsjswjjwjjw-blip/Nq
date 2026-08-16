@@ -113,7 +113,13 @@ def _summarize(name: str, result, *, n_raw: int) -> dict:
             "ablation": science.diagnostics.get("ablation"),
             "binary_ablation": science.diagnostics.get("binary_ablation"),
             "n_by_outcome": science.diagnostics.get("n_by_outcome"),
+            "oos_skill_probability_column": science.diagnostics.get(
+                "oos_skill_probability_column"
+            ),
             "calibration_by_outcome": science.diagnostics.get("calibration_by_outcome"),
+            "calibration_by_outcome_calibrated": science.diagnostics.get(
+                "calibration_by_outcome_calibrated"
+            ),
             "live_eligible_for_backtest": science.diagnostics.get(
                 "live_predictions_eligible_for_backtest"
             ),

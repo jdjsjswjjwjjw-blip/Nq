@@ -31,6 +31,16 @@ def _month_key_from_ns(ts_ns: int) -> str:
     return f"{d.year:04d}-{d.month:02d}"
 
 
+def labeled_fold_order(frame: pl.DataFrame, *, ts_col: str = SETUP_AVAILABILITY_TS) -> pl.DataFrame:
+    """ترتيب ثابت قبل بناء المؤشرات: الطابع ثم اسم الهدف حتى لا تنقلب الصفوف المتزامنة."""
+    if frame.height == 0:
+        return frame
+    keys = [c for c in (ts_col, "outcome_name") if c in frame.columns]
+    if not keys:
+        return frame
+    return frame.sort(keys, maintain_order=True)
+
+
 def attach_segment_keys(
     frame: pl.DataFrame,
     *,
@@ -145,7 +155,7 @@ def build_time_folds_for_frame(
     """طيّات على setup فريد ثم توسيع لكل صفوف النتائج التابعة."""
     if frame.height == 0 or ts_col not in frame.columns:
         return []
-    work = frame.sort(ts_col)
+    work = labeled_fold_order(frame, ts_col=ts_col)
     setup_times = unique_setup_timestamps(work, ts_col=ts_col)
     setup_folds = build_time_folds(
         setup_times,
@@ -197,7 +207,7 @@ def build_expanding_month_folds(
         return []
     if purge_samples < 0:
         raise ValueError("purge_samples must be non-negative")
-    work = attach_segment_keys(frame.sort(ts_col), ts_col=ts_col)
+    work = attach_segment_keys(labeled_fold_order(frame, ts_col=ts_col), ts_col=ts_col)
     # جدول setup فريد لحساب الشهور
     setups = (
         work.select(ts_col, "segment_month")
@@ -276,7 +286,7 @@ def build_contract_aware_folds(
     """
     if frame.height == 0:
         return []
-    work = attach_segment_keys(frame.sort(ts_col), ts_col=ts_col)
+    work = attach_segment_keys(labeled_fold_order(frame, ts_col=ts_col), ts_col=ts_col)
     folds = build_time_folds_for_frame(
         work,
         ts_col=ts_col,
@@ -341,5 +351,6 @@ __all__ = [
     "build_time_folds",
     "build_time_folds_for_frame",
     "folds_to_frame",
+    "labeled_fold_order",
     "unique_setup_timestamps",
 ]

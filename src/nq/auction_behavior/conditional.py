@@ -441,7 +441,7 @@ def score_conditional_models(
         "model_n_pos": pl.Int64(),
         "model_n_neg": pl.Int64(),
     }
-    work = filter_resolved_outcomes(labeled) if labeled.height else labeled
+    work = labeled
     if work.height == 0:
         return pl.DataFrame(schema=empty_schema)
 
@@ -456,6 +456,7 @@ def score_conditional_models(
             (pl.col(SETUP_AVAILABILITY_TS) >= int(test_start_ts))
             & (pl.col(SETUP_AVAILABILITY_TS) <= int(test_end_ts))
         )
+    test = filter_resolved_outcomes(test) if test.height else test
     if test.height == 0:
         return test.with_columns(
             pl.lit(None, dtype=pl.Float64).alias("p_hat"),

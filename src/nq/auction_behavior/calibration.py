@@ -320,9 +320,26 @@ def apply_calibrators_to_state_predictions(
     return predictions.with_columns(exprs) if exprs else predictions
 
 
-def evaluate_calibration(scored: pl.DataFrame, *, n_bins: int = 10) -> CalibrationReport:
-    """معايرة من إطار فيه ``y`` و ``p_hat`` (يتجاهل NaN)."""
-    if scored.height == 0 or "y" not in scored.columns or "p_hat" not in scored.columns:
+def evaluate_calibration(
+    scored: pl.DataFrame,
+    *,
+    n_bins: int = 10,
+    probability_column: str | None = None,
+) -> CalibrationReport:
+    """معايرة من إطار فيه ``y`` وعمود احتمال (يتجاهل NaN).
+
+    الافتراضي ``p_hat`` (النموذج الشرطي الخام). لا تُستخدم ``p_cal`` إلا بطلب
+    صريح — Platt على ذيل صغير يقلب BSS دون أن يعني فشل النموذج نفسه.
+    """
+    if probability_column is not None:
+        col = probability_column
+    elif "p_hat" in scored.columns:
+        col = "p_hat"
+    elif "p_cal" in scored.columns:
+        col = "p_cal"
+    else:
+        col = "p_hat"
+    if scored.height == 0 or "y" not in scored.columns or col not in scored.columns:
         return CalibrationReport(
             n=0,
             brier=0.0,
@@ -334,7 +351,6 @@ def evaluate_calibration(scored: pl.DataFrame, *, n_bins: int = 10) -> Calibrati
             auc=float("nan"),
             detail="empty",
         )
-    col = "p_cal" if "p_cal" in scored.columns else "p_hat"
     y = scored["y"].to_numpy().astype(np.float64)
     p = scored[col].to_numpy().astype(np.float64)
     baseline = (
@@ -377,6 +393,7 @@ def evaluate_calibration_by_outcome(
     scored: pl.DataFrame,
     *,
     n_bins: int = 10,
+    probability_column: str | None = None,
 ) -> pl.DataFrame:
     schema = {
         "outcome_name": pl.Utf8(),
@@ -394,7 +411,7 @@ def evaluate_calibration_by_outcome(
     rows: list[dict[str, float | int | str]] = []
     for name, g in scored.group_by("outcome_name", maintain_order=True):
         outcome = name[0] if isinstance(name, tuple) else name
-        rep = evaluate_calibration(g, n_bins=n_bins)
+        rep = evaluate_calibration(g, n_bins=n_bins, probability_column=probability_column)
         rows.append(
             {
                 "outcome_name": str(outcome),
