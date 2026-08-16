@@ -8,7 +8,6 @@ import numpy as np
 import polars as pl
 
 from nq.auction_behavior.events import event_rate
-from nq.auction_behavior.quality import mean_confidence
 from nq.auction_behavior.types import BehaviorProbabilities
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.models.splitting import purged_walk_forward_split
@@ -58,6 +57,11 @@ _TARGETS: tuple[tuple[str, str, Callable[[pl.DataFrame, str], float]], ...] = (
 
 
 def _descriptive_probabilities(work: pl.DataFrame) -> BehaviorProbabilities:
+    """معدلات وصفية على كل الإطار (بما فيه المستقبل) — ليست تنبؤات OOS.
+
+    ``confidence=0.0`` إلزامي: لا يوجد أي تحقق خارج العينة هنا، وأي ثقة
+    موجبة قد تُغري باستخدام هذه المعدلات كتوقعات مدرَّبة (خداع ذاتي).
+    """
     rates = {name: fn(work, column) for name, column, fn in _TARGETS}
     return BehaviorProbabilities(
         p_balanced=_clip01(rates["balanced"]),
@@ -68,9 +72,12 @@ def _descriptive_probabilities(work: pl.DataFrame) -> BehaviorProbabilities:
         p_retest_fail=_clip01(rates["retest_fail"]),
         p_expansion_continue=_clip01(rates["expansion_continue"]),
         p_return_to_value=_clip01(rates["return_to_value"]),
-        confidence=_clip01(mean_confidence(work) * 0.25),
+        confidence=0.0,
         n_samples=int(work.height),
-        detail="insufficient folds — descriptive rates only (not OOS forecasts)",
+        detail=(
+            "insufficient folds — full-sample descriptive rates only "
+            "(includes future; not OOS forecasts; confidence forced to 0)"
+        ),
     )
 
 
