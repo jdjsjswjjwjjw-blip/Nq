@@ -499,3 +499,58 @@ def test_add_cancel_only_stream_returns_safe_empty_result() -> None:
     assert result.blended.height == 0
     assert result.validation.ok
     assert result.diagnostics["reason"] == "no_trade_derived_auction_bars"
+
+
+def _asia_london_pipeline_stream() -> pl.DataFrame:
+    """آسيا 20:00 → لندن حتى 05:00 ET بصفقات كل 15 ثانية (فريم افتراضي)."""
+    rng = np.random.default_rng(5)
+    start = _ns_et(2024, 6, 3, 20, 0)
+    end = _ns_et(2024, 6, 4, 5, 0)
+    step = 15_000_000_000
+    times = list(range(start, end, step))
+    base = round(20_000.0 / PRICE_SCALE)
+    tick = round(0.25 / PRICE_SCALE)
+    walk = np.cumsum(rng.integers(-1, 2, size=len(times)))
+    events: list[tuple[str, str, int, int, int]] = []
+    for i, _ts in enumerate(times):
+        px = base + int(walk[i]) * tick
+        events.append(("T", "B" if i % 2 == 0 else "A", px, int(rng.integers(1, 5)), 0))
+    return make_stream(events, event_ts=times, sequence=list(range(1, len(events) + 1)))
+
+
+@pytest.mark.leakage
+def test_pipeline_golden_future_perturbation_leaves_past_unchanged() -> None:
+    """البوابة الذهبية على الخط كاملًا: تشويش MBO المستقبلي لا يغيّر أي مخرج ماضٍ.
+
+    يغطي بضربة واحدة: الإسقاط، level-flow، الذاكرة، الأحداث، الجودة،
+    والتسميات المحسومة قبل نقطة القطع (``outcome_available_ts``).
+    """
+    source = _asia_london_pipeline_stream()
+    cfg = BehaviorConfig(quiet=True)
+    cut_ts = _ns_et(2024, 6, 4, 4, 0)
+    tick = round(0.25 / PRICE_SCALE)
+    perturbed = source.with_columns(
+        pl.when(pl.col("event_ts") > cut_ts)
+        .then(pl.col("price") + 80 * tick)
+        .otherwise(pl.col("price"))
+        .alias("price")
+    )
+    assert perturbed.filter(pl.col("event_ts") > cut_ts).height > 0
+    base = run_auction_behavior_analysis(source, config=cfg)
+    other = run_auction_behavior_analysis(perturbed, config=cfg)
+
+    def _past(frame: pl.DataFrame, ts_col: str) -> pl.DataFrame:
+        return frame.filter(pl.col(ts_col) <= cut_ts).sort(ts_col)
+
+    for name in ("blended", "events", "projection"):
+        a = _past(getattr(base, name), AVAILABILITY_TS)
+        b = _past(getattr(other, name), AVAILABILITY_TS)
+        assert a.height == b.height, name
+        assert a.equals(b), f"{name}: past rows changed by future perturbation"
+
+    assert base.science is not None and other.science is not None
+    sort_keys = ["outcome_name", "setup_availability_ts"]
+    lab_a = base.science.labeled.filter(pl.col("outcome_available_ts") <= cut_ts).sort(sort_keys)
+    lab_b = other.science.labeled.filter(pl.col("outcome_available_ts") <= cut_ts).sort(sort_keys)
+    assert lab_a.height == lab_b.height
+    assert lab_a.equals(lab_b), "resolved labels before the cut changed"
