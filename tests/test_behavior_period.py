@@ -7,6 +7,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+import nq.auction_behavior
+import nq.research
 from nq.auction_behavior.outcomes import (
     OUTCOME_AVAILABLE_TS,
     SETUP_AVAILABILITY_TS,
@@ -22,6 +24,11 @@ from nq.research.behavior_period import (
     remint_period_story_runs,
     run_behavior_period_science,
     write_behavior_period_report,
+)
+from nq.validation.leakage import (
+    assert_availability_not_before_event,
+    assert_causal_order,
+    assert_temporal_split,
 )
 
 _HOUR_NS = 3_600 * 1_000_000_000
@@ -197,6 +204,36 @@ def test_period_science_is_pooled_walk_forward_not_daily_average(tmp_path: Path)
     assert report.ablation.diagnostics["holdout_untouched"] is True
     assert_labels_do_not_cross_session_dates(report.science.labeled)
     assert_labels_do_not_cross_period_days(report.science.labeled, report.blended)
+    assert_causal_order(report.blended[AVAILABILITY_TS].to_list(), strict=True)
+    assert_availability_not_before_event(
+        report.science.labeled[SETUP_AVAILABILITY_TS].to_list(),
+        report.science.labeled[OUTCOME_AVAILABLE_TS].to_list(),
+    )
+    helper_cols = {"_period_day_id", "_liquidity_run", "_behavior_story_run"}
+    assert helper_cols.isdisjoint(report.science.feature_names)
+    oof = report.science.conditional_oof_predictions
+    assert bool(oof["eligible_for_backtest"].all())
+    leaked_oof = oof.filter(pl.col(AVAILABILITY_TS) <= pl.col("model_train_end_ts"))
+    assert leaked_oof.height == 0
+    live = report.science.live_model_predictions
+    if live.height:
+        assert not bool(live["eligible_for_backtest"].any())
+    folds = report.science.fold_frame
+    if folds.height:
+        for row in folds.iter_rows(named=True):
+            if int(row["train_n"]) <= 0 or int(row["test_n"]) <= 0:
+                continue
+            assert_temporal_split(
+                [int(row["train_end_ts"])],
+                [int(row["test_start_ts"])],
+                embargo=0.0,
+            )
+    if report.science.competing_labeled.height:
+        assert_labels_do_not_cross_period_days(report.science.competing_labeled, report.blended)
+        assert_availability_not_before_event(
+            report.science.competing_labeled[SETUP_AVAILABILITY_TS].to_list(),
+            report.science.competing_labeled[OUTCOME_AVAILABLE_TS].to_list(),
+        )
 
     out = tmp_path / "period"
     write_behavior_period_report(report, out)
@@ -205,3 +242,9 @@ def test_period_science_is_pooled_walk_forward_not_daily_average(tmp_path: Path)
     assert (out / "oof_predictions.parquet").is_file()
     text = (out / "PERIOD.md").read_text(encoding="utf-8")
     assert "Not a mean of per-day probabilities" in text
+
+
+def test_period_helpers_not_reexported_from_package_init() -> None:
+    """تجميع الفترة لا يُصدَّر من __init__ حتى لا تتكسر دورة outcomes → research."""
+    assert "run_behavior_period_science" not in nq.research.__all__
+    assert "run_behavior_period_science" not in nq.auction_behavior.__all__

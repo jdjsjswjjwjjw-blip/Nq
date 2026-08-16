@@ -33,10 +33,16 @@ from nq.auction_behavior.science import BehaviorScienceReport, ScienceConfig, ru
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.session import VP_LIQUIDITY_SESSION, VpLiquiditySession, session_date_from_ns
 from nq.research.progress import ProgressLike
+from nq.validation.leakage import (
+    assert_availability_not_before_event,
+    assert_causal_order,
+    assert_temporal_split,
+)
 
 _DAY_DIR_NAME_LEN = 10  # YYYY-MM-DD
 _PERIOD_DAY_ID = "_period_day_id"
 _ASIA_LONDON = {int(VpLiquiditySession.ASIA), int(VpLiquiditySession.LONDON)}
+_PERIOD_HELPER_COLS = frozenset({_PERIOD_DAY_ID, "_liquidity_run", "_behavior_story_run"})
 
 
 def discover_day_blended(output_root: Path | str) -> tuple[Path, ...]:
@@ -143,6 +149,7 @@ def load_period_blended(
             "duplicate availability_ts across pooled days "
             f"(rows={pooled.height}, unique={n_unique}); refusing silent fan-out"
         )
+    assert_causal_order(pooled[AVAILABILITY_TS].to_list(), strict=True)
     pooled = remint_period_story_runs(pooled, progress=progress)
     return pooled, tuple(day_ids)
 
@@ -212,6 +219,85 @@ def assert_labels_do_not_cross_period_days(
         )
 
 
+def _assert_labeled_point_in_time(labeled: pl.DataFrame) -> None:
+    """``outcome_available_ts >= setup_availability_ts`` عبر بوابة التسريب."""
+    if labeled.height == 0:
+        return
+    need = (SETUP_AVAILABILITY_TS, OUTCOME_AVAILABLE_TS)
+    missing = [c for c in need if c not in labeled.columns]
+    if missing:
+        raise ValueError(f"labeled frame missing {missing}")
+    assert_availability_not_before_event(
+        labeled[SETUP_AVAILABILITY_TS].to_list(),
+        labeled[OUTCOME_AVAILABLE_TS].to_list(),
+    )
+
+
+def _assert_period_label_windows(science: BehaviorScienceReport, pooled: pl.DataFrame) -> None:
+    assert_labels_do_not_cross_session_dates(science.labeled)
+    assert_labels_do_not_cross_period_days(science.labeled, pooled)
+    _assert_labeled_point_in_time(science.labeled)
+    if science.competing_labeled.height:
+        assert_labels_do_not_cross_session_dates(science.competing_labeled)
+        assert_labels_do_not_cross_period_days(science.competing_labeled, pooled)
+        _assert_labeled_point_in_time(science.competing_labeled)
+
+
+def _assert_period_folds_and_predictions(science: BehaviorScienceReport) -> None:
+    leaked_features = _PERIOD_HELPER_COLS.intersection(science.feature_names)
+    if leaked_features:
+        raise AssertionError(
+            f"period helper columns entered the model feature set: {sorted(leaked_features)}"
+        )
+    folds = science.fold_frame
+    fold_cols = {"train_end_ts", "test_start_ts", "train_n", "test_n"}
+    if folds.height and fold_cols <= set(folds.columns):
+        for row in folds.iter_rows(named=True):
+            if int(row["train_n"]) <= 0 or int(row["test_n"]) <= 0:
+                continue
+            assert_temporal_split(
+                [int(row["train_end_ts"])],
+                [int(row["test_start_ts"])],
+                embargo=0.0,
+            )
+    oof = science.conditional_oof_predictions
+    if (
+        oof.height
+        and "eligible_for_backtest" in oof.columns
+        and not all(bool(x) for x in oof["eligible_for_backtest"].to_list())
+    ):
+        raise AssertionError("period OOF rows must all be eligible_for_backtest=true")
+    if oof.height and AVAILABILITY_TS in oof.columns and "model_train_end_ts" in oof.columns:
+        leaked_oof = oof.filter(pl.col(AVAILABILITY_TS) <= pl.col("model_train_end_ts"))
+        if leaked_oof.height:
+            raise AssertionError(
+                "OOF prediction availability_ts at or before model_train_end_ts "
+                f"(n={leaked_oof.height})"
+            )
+    live = science.live_model_predictions
+    if (
+        live.height
+        and "eligible_for_backtest" in live.columns
+        and any(bool(x) for x in live["eligible_for_backtest"].to_list())
+    ):
+        raise AssertionError("period live rows must all be eligible_for_backtest=false")
+
+
+def _assert_period_science_causal(
+    science: BehaviorScienceReport,
+    pooled: pl.DataFrame,
+    *,
+    evaluate_holdout: bool,
+) -> None:
+    """عقود تسريب على علم الفترة: تسمية، طيّات، OOF، أعمدة مساعدة، holdout."""
+    if AVAILABILITY_TS in pooled.columns and pooled.height:
+        assert_causal_order(pooled[AVAILABILITY_TS].to_list(), strict=True)
+    _assert_period_label_windows(science, pooled)
+    _assert_period_folds_and_predictions(science)
+    if not evaluate_holdout and bool(science.diagnostics.get("holdout_touched")):
+        raise AssertionError("period holdout was touched before evaluate_holdout")
+
+
 def _jsonable(obj: Any) -> Any:
     if obj is None or isinstance(obj, (bool, int, float, str)):
         return obj
@@ -268,8 +354,7 @@ def run_behavior_period_science(
     if progress is not None:
         progress.op(f"period science bars={pooled.height:,} days={len(ids)}")
     science = run_behavior_science(pooled, config=cfg, progress=progress)
-    assert_labels_do_not_cross_session_dates(science.labeled)
-    assert_labels_do_not_cross_period_days(science.labeled, pooled)
+    _assert_period_science_causal(science, pooled, evaluate_holdout=bool(cfg.evaluate_holdout))
     ablation: AblationReport | None = None
     if include_ablation:
         if progress is not None:
