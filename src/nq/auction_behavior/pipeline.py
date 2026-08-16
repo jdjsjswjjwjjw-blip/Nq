@@ -1000,6 +1000,24 @@ def behavior_live_prediction_frame(result: AuctionBehaviorResult) -> pl.DataFram
     return pl.DataFrame()
 
 
+def behavior_competing_prediction_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
+    """توزيع أول انتقال (مجموعه 1) — يفضّل OOF المؤهل للباك تست إن وُجد."""
+    if result.science is not None:
+        if result.science.competing_oof_predictions.height > 0:
+            return result.science.competing_oof_predictions
+        if result.science.competing_live_predictions.height > 0:
+            return result.science.competing_live_predictions
+    return pl.DataFrame(
+        schema={
+            AVAILABILITY_TS: pl.Int64(),
+            "prediction_source": pl.Utf8(),
+            "prediction_is_oof": pl.Boolean(),
+            "eligible_for_backtest": pl.Boolean(),
+            "model_train_end_ts": pl.Int64(),
+        }
+    )
+
+
 def behavior_probabilities_frame(result: AuctionBehaviorResult) -> pl.DataFrame:
     """توافق قديم → يُفضَّل :func:`behavior_state_frame` للحالة أو
     :func:`behavior_prediction_frame` للتنبؤ. يُرجع الحالة فقط (بلا ``p_*``).
@@ -1044,6 +1062,7 @@ def behavior_probability_summary(result: AuctionBehaviorResult) -> pl.DataFrame:
 __all__ = [
     "AuctionBehaviorResult",
     "BehaviorConfig",
+    "behavior_competing_prediction_frame",
     "behavior_live_prediction_frame",
     "behavior_oof_prediction_frame",
     "behavior_prediction_frame",
