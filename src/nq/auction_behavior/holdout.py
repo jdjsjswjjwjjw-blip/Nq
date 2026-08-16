@@ -9,6 +9,7 @@ import polars as pl
 
 from nq.auction_behavior.calibration import evaluate_calibration
 from nq.auction_behavior.outcomes import SETUP_AVAILABILITY_TS
+from nq.auction_behavior.walk_forward import month_key_from_ns, unique_month_keys
 from nq.validation.leakage import assert_temporal_split
 
 _HOLDOUT_FRAC_MIN = 0.05
@@ -26,6 +27,7 @@ class FrozenHoldout:
     holdout_frac: float
     frozen: bool = True
     touched: bool = False
+    holdout_months: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,9 +46,18 @@ def carve_frozen_holdout(
     labeled: pl.DataFrame,
     *,
     holdout_frac: float = 0.2,
+    holdout_months: int | None = None,
     ts_col: str = SETUP_AVAILABILITY_TS,
 ) -> FrozenHoldout:
-    """يعزل الذيل الزمني كـholdout نهائي؛ التطوير لا يراه."""
+    """يعزل الذيل الزمني كـholdout نهائي؛ التطوير لا يراه.
+
+    ``holdout_months``: آخر N شهور تقويمية (بروتوكول السنة 4/4/4).
+    وإلا يُستخدم ``holdout_frac`` على صفوف الإعداد.
+    """
+    if holdout_months is not None:
+        return carve_frozen_holdout_by_months(
+            labeled, n_holdout_months=int(holdout_months), ts_col=ts_col
+        )
     if not _HOLDOUT_FRAC_MIN <= holdout_frac <= _HOLDOUT_FRAC_MAX:
         raise ValueError(
             f"holdout_frac must be in [{_HOLDOUT_FRAC_MIN}, {_HOLDOUT_FRAC_MAX}], "
@@ -103,6 +114,61 @@ def carve_frozen_holdout(
     )
 
 
+def carve_frozen_holdout_by_months(
+    labeled: pl.DataFrame,
+    *,
+    n_holdout_months: int,
+    ts_col: str = SETUP_AVAILABILITY_TS,
+) -> FrozenHoldout:
+    """Holdout = آخر ``n_holdout_months`` شهور إعداد؛ بلا إعادة بناء للداتا."""
+    if n_holdout_months < 1:
+        raise ValueError(f"n_holdout_months must be >= 1, got {n_holdout_months}")
+    if labeled.height == 0 or ts_col not in labeled.columns:
+        return FrozenHoldout(
+            develop=labeled,
+            holdout=labeled.head(0),
+            cut_ts=-1,
+            holdout_frac=0.0,
+            frozen=True,
+            touched=False,
+            holdout_months=int(n_holdout_months),
+        )
+    ordered = labeled.sort(ts_col)
+    months = unique_month_keys(ordered, ts_col=ts_col)
+    if len(months) < n_holdout_months + 1:
+        raise ValueError(
+            f"need at least {n_holdout_months + 1} distinct setup months "
+            f"to carve {n_holdout_months}-month holdout; got {len(months)}: {list(months)}"
+        )
+    holdout_keys = months[-n_holdout_months:]
+    holdout_set = set(holdout_keys)
+    row_months = [month_key_from_ns(int(t)) for t in ordered[ts_col].to_list()]
+    tagged = ordered.with_columns(pl.Series("_block_month", row_months, dtype=pl.Utf8))
+    develop = tagged.filter(~pl.col("_block_month").is_in(list(holdout_set))).drop("_block_month")
+    holdout = tagged.filter(pl.col("_block_month").is_in(list(holdout_set))).drop("_block_month")
+    if develop.height == 0 or holdout.height == 0:
+        raise ValueError(
+            "month holdout carve produced an empty develop or holdout "
+            f"(develop={develop.height}, holdout={holdout.height}, months={list(months)})"
+        )
+    max_ts = develop[ts_col].max()
+    cut_ts = -1 if max_ts is None else int(np.asarray(max_ts).item())
+    assert_temporal_split(
+        develop[ts_col].to_numpy(),
+        holdout[ts_col].to_numpy(),
+        embargo=0.0,
+    )
+    return FrozenHoldout(
+        develop=develop,
+        holdout=holdout,
+        cut_ts=cut_ts,
+        holdout_frac=float(n_holdout_months) / float(len(months)),
+        frozen=True,
+        touched=False,
+        holdout_months=int(n_holdout_months),
+    )
+
+
 def mark_holdout_touched(holdout: FrozenHoldout) -> FrozenHoldout:
     """يُعلَّم أن الـholdout لُمِس — للتشخيص فقط؛ التقييم النهائي يجب أن يرفض اللمس المتكرر."""
     return FrozenHoldout(
@@ -112,6 +178,7 @@ def mark_holdout_touched(holdout: FrozenHoldout) -> FrozenHoldout:
         holdout_frac=holdout.holdout_frac,
         frozen=holdout.frozen,
         touched=True,
+        holdout_months=holdout.holdout_months,
     )
 
 
@@ -143,6 +210,7 @@ __all__ = [
     "FrozenHoldout",
     "HoldoutEvaluation",
     "carve_frozen_holdout",
+    "carve_frozen_holdout_by_months",
     "evaluate_frozen_holdout_once",
     "mark_holdout_touched",
 ]

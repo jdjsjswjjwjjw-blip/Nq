@@ -594,8 +594,11 @@ assert report.diagnostics["holdout_untouched"]
 إن كانت أيام المرحلة 1 موجودة أصلًا (`YYYY-MM-DD/blended.parquet`) فتشغيل السنة
 هو المرحلة 2 فقط — **بلا تحميل MBO وبلا إعادة بناء دفتر وبلا إعادة حساب ميزات.**
 
+بروتوكول الإثبات الافتراضي: **4 أشهر تدريب · 4 أشهر walk-forward · 4 أشهر holdout
+مجمّد.** الـholdout لا يُلمَس حتى `--evaluate-holdout` بعد قفل التطوير.
+
 ```text
-مرحلة 2 فقط (البيانات جاهزة)
+مرحلة 2 فقط (البيانات جاهزة) — 4/4/4
   scripts/run_auction_behavior_period.py \
     --days-root data/runs/year --output data/runs/year/period
 
@@ -606,9 +609,8 @@ assert report.diagnostics["holdout_untouched"]
 المرحلة 2 تقرأ `YYYY-MM-DD/blended.parquet`، تعيد ترقيم قصص الجلسة عالميًا
 (حتى لا تمتد نافذة التسمية عبر منتصف الليل ولا تُدمَج شرائح نفس جلسة CME من
 ملفين يوميين)، ثم `run_behavior_science` + `run_behavior_ablation` **مرة واحدة**
-على كل الإعدادات. الناتج OOF الفترة (`eligible_for_backtest=true`) + holdout
-ذيل زمني مجمّد — لا متوسط `p_*` اليومي ولا concat لتدفق MBO الخام. لا تلمّس
-الـholdout في أول تشغيل (`--evaluate-holdout` بعد قفل التطوير فقط).
+على كل الإعدادات. الناتج OOF الأشهر 5–8 (`eligible_for_backtest=true`) + holdout
+الأشهر 9–12 مجمّد — لا متوسط `p_*` اليومي ولا concat لتدفق MBO الخام.
 
 **إسقاط آسيا→لندن:** يبني `build_asia_london_projection` ملف آسيا تراكميًا بلا
 تصفير، ويجمّده عند أول برميل لندن كـ`asia_poc/vah/val/HVN`. بعد ذلك يضيف كل

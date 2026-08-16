@@ -49,6 +49,23 @@ _PERIOD_HELPER_COLS = frozenset({_PERIOD_DAY_ID, "_liquidity_run", "_behavior_st
 #: توقيع تدفق MBO خام — المرحلة 2 ترفضه بدل إعادة بناء الدفتر.
 _RAW_MBO_SIGNATURE = frozenset({"order_id", "action"})
 
+YEAR_TRAIN_MONTHS = 4
+YEAR_WALK_FORWARD_MONTHS = 4
+YEAR_HOLDOUT_MONTHS = 4
+
+
+def default_period_science_config() -> ScienceConfig:
+    """بروتوكول السنة: 4 أشهر تدريب · 4 walk-forward · 4 holdout مجمّد."""
+    return ScienceConfig(
+        use_month_folds=True,
+        min_train_months=YEAR_TRAIN_MONTHS,
+        walk_forward_months=YEAR_WALK_FORWARD_MONTHS,
+        holdout_months=YEAR_HOLDOUT_MONTHS,
+        evaluate_holdout=False,
+        n_splits=YEAR_WALK_FORWARD_MONTHS,
+        min_train_size=16,
+    )
+
 
 def discover_day_blended(output_root: Path | str) -> tuple[Path, ...]:
     """مجلدات أيام ناجحة تحت جذر التشغيل المتوازي (فيها ``blended.parquet``)."""
@@ -356,7 +373,7 @@ def run_behavior_period_science(
 
     مرِّر ``output_root`` (جذر تشغيل يومي) أو ``blended`` جاهزًا للاختبارات.
     """
-    cfg = config or ScienceConfig()
+    cfg = config or default_period_science_config()
     if blended is None:
         dirs = tuple(day_dirs) if day_dirs is not None else discover_day_blended(output_root or ".")
         pooled, ids = load_period_blended(dirs, progress=progress)
@@ -389,6 +406,11 @@ def run_behavior_period_science(
         "raw_mbo_not_loaded": True,
         "book_not_reconstructed": True,
         "features_not_recomputed_from_mbo": True,
+        "year_protocol_train_wf_holdout_months": (
+            cfg.min_train_months,
+            cfg.walk_forward_months,
+            cfg.holdout_months,
+        ),
         "story_runs_reminted_globally": True,
         "phase1_day_files_not_rejoined": True,
         "oof_predictions_eligible_for_backtest": True,
@@ -400,7 +422,13 @@ def run_behavior_period_science(
             "phase2: pool completed blended states only; never reload MBO or reconstruct",
             "not a mean of per-day p_*; OOF is from period folds on unique setups",
             "story runs reminted so label windows cannot cross session dates or phase-1 day files",
-            "holdout is the frozen temporal tail of the period, single-touch",
+            (
+                f"protocol: {cfg.min_train_months} train / "
+                f"{cfg.walk_forward_months} walk-forward / "
+                f"{cfg.holdout_months} holdout calendar months"
+                if cfg.holdout_months is not None and cfg.walk_forward_months is not None
+                else "holdout is the frozen temporal tail of the period, single-touch"
+            ),
         ),
     }
     return BehaviorPeriodReport(
@@ -486,6 +514,9 @@ def write_behavior_period_report(
         "Completed blended states only. No MBO reload. No book reconstruction.",
         "Not a mean of per-day probabilities. One walk-forward on pooled setups.",
         "",
+        f"- protocol: train={science.diagnostics.get('min_train_months')} "
+        f"walk-forward={science.diagnostics.get('walk_forward_months')} "
+        f"holdout={science.diagnostics.get('holdout_months')} calendar months",
         f"- days: {len(report.day_ids)}",
         f"- bars: {report.blended.height:,}",
         f"- labeled: {science.diagnostics.get('n_labeled')} · "
@@ -513,10 +544,14 @@ def write_behavior_period_report(
 
 
 __all__ = [
+    "YEAR_HOLDOUT_MONTHS",
+    "YEAR_TRAIN_MONTHS",
+    "YEAR_WALK_FORWARD_MONTHS",
     "BehaviorPeriodReport",
     "assert_labels_do_not_cross_period_days",
     "assert_labels_do_not_cross_session_dates",
     "assert_not_raw_mbo_stream",
+    "default_period_science_config",
     "discover_day_blended",
     "load_period_blended",
     "remint_period_story_runs",

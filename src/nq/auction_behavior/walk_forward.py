@@ -26,9 +26,49 @@ class ScienceFold:
     segment: str = "time"
 
 
-def _month_key_from_ns(ts_ns: int) -> str:
+def month_key_from_ns(ts_ns: int) -> str:
+    """مفتاح شهر تقويمي UTC من طابع نانوثانية (وحدة بلوك السنة)."""
     d = dt.datetime.fromtimestamp(ts_ns / 1e9, tz=dt.UTC)
     return f"{d.year:04d}-{d.month:02d}"
+
+
+def unique_month_keys(
+    frame: pl.DataFrame, *, ts_col: str = SETUP_AVAILABILITY_TS
+) -> tuple[str, ...]:
+    """شهور الإعداد الفريدة بترتيب زمني."""
+    if frame.height == 0 or ts_col not in frame.columns:
+        return ()
+    months = [month_key_from_ns(int(t)) for t in frame.sort(ts_col)[ts_col].to_list()]
+    out: list[str] = []
+    seen: set[str] = set()
+    for month in months:
+        if month not in seen:
+            seen.add(month)
+            out.append(month)
+    return tuple(out)
+
+
+def expanding_min_train_months(
+    n_develop_months: int,
+    *,
+    min_train_months: int = 1,
+    walk_forward_months: int | None = None,
+) -> int:
+    """عدد شهور القطار قبل أول طيّة؛ مع ``walk_forward_months`` يساوي الباقي بعد القطار الأدنى.
+
+    مثال 8 شهور تطوير + قطار أدنى 4 + WF 4 → ``min_train_months=4`` (اختبار الأشهر 5–8).
+    """
+    floor = max(1, int(min_train_months))
+    if walk_forward_months is None:
+        return floor
+    wf = int(walk_forward_months)
+    if wf < 1:
+        raise ValueError("walk_forward_months must be >= 1")
+    if n_develop_months < floor + wf:
+        raise ValueError(
+            f"develop has {n_develop_months} months; need >= {floor} train + {wf} walk-forward"
+        )
+    return n_develop_months - wf
 
 
 def attach_segment_keys(
@@ -41,7 +81,7 @@ def attach_segment_keys(
     if frame.height == 0 or ts_col not in frame.columns:
         return frame
     ts = [int(x) for x in frame[ts_col].to_list()]
-    months = [_month_key_from_ns(t) for t in ts]
+    months = [month_key_from_ns(t) for t in ts]
     out = frame.with_columns(pl.Series("segment_month", months, dtype=pl.Utf8))
     if instrument_col and instrument_col in out.columns:
         out = out.with_columns(pl.col(instrument_col).cast(pl.Utf8).alias("segment_contract"))
@@ -340,6 +380,9 @@ __all__ = [
     "build_expanding_month_folds",
     "build_time_folds",
     "build_time_folds_for_frame",
+    "expanding_min_train_months",
     "folds_to_frame",
+    "month_key_from_ns",
+    "unique_month_keys",
     "unique_setup_timestamps",
 ]
