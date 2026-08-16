@@ -32,6 +32,7 @@ from nq.validation.leakage import (
     assert_causal_order,
     assert_temporal_split,
 )
+from tests.realized_path_factory import path_bar_fields, path_kind_for_index
 
 _HOUR_NS = 3_600 * 1_000_000_000
 # 2026-08-03 08:00 UTC ≈ Asia for that session date; next calendar day later.
@@ -220,28 +221,26 @@ def test_period_science_is_pooled_walk_forward_not_daily_average(tmp_path: Path)
     rows: list[dict[str, float | int]] = []
     ts = _DAY1_START
     for episode in range(48):
-        kind = episode % 3
-        imbalance = 1.0 if kind == 0 else 0.0
+        path_kind = path_kind_for_index(episode)
+        imbalance = 1.0 if path_kind in {"further_beyond_asia", "continue_direction"} else 0.0
         for bar in range(8):
             testing = 1.0 if bar in (0, 1) else 0.0
-            accepting = 1.0 if (kind == 0 and bar == 2) else 0.0
-            rejection = 1.0 if (kind == 1 and bar == 2) else 0.0
             rows.append(
                 {
                     AVAILABILITY_TS: ts,
                     VP_LIQUIDITY_SESSION: int(VpLiquiditySession.LONDON),
                     "_behavior_story_run": 1,  # متعمّد: تصادم محلي عبر الحلقات
                     "proj_expansion_testing": testing,
-                    "proj_expansion_accepting": accepting,
-                    "proj_rejection_to_asia": rejection,
+                    "proj_expansion_accepting": 0.0,
+                    "proj_rejection_to_asia": 0.0,
                     "proj_repriced_balance": 0.0,
                     "vp_imbalance": imbalance,
-                    "vp_balance": 1.0 - imbalance,
                     "struct_dist_vah_ticks": float(bar) - 3.0,
                     "lf_arrival_intensity": float((episode * 7 + bar) % 5),
                     "rel_credibility": float((episode + bar) % 3) / 2.0,
                     "mem_time_since_break": float(bar),
                     "vp_imbalance__lag1": imbalance if bar > 0 else 0.0,
+                    **path_bar_fields(path_kind, bar),
                 }
             )
             ts += _HOUR_NS

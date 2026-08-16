@@ -35,14 +35,17 @@ from nq.auction_behavior.competing import (
 from nq.auction_behavior.conditional import fit_conditional_models, score_conditional_models
 from nq.auction_behavior.holdout import carve_frozen_holdout
 from nq.auction_behavior.outcomes import (
-    FIRST_TRANSITION_CLASSES,
     OUTCOME_AVAILABLE_TS,
-    OUTCOME_TARGETS,
     SETUP_AVAILABILITY_TS,
     attach_outcome_availability_guard,
-    build_first_transition_outcomes,
     build_labeled_outcomes,
     filter_outcomes_known_by,
+)
+from nq.auction_behavior.realized_path import (
+    build_competing_outcomes_for_family,
+    build_realized_path_binary_outcomes,
+    competing_family_spec,
+    science_outcome_targets,
 )
 from nq.auction_behavior.science import ScienceConfig
 from nq.auction_behavior.walk_forward import (
@@ -311,13 +314,31 @@ def run_behavior_ablation(  # noqa: PLR0912, PLR0915
         )
 
     group_col = cfg.group_col if cfg.group_col in blended.columns else None
+    fit_outcomes = science_outcome_targets(
+        include_assumed_scripts=bool(cfg.include_assumed_script_outcomes)
+    )
+    _, competing_classes = competing_family_spec(cfg.competing_family)
     outcomes = build_labeled_outcomes(
         blended,
         outcome_window=cfg.outcome_window,
         group_col=group_col,
         progress=progress,
     )
+    path_binaries = build_realized_path_binary_outcomes(
+        blended,
+        window=max(int(cfg.competing_window), int(cfg.outcome_window)),
+        group_col=group_col,
+        progress=progress,
+    )
+    if path_binaries.height:
+        outcomes = (
+            pl.concat([outcomes, path_binaries], how="diagonal_relaxed")
+            if outcomes.height
+            else path_binaries
+        )
     labeled_all = attach_outcome_availability_guard(blended, outcomes)
+    if labeled_all.height and "outcome_name" in labeled_all.columns:
+        labeled_all = labeled_all.filter(pl.col("outcome_name").is_in(list(fit_outcomes)))
     labeled = (
         labeled_all.filter(pl.col("label_status") == "resolved")
         if labeled_all.height
@@ -330,8 +351,9 @@ def run_behavior_ablation(  # noqa: PLR0912, PLR0915
     )
     develop = holdout_pack.develop
 
-    ft_outcomes = build_first_transition_outcomes(
+    ft_outcomes = build_competing_outcomes_for_family(
         blended,
+        family=cfg.competing_family,
         window=max(int(cfg.competing_window), int(cfg.outcome_window)),
         group_col=group_col,
         progress=progress,
@@ -406,7 +428,7 @@ def run_behavior_ablation(  # noqa: PLR0912, PLR0915
             model = fit_conditional_models(
                 known_train,
                 feature_names=stack_features,
-                outcomes=OUTCOME_TARGETS,
+                outcomes=fit_outcomes,
                 train_end_ts=sf.train_end_ts,
                 l2=cfg.l2,
                 min_train=max(8, cfg.min_train_size // 2),
@@ -435,6 +457,7 @@ def run_behavior_ablation(  # noqa: PLR0912, PLR0915
                     l2=cfg.l2,
                     min_train=cfg.competing_min_train,
                     min_class_count=cfg.competing_min_class,
+                    classes=competing_classes,
                     progress=None,
                 )
                 if competing_model.is_usable():
@@ -461,7 +484,7 @@ def run_behavior_ablation(  # noqa: PLR0912, PLR0915
         features_per_stack[stack] = n_features_used
         if competing_scored_parts:
             pooled_ft = pl.concat(competing_scored_parts, how="diagonal_relaxed")
-            metrics = evaluate_competing_scores(pooled_ft, classes=FIRST_TRANSITION_CLASSES)
+            metrics = evaluate_competing_scores(pooled_ft, classes=competing_classes)
             competing_rows.append(
                 {
                     "stack": stack,
@@ -490,6 +513,9 @@ def run_behavior_ablation(  # noqa: PLR0912, PLR0915
             "holdout_cut_ts": int(holdout_pack.cut_ts),
             "holdout_untouched": True,
             "n_competing_develop": int(ft_develop.height),
+            "competing_family": cfg.competing_family,
+            "include_assumed_script_outcomes": bool(cfg.include_assumed_script_outcomes),
+            "scenario_labels_are_features_not_exclusive_y": True,
             "features_per_stack": features_per_stack,
             "identical_folds_and_labels_across_stacks": True,
             "raw_uncalibrated_models_for_fair_comparison": True,

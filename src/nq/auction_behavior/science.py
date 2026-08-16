@@ -39,16 +39,18 @@ from nq.auction_behavior.holdout import (
     evaluate_frozen_holdout_once,
 )
 from nq.auction_behavior.outcomes import (
-    FIRST_TRANSITION_CLASSES,
     OUTCOME_AVAILABLE_TS,
-    OUTCOME_TARGETS,
-    PRIMARY_OUTCOME_TARGETS,
     SETUP_AVAILABILITY_TS,
     attach_outcome_availability_guard,
-    build_first_transition_outcomes,
     build_labeled_outcomes,
     filter_outcomes_known_by,
     filter_resolved_outcomes,
+)
+from nq.auction_behavior.realized_path import (
+    build_competing_outcomes_for_family,
+    build_realized_path_binary_outcomes,
+    competing_family_spec,
+    science_outcome_targets,
 )
 from nq.auction_behavior.walk_forward import (
     ScienceFold,
@@ -90,8 +92,10 @@ class ScienceConfig:
     min_neg: int = 3
     calibration_frac: float = 0.2
     group_col: str | None = "_behavior_story_run"
-    #: رأس المخاطر المتنافسة (توزيع أول انتقال بمجموع 1) فوق الثنائيات.
+    #: رأس المخاطر المتنافسة: أول انتقال متحقق (افتراضي) أو قالب السيناريو للتشخيص.
     include_competing_risk: bool = True
+    competing_family: str = "realized_path"
+    include_assumed_script_outcomes: bool = False
     competing_window: int = 30
     competing_min_train: int = 24
     competing_min_class: int = 3
@@ -185,19 +189,38 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
 
     if progress is not None:
         progress.op("science: labeled outcomes")
+    group_col = cfg.group_col if cfg.group_col in blended.columns else None
+    fit_outcomes = science_outcome_targets(
+        include_assumed_scripts=bool(cfg.include_assumed_script_outcomes)
+    )
+    _, competing_classes = competing_family_spec(cfg.competing_family)
     outcomes = build_labeled_outcomes(
         blended,
         outcome_window=cfg.outcome_window,
-        group_col=cfg.group_col if cfg.group_col in blended.columns else None,
+        group_col=group_col,
         progress=progress,
     )
+    path_binaries = build_realized_path_binary_outcomes(
+        blended,
+        window=max(int(cfg.competing_window), int(cfg.outcome_window)),
+        group_col=group_col,
+        progress=progress,
+    )
+    if path_binaries.height:
+        outcomes = (
+            pl.concat([outcomes, path_binaries], how="diagonal_relaxed")
+            if outcomes.height
+            else path_binaries
+        )
     labeled_all = attach_outcome_availability_guard(blended, outcomes)
+    if labeled_all.height and "outcome_name" in labeled_all.columns:
+        labeled_all = labeled_all.filter(pl.col("outcome_name").is_in(list(fit_outcomes)))
     labeled = filter_resolved_outcomes(labeled_all)
     n_censored = int(labeled_all.height - labeled.height) if labeled_all.height else 0
     if progress is not None:
         progress.op(
             f"science: labeled={labeled_all.height:,} resolved={labeled.height:,} "
-            f"censored={n_censored:,}"
+            f"censored={n_censored:,} family={cfg.competing_family}"
         )
 
     # اختيار ميزات من صفوف التطوير المحسومة فقط (بعد carve لاحقًا نعيد على develop)
@@ -225,11 +248,12 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
     competing_holdout = pl.DataFrame()
     if cfg.include_competing_risk:
         if progress is not None:
-            progress.op("science: first-transition competing labels")
-        ft_outcomes = build_first_transition_outcomes(
+            progress.op(f"science: competing labels family={cfg.competing_family}")
+        ft_outcomes = build_competing_outcomes_for_family(
             blended,
+            family=cfg.competing_family,
             window=max(int(cfg.competing_window), int(cfg.outcome_window)),
-            group_col=cfg.group_col if cfg.group_col in blended.columns else None,
+            group_col=group_col,
             progress=progress,
         )
         competing_labeled_all = attach_outcome_availability_guard(blended, ft_outcomes)
@@ -337,7 +361,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         model = fit_conditional_models(
             fit_part,
             feature_names=fold_features,
-            outcomes=OUTCOME_TARGETS,
+            outcomes=fit_outcomes,
             train_end_ts=sf.train_end_ts,
             l2=cfg.l2,
             min_train=max(8, cfg.min_train_size // 2),
@@ -398,6 +422,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 l2=cfg.l2,
                 min_train=cfg.competing_min_train,
                 min_class_count=cfg.competing_min_class,
+                classes=competing_classes,
                 progress=progress,
             )
             competing_model = calibrate_competing_temperature(competing_model, ft_cal)
@@ -409,9 +434,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 ft_scored = score_competing_risk_model(
                     competing_model, ft_test, embargo=float(cfg.embargo)
                 )
-                competing_metrics = evaluate_competing_scores(
-                    ft_scored, classes=FIRST_TRANSITION_CLASSES
-                )
+                competing_metrics = evaluate_competing_scores(ft_scored, classes=competing_classes)
 
         drift_features = model.feature_names
         drift = measure_drift(
@@ -467,8 +490,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 state_predictions = predict_probabilities_at_states(
                     model,
                     state_slice,
-                    outcomes=PRIMARY_OUTCOME_TARGETS
-                    + tuple(o for o in OUTCOME_TARGETS if o not in PRIMARY_OUTCOME_TARGETS),
+                    outcomes=fit_outcomes,
                     prediction_is_oof=True,
                     fold=sf.fold,
                     eligible_for_backtest=True,
@@ -539,7 +561,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         final_model = fit_conditional_models(
             final_fit,
             feature_names=final_features,
-            outcomes=OUTCOME_TARGETS,
+            outcomes=fit_outcomes,
             train_end_ts=final_train_end,
             l2=cfg.l2,
             min_train=max(8, cfg.min_train_size // 2),
@@ -568,8 +590,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         live_preds = predict_probabilities_at_states(
             final_model,
             blended,
-            outcomes=PRIMARY_OUTCOME_TARGETS
-            + tuple(o for o in OUTCOME_TARGETS if o not in PRIMARY_OUTCOME_TARGETS),
+            outcomes=fit_outcomes,
             prediction_is_oof=False,
             fold=None,
             eligible_for_backtest=False,
@@ -591,6 +612,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 l2=cfg.l2,
                 min_train=cfg.competing_min_train,
                 min_class_count=cfg.competing_min_class,
+                classes=competing_classes,
                 progress=progress,
             )
             final_competing = calibrate_competing_temperature(final_competing, ft_cal_final)
@@ -625,7 +647,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                     final_competing, competing_holdout, embargo=0.0
                 )
                 competing_holdout_metrics = evaluate_competing_scores(
-                    ft_ho_scored, classes=FIRST_TRANSITION_CLASSES
+                    ft_ho_scored, classes=competing_classes
                 )
 
     feature_names = (
@@ -707,7 +729,10 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             "n_folds": len(folds),
             "n_oof_prediction_rows": int(conditional_oof_predictions.height),
             "n_live_prediction_rows": int(live_preds.height),
-            "primary_outcomes": list(PRIMARY_OUTCOME_TARGETS),
+            "competing_family": cfg.competing_family,
+            "include_assumed_script_outcomes": bool(cfg.include_assumed_script_outcomes),
+            "scenario_labels_are_features_not_exclusive_y": True,
+            "primary_outcomes": list(fit_outcomes),
             "conditional_probability_semantics": (
                 "independent_binary_outcomes_not_a_joint_competing-risk_distribution"
             ),

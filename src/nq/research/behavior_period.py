@@ -422,6 +422,7 @@ def run_behavior_period_science(
             "phase2: pool completed blended states only; never reload MBO or reconstruct",
             "not a mean of per-day p_*; OOF is from period folds on unique setups",
             "story runs reminted so label windows cannot cross session dates or phase-1 day files",
+            "scenario labels are features/annotations; Y is the next realized transition",
             (
                 f"protocol: {cfg.min_train_months} train / "
                 f"{cfg.walk_forward_months} walk-forward / "

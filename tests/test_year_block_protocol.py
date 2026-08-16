@@ -22,6 +22,7 @@ from nq.research.behavior_period import (
     run_behavior_period_science,
 )
 from nq.validation.leakage import assert_temporal_split
+from tests.realized_path_factory import path_bar_fields, path_kind_for_index
 
 _HOUR_NS = 3_600 * 1_000_000_000
 
@@ -33,32 +34,33 @@ def _month_ns(year: int, month: int, day: int = 10, hour: int = 8) -> int:
 
 def _year_blended(*, year: int = 2025, episodes_per_month: int = 6, bars: int = 8) -> pl.DataFrame:
     rows: list[dict[str, float | int]] = []
+    story = 0
     for month in range(1, 13):
         ts = _month_ns(year, month)
         for episode in range(episodes_per_month):
-            kind = (month * 3 + episode) % 3
-            imbalance = 1.0 if kind == 0 else 0.0
+            path_kind = path_kind_for_index(story)
+            imbalance = 1.0 if path_kind in {"further_beyond_asia", "continue_direction"} else 0.0
             for bar in range(bars):
                 testing = 1.0 if bar in (0, 1) else 0.0
-                accepting = 1.0 if (kind == 0 and bar == 2) else 0.0
-                rejection = 1.0 if (kind == 1 and bar == 2) else 0.0
                 rows.append(
                     {
                         AVAILABILITY_TS: ts,
                         VP_LIQUIDITY_SESSION: int(VpLiquiditySession.LONDON),
+                        "_behavior_story_run": story,
                         "proj_expansion_testing": testing,
-                        "proj_expansion_accepting": accepting,
-                        "proj_rejection_to_asia": rejection,
+                        "proj_expansion_accepting": 0.0,
+                        "proj_rejection_to_asia": 0.0,
                         "proj_repriced_balance": 0.0,
                         "vp_imbalance": imbalance,
-                        "vp_balance": 1.0 - imbalance,
                         "struct_dist_vah_ticks": float(bar) - 3.0,
                         "lf_arrival_intensity": float((month * 7 + episode + bar) % 5),
                         "rel_credibility": float((episode + bar) % 3) / 2.0,
                         "mem_time_since_break": float(bar),
+                        **path_bar_fields(path_kind, bar),
                     }
                 )
                 ts += _HOUR_NS
+            story += 1
     return pl.DataFrame(rows)
 
 
@@ -117,6 +119,9 @@ def test_year_protocol_is_four_four_four_without_touching_holdout() -> None:
     )
     science = report.science
     assert science.diagnostics["holdout_touched"] is False
+    assert science.diagnostics["competing_family"] == "realized_path"
+    assert science.diagnostics["scenario_labels_are_features_not_exclusive_y"] is True
+    assert science.diagnostics["include_assumed_script_outcomes"] is False
     assert science.diagnostics["holdout_months"] == 4
     assert science.diagnostics["walk_forward_months"] == 4
     assert science.diagnostics["min_train_months_used"] == 4
@@ -175,3 +180,5 @@ def test_day_science_defaults_are_unchanged() -> None:
     assert cfg.holdout_months is None
     assert cfg.min_train_months == 1
     assert cfg.walk_forward_months is None
+    assert cfg.competing_family == "realized_path"
+    assert cfg.include_assumed_script_outcomes is False

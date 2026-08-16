@@ -28,9 +28,11 @@ from nq.auction_behavior.outcomes import (
     SETUP_AVAILABILITY_TS,
     build_first_transition_outcomes,
 )
+from nq.auction_behavior.realized_path import REALIZED_NEXT_PATH_CLASSES
 from nq.auction_behavior.science import ScienceConfig, run_behavior_science
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.validation.leakage import LeakageError
+from tests.realized_path_factory import path_bar_fields, path_kind_for_index
 
 _HOUR_NS = 3_600 * 1_000_000_000
 
@@ -70,6 +72,39 @@ def _episode_frame() -> pl.DataFrame:
                     "rel_credibility": float((episode + bar) % 3) / 2.0,
                     "mem_time_since_break": float(bar),
                     "vp_imbalance__lag1": imbalance if bar > 0 else 0.0,
+                }
+            )
+            ts += _HOUR_NS
+    return pl.DataFrame(rows)
+
+
+def _realized_path_frame() -> pl.DataFrame:
+    """قصص اصطناعية: كسر متحقق بلا ريتست ثم أول انتقال هندسي.
+
+    ``proj_*`` تبقى ملامح. الـY هو المسار التالي، وليس فصل الإسقاط.
+    """
+    rows: list[dict[str, float | int]] = []
+    ts = 0
+    for episode in range(60):
+        kind = path_kind_for_index(episode)
+        imbalance = 1.0 if kind in {"further_beyond_asia", "continue_direction"} else 0.0
+        for bar in range(8):
+            testing = 1.0 if bar in (0, 1) else 0.0
+            rows.append(
+                {
+                    AVAILABILITY_TS: ts,
+                    "_behavior_story_run": episode,
+                    "proj_expansion_testing": testing,
+                    "proj_expansion_accepting": 0.0,
+                    "proj_rejection_to_asia": 0.0,
+                    "proj_repriced_balance": 0.0,
+                    "vp_imbalance": imbalance,
+                    "struct_dist_vah_ticks": float(bar) - 3.0,
+                    "lf_arrival_intensity": float((episode * 7 + bar) % 5),
+                    "rel_credibility": float((episode + bar) % 3) / 2.0,
+                    "mem_time_since_break": float(bar),
+                    "vp_imbalance__lag1": imbalance if bar > 0 else 0.0,
+                    **path_bar_fields(kind, bar),
                 }
             )
             ts += _HOUR_NS
@@ -266,7 +301,7 @@ def test_round_robin_selection_guarantees_new_family_representation() -> None:
 
 
 def test_run_behavior_ablation_same_folds_and_untouched_holdout() -> None:
-    frame = _episode_frame()
+    frame = _realized_path_frame()
     cfg = ScienceConfig(
         outcome_window=5,
         competing_window=5,
@@ -299,7 +334,7 @@ def test_run_behavior_ablation_same_folds_and_untouched_holdout() -> None:
 
 @pytest.mark.leakage
 def test_science_competing_head_oof_is_causal_and_sums_to_one() -> None:
-    frame = _episode_frame()
+    frame = _realized_path_frame()
     cfg = ScienceConfig(
         outcome_window=5,
         competing_window=5,
@@ -313,6 +348,8 @@ def test_science_competing_head_oof_is_causal_and_sums_to_one() -> None:
     report = run_behavior_science(frame, config=cfg)
     diag = report.diagnostics
     assert diag["competing_risk_enabled"] is True
+    assert diag["competing_family"] == "realized_path"
+    assert diag["scenario_labels_are_features_not_exclusive_y"] is True
     assert diag["competing_probabilities_sum_to_one"] is True
     assert diag["n_competing_labeled"] > 0
     assert "competing_brier" in report.fold_frame.columns
@@ -323,7 +360,9 @@ def test_science_competing_head_oof_is_causal_and_sums_to_one() -> None:
     assert oof["prediction_is_oof"].all()
     assert oof["eligible_for_backtest"].all()
     assert (oof["model_train_end_ts"] < oof[AVAILABILITY_TS]).all()
-    pcols = [f"p_first_{c}" for c in FIRST_TRANSITION_CLASSES]
+    pcols = [f"p_first_{c}" for c in REALIZED_NEXT_PATH_CLASSES]
+    assert all(c in oof.columns for c in pcols)
+    assert "p_first_expansion_accepting" not in oof.columns
     probs = oof.select(pcols).to_numpy()
     finite = np.all(np.isfinite(probs), axis=1)
     assert finite.any()

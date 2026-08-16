@@ -126,6 +126,8 @@ def fit_competing_risk_model(  # noqa: PLR0912, PLR0915
         work = work.filter(pl.col(OUTCOME_AVAILABLE_TS) <= int(train_end_ts))
     if SETUP_AVAILABILITY_TS in work.columns:
         work = work.filter(pl.col(SETUP_AVAILABILITY_TS) <= int(train_end_ts))
+    if work.height and FIRST_TRANSITION_CLASS_COL in work.columns:
+        work = work.filter(pl.col(FIRST_TRANSITION_CLASS_COL).is_in(list(classes)))
 
     counts = {c: 0 for c in classes}
     if work.height and FIRST_TRANSITION_CLASS_COL in work.columns:
@@ -222,6 +224,9 @@ def calibrate_competing_temperature(
     if "label_status" in work.columns:
         work = work.filter(pl.col("label_status") == "resolved")
     if work.height == 0 or FIRST_TRANSITION_CLASS_COL not in work.columns:
+        return model
+    work = work.filter(pl.col(FIRST_TRANSITION_CLASS_COL).is_in(list(model.classes)))
+    if work.height == 0:
         return model
     class_to_idx = {c: k for k, c in enumerate(model.classes)}
     y_idx = np.asarray(
