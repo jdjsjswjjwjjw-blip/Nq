@@ -54,7 +54,9 @@ from nq.auction_behavior.walk_forward import (
     ScienceFold,
     build_contract_aware_folds,
     build_expanding_month_folds,
+    expanding_min_train_months,
     folds_to_frame,
+    unique_month_keys,
 )
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.progress import ProgressLike
@@ -77,6 +79,12 @@ class ScienceConfig:
     max_features: int = 64
     use_month_folds: bool = True
     evaluate_holdout: bool = False
+    #: Holdout بآخر N شهور تقويمية (سنة 4/4/4). إن وُجد يُلغى ``holdout_frac``.
+    holdout_months: int | None = None
+    #: أدنى شهور قطار لأول طيّة شهرية (افتراضي اليوم = 1؛ السنة = 4).
+    min_train_months: int = 1
+    #: عدد شهور اختبار الـwalk-forward بعد القطار. ``None`` = كل ما تبقّى بعد الأدنى.
+    walk_forward_months: int | None = None
     calibration_bins: int = 10
     min_pos: int = 3
     min_neg: int = 3
@@ -194,8 +202,19 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
 
     # اختيار ميزات من صفوف التطوير المحسومة فقط (بعد carve لاحقًا نعيد على develop)
     if progress is not None:
-        progress.op(f"science: carve holdout frac={cfg.holdout_frac}")
-    holdout_pack = carve_frozen_holdout(labeled, holdout_frac=cfg.holdout_frac)
+        progress.op(
+            "science: carve holdout "
+            + (
+                f"months={cfg.holdout_months}"
+                if cfg.holdout_months is not None
+                else f"frac={cfg.holdout_frac}"
+            )
+        )
+    holdout_pack = carve_frozen_holdout(
+        labeled,
+        holdout_frac=cfg.holdout_frac,
+        holdout_months=cfg.holdout_months,
+    )
     develop = holdout_pack.develop
     if progress is not None:
         progress.op(f"science: develop={develop.height:,} holdout={holdout_pack.holdout.height:,}")
@@ -246,17 +265,24 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         progress.op(f"science: features={len(candidate_feature_names)}")
 
     folds: list[ScienceFold] = []
-    if cfg.use_month_folds:
+    min_train_months_used = int(cfg.min_train_months)
+    if cfg.use_month_folds and develop.height:
         if progress is not None:
             progress.op("science: expanding month folds")
+        n_dev_months = len(unique_month_keys(develop, ts_col=SETUP_AVAILABILITY_TS))
+        min_train_months_used = expanding_min_train_months(
+            n_dev_months,
+            min_train_months=cfg.min_train_months,
+            walk_forward_months=cfg.walk_forward_months,
+        )
         folds = build_expanding_month_folds(
             develop,
             ts_col=SETUP_AVAILABILITY_TS,
-            min_train_months=1,
+            min_train_months=min_train_months_used,
             embargo_ns=int(cfg.embargo),
             purge_samples=cfg.purge_samples,
         )
-    if not folds:
+    if not folds and cfg.walk_forward_months is None:
         if progress is not None:
             progress.op("science: contract-aware folds")
         folds = build_contract_aware_folds(
@@ -657,6 +683,10 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             "n_holdout": int(holdout_pack.holdout.height),
             "holdout_cut_ts": int(holdout_pack.cut_ts),
             "holdout_touched": bool(holdout_state.touched),
+            "holdout_months": cfg.holdout_months,
+            "min_train_months": int(cfg.min_train_months),
+            "min_train_months_used": int(min_train_months_used),
+            "walk_forward_months": cfg.walk_forward_months,
             "n_features": len(feature_names),
             "n_setups_unique": n_setups_unique,
             "samples_per_feature": (float(labeled.height) / float(max(1, len(feature_names)))),

@@ -49,6 +49,8 @@ from nq.auction_behavior.walk_forward import (
     ScienceFold,
     build_contract_aware_folds,
     build_expanding_month_folds,
+    expanding_min_train_months,
+    unique_month_keys,
 )
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.progress import ProgressLike
@@ -321,7 +323,11 @@ def run_behavior_ablation(  # noqa: PLR0912, PLR0915
         if labeled_all.height
         else labeled_all
     )
-    holdout_pack = carve_frozen_holdout(labeled, holdout_frac=cfg.holdout_frac)
+    holdout_pack = carve_frozen_holdout(
+        labeled,
+        holdout_frac=cfg.holdout_frac,
+        holdout_months=cfg.holdout_months,
+    )
     develop = holdout_pack.develop
 
     ft_outcomes = build_first_transition_outcomes(
@@ -341,15 +347,21 @@ def run_behavior_ablation(  # noqa: PLR0912, PLR0915
     )
 
     folds: list[ScienceFold] = []
-    if cfg.use_month_folds:
+    if cfg.use_month_folds and develop.height:
+        n_dev_months = len(unique_month_keys(develop, ts_col=SETUP_AVAILABILITY_TS))
+        min_train_used = expanding_min_train_months(
+            n_dev_months,
+            min_train_months=cfg.min_train_months,
+            walk_forward_months=cfg.walk_forward_months,
+        )
         folds = build_expanding_month_folds(
             develop,
             ts_col=SETUP_AVAILABILITY_TS,
-            min_train_months=1,
+            min_train_months=min_train_used,
             embargo_ns=int(cfg.embargo),
             purge_samples=cfg.purge_samples,
         )
-    if not folds:
+    if not folds and cfg.walk_forward_months is None:
         folds = build_contract_aware_folds(
             develop,
             ts_col=SETUP_AVAILABILITY_TS,
