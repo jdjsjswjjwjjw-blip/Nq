@@ -526,7 +526,7 @@ def _run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
     *,
     cfg: BehaviorConfig,
     score_mbo: pl.DataFrame | None,
-    log: ProgressLike,
+    log: PipelineProgress,
 ) -> AuctionBehaviorResult:
     n_mbo = 0 if mbo is None else int(mbo.height)
     log.step("asia_london_projection", f"mbo_rows={n_mbo:,}")
