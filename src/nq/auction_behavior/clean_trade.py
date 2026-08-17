@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import polars as pl
@@ -357,7 +357,7 @@ def simulate_clean_exits(
             "path_mae_pts": row["path_mae_pts"],
             "exit_reason": row["exit_reason"],
             "pnl_gross_pts": row["pnl_gross_pts"],
-            "pnl_net_pts": float(row["pnl_gross_pts"]) - cost,
+            "pnl_net_pts": float(cast(float, row["pnl_gross_pts"])) - cost,
             "y_clean": row["y"],
             "label_status": row["label_status"],
             "tradeable": row["tradeable"],
