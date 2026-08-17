@@ -355,28 +355,48 @@ def labels_from_blended(blended: pl.DataFrame) -> pl.DataFrame:
     return labeled.filter(pl.col("label_status") == "resolved")
 
 
+def prepare_labels(frame: pl.DataFrame) -> pl.DataFrame:
+    """تسميات جاهزة من fold_scores/period، أو إعادة حساب من blended الفترة — ليس من يوم واحد."""
+    work = frame
+    if "outcome_name" in work.columns:
+        work = work.filter(pl.col("outcome_name") == Y_TARGET)
+    if "label_status" in work.columns:
+        work = work.filter(pl.col("label_status") == "resolved")
+    if "y" in work.columns and SETUP_AVAILABILITY_TS in work.columns and work.height:
+        return work
+    return labels_from_blended(frame)
+
+
+def sequences_from_labels(
+    mbo: pl.DataFrame,
+    labels: pl.DataFrame,
+    *,
+    holdout_start: str = HOLDOUT_START_DATE,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """يوم واحد من MBO + تسميات ذلك اليوم فقط. لا لصق تدفق خام."""
+    assert_single_day_mbo(mbo)
+    empty = np.zeros((0, N_BINS, N_CHANNELS), dtype=np.float64)
+    if labels.height == 0:
+        return empty, np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.int64)
+    dates = [session_date_from_ns(int(t)) for t in labels[SETUP_AVAILABILITY_TS].to_list()]
+    keep = [d < holdout_start for d in dates]
+    labels = labels.filter(pl.Series("_keep", keep))
+    if labels.height == 0:
+        return empty, np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.int64)
+    setup = labels[SETUP_AVAILABILITY_TS].to_numpy().astype(np.int64)
+    y = labels["y"].to_numpy().astype(np.float64)
+    x = build_sequences_for_setups(mbo, setup)
+    return x, y, setup
+
+
 def sequences_from_day(
     mbo: pl.DataFrame,
     blended: pl.DataFrame,
     *,
     holdout_start: str = HOLDOUT_START_DATE,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """يوم واحد: MBO ذلك اليوم فقط + تسميات الطور من blended اليوم."""
-    assert_single_day_mbo(mbo)
-    labels = labels_from_blended(blended)
-    if labels.height == 0:
-        empty = np.zeros((0, N_BINS, N_CHANNELS), dtype=np.float64)
-        return empty, np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.int64)
-    dates = [session_date_from_ns(int(t)) for t in labels[SETUP_AVAILABILITY_TS].to_list()]
-    keep = [d < holdout_start for d in dates]
-    labels = labels.filter(pl.Series("_keep", keep))
-    if labels.height == 0:
-        empty = np.zeros((0, N_BINS, N_CHANNELS), dtype=np.float64)
-        return empty, np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.int64)
-    setup = labels[SETUP_AVAILABILITY_TS].to_numpy().astype(np.int64)
-    y = labels["y"].to_numpy().astype(np.float64)
-    x = build_sequences_for_setups(mbo, setup)
-    return x, y, setup
+    """يوم واحد: MBO ذلك اليوم فقط + تسميات الطور."""
+    return sequences_from_labels(mbo, prepare_labels(blended), holdout_start=holdout_start)
 
 
 def run_mbo_sequence_mlp(
@@ -535,8 +555,10 @@ __all__ = [
     "fit_predict_logistic",
     "fit_predict_mlp",
     "labels_from_blended",
+    "prepare_labels",
     "resolve_idrive_mbo",
     "run_mbo_sequence_mlp",
     "sequences_from_day",
+    "sequences_from_labels",
     "write_mbo_sequence_report",
 ]

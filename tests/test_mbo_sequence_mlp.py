@@ -23,6 +23,7 @@ from nq.research.mbo_sequence_mlp import (
     collapse_sequence,
     fit_predict_logistic,
     fit_predict_mlp,
+    prepare_labels,
     resolve_idrive_mbo,
     write_mbo_sequence_report,
 )
@@ -114,6 +115,20 @@ def test_batched_window_matches_two_setups() -> None:
     assert np.allclose(batched[1], second)
     assert float(batched[1, :, 1].sum()) == 1.0
     assert float(batched[0, :, 1].sum()) == 0.0
+
+
+def test_prepare_labels_from_fold_scores() -> None:
+    scores = pl.DataFrame(
+        {
+            "setup_availability_ts": [1, 2, 3],
+            "outcome_name": ["y_phase_extend", "y_clean", "y_phase_extend"],
+            "y": [1.0, 1.0, 0.0],
+            "label_status": ["resolved", "resolved", "resolved"],
+        }
+    )
+    got = prepare_labels(scores)
+    assert got.height == 2
+    assert got["y"].to_list() == [1.0, 0.0]
 
 
 def test_idrive_day_path_resolution(tmp_path: Path) -> None:
