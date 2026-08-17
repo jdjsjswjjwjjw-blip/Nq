@@ -42,6 +42,7 @@ _EPOCHS = 40
 _LR = 0.05
 _L2 = 0.01
 _BATCH = 64
+_MAX_SESSION_SPAN_NS = 36 * 3600 * 1_000_000_000
 _ADD = MboAction.ADD.value
 _CANCEL = MboAction.CANCEL.value
 _MODIFY = MboAction.MODIFY.value
@@ -61,13 +62,12 @@ def _relu(z: np.ndarray) -> np.ndarray:
 
 
 def assert_single_day_mbo(mbo: pl.DataFrame) -> None:
-    """يرفض لصق تدفق MBO عبر الأيام. يفحص الحدّين فقط حتى لا يُمسَح اليوم كاملًا."""
+    """يرفض لصق تدفق MBO عبر الأيام. ملف جلسة CME (~24س) مسموح حتى مع لفّ 18:00 ET."""
     if mbo.height == 0 or EVENT_TS not in mbo.columns:
         return
     lo = int(mbo.select(pl.col(EVENT_TS).min()).item())
     hi = int(mbo.select(pl.col(EVENT_TS).max()).item())
-    dates = {session_date_from_ns(lo), session_date_from_ns(hi)}
-    if len(dates) > 1:
+    if hi - lo > _MAX_SESSION_SPAN_NS:
         raise ValueError(
             "refuse concatenated multi-day MBO; extract sequences one session day at a time"
         )

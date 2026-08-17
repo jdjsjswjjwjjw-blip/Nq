@@ -43,7 +43,7 @@ def test_not_exported_from_research_init() -> None:
 
 def test_refuses_concatenated_multi_day_mbo() -> None:
     day_a = dt.datetime(2025, 6, 3, 4, 0, tzinfo=_ET)
-    day_b = dt.datetime(2025, 6, 4, 4, 0, tzinfo=_ET)
+    day_b = dt.datetime(2025, 6, 5, 4, 0, tzinfo=_ET)
     ts = [
         int(day_a.timestamp() * 1_000_000_000),
         int(day_b.timestamp() * 1_000_000_000),
