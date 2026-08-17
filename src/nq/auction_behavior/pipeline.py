@@ -25,6 +25,7 @@ from nq.auction_behavior.level_flow import (
 )
 from nq.auction_behavior.memory import attach_market_memory, attach_sequence_memory
 from nq.auction_behavior.model import estimate_behavior_probabilities
+from nq.auction_behavior.momentum import MOMENTUM_FEATURE_COLUMNS, attach_momentum_features
 from nq.auction_behavior.path_confirm import PATH_CONFIRM_COLUMNS, attach_path_depth_confirmation
 from nq.auction_behavior.projection import (
     PROJECTION_NUMERIC_COLUMNS,
@@ -781,6 +782,8 @@ def _run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
     blended = attach_sequence_memory(blended, group_col="_behavior_story_run", progress=log)
     log.op("attach_state_vector")
     blended = attach_state_vector(blended, progress=log)
+    log.op("attach_momentum_features")
+    blended = attach_momentum_features(blended, progress=log)
     _assert_no_trade_columns(blended)
     _assert_no_trade_columns(events)
     log.op(f"feature cols={len(blended.columns)}")
@@ -843,6 +846,7 @@ def _run_auction_behavior_analysis(  # noqa: PLR0912, PLR0915
         "n_behavior_event_cols": len(BEHAVIOR_EVENT_COLUMNS),
         "n_state_feature_cols": len(STATE_FEATURE_COLUMNS),
         "n_structure_feature_cols": len(STRUCTURE_FEATURE_COLUMNS),
+        "n_momentum_feature_cols": len(MOMENTUM_FEATURE_COLUMNS),
         "n_level_flow_cols": len(LEVEL_FLOW_COLUMNS),
         "n_reliability_cols": len(RELIABILITY_COLUMNS),
         "n_projection_bars": int(projection.height),

@@ -182,3 +182,6 @@ def test_day_science_defaults_are_unchanged() -> None:
     assert cfg.walk_forward_months is None
     assert cfg.competing_family == "realized_path"
     assert cfg.include_assumed_script_outcomes is False
+    assert cfg.max_features == 68
+    assert cfg.extend_horizon_bars == 50
+    assert cfg.extend_points == 5.0

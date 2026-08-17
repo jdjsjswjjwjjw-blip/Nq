@@ -288,6 +288,9 @@ def test_stack_feature_columns_cumulative_and_reject_unknown() -> None:
     assert "lf_arrival_intensity" in stack_feature_columns(frame, "plus_mbo_flow")
     assert "rel_credibility" not in stack_feature_columns(frame, "plus_mbo_flow")
     assert "rel_credibility" in stack_feature_columns(frame, "plus_reliability")
+    assert "roc_10" not in stack_feature_columns(frame, "plus_reliability")
+    boosted = frame.with_columns(pl.Series("roc_10", list(range(frame.height)), dtype=pl.Float64))
+    assert "roc_10" in stack_feature_columns(boosted, "plus_momentum")
     with pytest.raises(ValueError, match="unknown ablation stack"):
         stack_feature_columns(frame, "nope")
 

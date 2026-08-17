@@ -9,6 +9,7 @@ import polars as pl
 
 from nq.auction_behavior.level_flow import LEVEL_FLOW_COLUMNS
 from nq.auction_behavior.memory import SEQUENCE_MEMORY_COLUMNS, list_memory_columns
+from nq.auction_behavior.momentum import MOMENTUM_FEATURE_COLUMNS
 from nq.auction_behavior.outcomes import (
     OUTCOME_AVAILABLE_TS,
     SETUP_AVAILABILITY_TS,
@@ -132,7 +133,7 @@ def select_feature_names(
     frame: pl.DataFrame,
     *,
     preferred: tuple[str, ...] | list[str],
-    max_features: int = 64,
+    max_features: int = 68,
 ) -> tuple[str, ...]:
     """اختيار بسيط (توافق) — يفضّل :func:`select_feature_names_by_family`."""
     names = [c for c in preferred if c in frame.columns and _variance_ok(frame, c)]
@@ -142,13 +143,13 @@ def select_feature_names(
 def select_feature_names_by_family(
     frame: pl.DataFrame,
     *,
-    max_features: int = 64,
+    max_features: int = 68,
     quotas: dict[str, int] | None = None,
 ) -> tuple[str, ...]:
     """حصص إلزامية لكل عائلة ثم ملء الباقي — يزيل الثابت.
 
-    الافتراضي يضمن دخول projection / path / structure / sequence / level_flow / reliability
-    قبل امتلاء السقف بأعمدة الحالة فقط.
+    الافتراضي يضمن دخول projection / path / structure / sequence / level_flow /
+    reliability / momentum قبل امتلاء السقف بأعمدة الحالة فقط.
     """
     mem_roll = tuple(
         c
@@ -167,6 +168,7 @@ def select_feature_names_by_family(
         "sequence": tuple(c for c in SEQUENCE_MEMORY_COLUMNS if c in frame.columns),
         "level_flow": tuple(c for c in LEVEL_FLOW_COLUMNS if c in frame.columns),
         "reliability": tuple(c for c in RELIABILITY_COLUMNS if c in frame.columns),
+        "momentum": tuple(c for c in MOMENTUM_FEATURE_COLUMNS if c in frame.columns),
         "memory_roll": mem_roll,
         "quality": tuple(
             c
@@ -186,6 +188,7 @@ def select_feature_names_by_family(
         "sequence": 8,
         "level_flow": 10,
         "reliability": 6,
+        "momentum": 4,
         "memory_roll": 8,
         "state": 8,
         "quality": 2,
@@ -217,6 +220,7 @@ def select_feature_names_by_family(
         "sequence",
         "level_flow",
         "reliability",
+        "momentum",
         "memory_roll",
         "state",
         "quality",
