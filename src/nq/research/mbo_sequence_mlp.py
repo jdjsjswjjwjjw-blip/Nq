@@ -534,6 +534,7 @@ __all__ = [
     "collapse_sequence",
     "fit_predict_logistic",
     "fit_predict_mlp",
+    "labels_from_blended",
     "resolve_idrive_mbo",
     "run_mbo_sequence_mlp",
     "sequences_from_day",

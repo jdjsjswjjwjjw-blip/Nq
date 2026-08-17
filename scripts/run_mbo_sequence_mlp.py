@@ -27,6 +27,7 @@ if str(_ROOT) not in sys.path:
 from nq.ingestion.reader import load_mbo_frame  # noqa: E402
 from nq.research.mbo_sequence_mlp import (  # noqa: E402
     HOLDOUT_START_DATE,
+    labels_from_blended,
     resolve_idrive_mbo,
     run_mbo_sequence_mlp,
     write_mbo_sequence_report,
@@ -40,17 +41,23 @@ def iter_day_pairs(
     *,
     mbo_root: Path | None,
     holdout_start: str,
+    start_date: str,
     max_days: int | None,
 ) -> Iterator[tuple[pl.DataFrame, pl.DataFrame]]:
     n = 0
     missing_mbo = 0
+    skipped_empty = 0
     for path in sorted(days_root.iterdir()):
         if not path.is_dir() or len(path.name) != _DAY_DIR_NAME_LEN:
             continue
-        if path.name >= holdout_start:
+        if path.name < start_date or path.name >= holdout_start:
             continue
         blended_path = path / "blended.parquet"
         if not blended_path.is_file():
+            continue
+        blended = pl.read_parquet(blended_path)
+        if labels_from_blended(blended).height == 0:
+            skipped_empty += 1
             continue
         mbo_path = path / "mbo.parquet"
         if mbo_root is not None:
@@ -64,7 +71,6 @@ def iter_day_pairs(
             continue
         print(f"load {path.name} from {mbo_path}", flush=True)
         mbo = load_mbo_frame(mbo_path)
-        blended = pl.read_parquet(blended_path)
         yield mbo, blended
         n += 1
         if max_days is not None and n >= max_days:
@@ -72,7 +78,7 @@ def iter_day_pairs(
     if n == 0:
         raise SystemExit(
             f"no per-day MBO under days-root={days_root} mbo-root={mbo_root} "
-            f"(blended-only/missing={missing_mbo}). "
+            f"(missing_mbo={missing_mbo} empty_labels={skipped_empty}). "
             "This layer cannot run on period_blended.parquet."
         )
 
@@ -89,6 +95,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-days", type=int, default=None)
+    parser.add_argument("--start-date", type=str, default="2025-01-01")
     parser.add_argument("--holdout-start", type=str, default=HOLDOUT_START_DATE)
     args = parser.parse_args()
     joined = f"{args.days_root} {args.mbo_root} {args.output}".lower()
@@ -98,6 +105,7 @@ def main() -> None:
         args.days_root,
         mbo_root=args.mbo_root,
         holdout_start=args.holdout_start,
+        start_date=args.start_date,
         max_days=args.max_days,
     )
     scored, diagnostics = run_mbo_sequence_mlp(
