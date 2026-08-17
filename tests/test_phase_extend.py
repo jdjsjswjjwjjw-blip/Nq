@@ -46,7 +46,7 @@ def _london_story(
     rows: list[dict[str, float | int]] = []
     for bar in range(n):
         is_onset = onset_at is not None and bar == onset_at
-        bar_low = dip_low if dip_bar is not None and bar == dip_bar else low
+        bar_low = low if dip_bar is None or bar != dip_bar or dip_low is None else dip_low
         bar_high = high if bar > (onset_at or -1) else close
         rows.append(
             {
