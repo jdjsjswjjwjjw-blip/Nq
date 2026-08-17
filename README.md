@@ -625,7 +625,32 @@ assert report.diagnostics["holdout_untouched"]
 | `repriced_balance` | انتقل POC/HVN، انخفض تداخل VA، ثم استقر الملف الجديد |
 | `incomplete_asia_anchor` | فجوات داخل نافذة آسيا الموجودة في الملف؛ لا يُسمح باستنتاج قبول/انتقال |
 
-كل حالة تُنشر عند `bucket_end` فقط. الافتراضي ثلاث دقائق ويمكن تغييره عبر
+كل حالة تُنشر عند `bucket_end` فقط. هذه التسميات **ملامح/تعليق تحليلي**
+(`proj_*` داخل متجه الحالة) وليست الـY الافتراضية. العلم الافتراضي يتعلّم
+**أول انتقال مرصود** بعد حالة تحققت (`State(t) → next transition` عبر
+`nq.auction_behavior.realized_path`): ابتعاد عن قيمة آسيا، عودة إليها، بناء
+قيمة، هجرة POC، استمرار الاتجاه، عكس المسار، أو لا انتقال. كسر بلا ريتست
+إعداد صالح — غياب الريتست معلومة لا فشل سيناريو. قالب السيناريو يبقى متاحًا
+بـ `ScienceConfig(competing_family="assumed_scripts")` للتشخيص فقط.
+
+**ميكانيكا الامتداد (مرحلة 2b، بلا إعادة بناء):** بعد `science_labeled.parquet`
+يحسب `nq.research.expansion_mechanics` على التطوير/OOF فقط: هل
+`proj_outside_volume_share` و`path_depth_follow` سبقا الحركة عند القرار أم
+السعر خرج والحجم/العمق لحق؛ تسلسل توازن→اختلال→امتداد من lags سببية؛ وحماية
+مركز الامتداد (متابعة العمق مقابل الدفاع) بين الحالات الممتدة أصلًا.
+الـholdout لا يُقاس. التشغيل:
+
+```text
+scripts/run_expansion_mechanics.py \
+  --period-dir data/runs/auction_behavior_year/period_realized_path \
+  --output data/runs/auction_behavior_year/period_realized_path
+```
+
+سبتمبر–ديسمبر 2025 لُمِس كـholdout للنسخة السابقة (`holdout_touched=true`)
+فلا يُعاد استخدامه حكمًا للنسخة الجديدة؛ التطوير على يناير–أغسطس، والحكم
+النهائي على holdout مستقل لاحقًا.
+
+الافتراضي ثلاث دقائق ويمكن تغييره عبر
 `BehaviorConfig(projection_config=AsiaLondonProjectionConfig(interval_ns=...))`.
 المرساة لا تُعد مكتملة افتراضيًا إلا عند تغطية 80% على الأقل من براميل آسيا
 **داخل نافذة الملف** (من أول بار آسيا موجود حتى `min(03:00 ET، نهاية الداتا)`)،
@@ -805,6 +830,7 @@ Nq/
 │   ├── run_vp_auction_days.py # VP يوم-بيوم متوازٍ (شهر)
 │   ├── run_auction_behavior_days.py    # سلوك المزاد يوم-بيوم (مرحلة 1)
 │   ├── run_auction_behavior_period.py  # علم الفترة على الحالات المجمّعة (مرحلة 2)
+│   ├── run_expansion_mechanics.py      # سبق حجم/سعر + تسلسل المزاد + حماية الامتداد
 │   └── run_liquidity_edge.py  # غلاف توافق → نفس vp_auction
 ├── docs/
 │   ├── architecture.md

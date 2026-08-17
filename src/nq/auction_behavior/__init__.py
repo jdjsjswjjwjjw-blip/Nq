@@ -37,6 +37,10 @@ from nq.auction_behavior.projection import (
     AsiaLondonProjectionConfig,
     build_asia_london_projection,
 )
+from nq.auction_behavior.realized_path import (
+    REALIZED_NEXT_PATH_CLASSES,
+    build_realized_next_path_outcomes,
+)
 from nq.auction_behavior.science import BehaviorScienceReport, ScienceConfig, run_behavior_science
 from nq.auction_behavior.state import latest_state_snapshot, state_matrix
 from nq.auction_behavior.types import BehaviorProbabilities, BehaviorStateSnapshot
@@ -47,6 +51,7 @@ __all__ = [
     "FIRST_TRANSITION_CLASSES",
     "PATH_CONFIRM_COLUMNS",
     "PROJECTION_NUMERIC_COLUMNS",
+    "REALIZED_NEXT_PATH_CLASSES",
     "AblationReport",
     "AsiaLondonProjectionConfig",
     "AuctionBehaviorResult",
@@ -66,6 +71,7 @@ __all__ = [
     "behavior_probability_summary",
     "behavior_state_frame",
     "build_asia_london_projection",
+    "build_realized_next_path_outcomes",
     "latest_state_snapshot",
     "run_auction_behavior_analysis",
     "run_behavior_ablation",
