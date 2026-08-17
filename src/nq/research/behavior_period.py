@@ -50,6 +50,11 @@ from nq.research.feature_exit import (
     run_feature_exit,
     write_feature_exit_report,
 )
+from nq.research.geometry_rr import (
+    GeometryRRConfig,
+    run_geometry_rr,
+    write_geometry_rr_report,
+)
 from nq.research.p_sizing import (
     PSizingConfig,
     run_p_sizing,
@@ -571,6 +576,7 @@ def write_behavior_period_report(
     _write_causal_entry(report, out)
     _write_feature_exit(report, out)
     _write_p_sizing(report, out)
+    _write_geometry_rr(report, out)
     return out
 
 
@@ -752,6 +758,35 @@ def _write_p_sizing(report: BehaviorPeriodReport, out: Path) -> None:
         "",
         "Size from OOF `p`; exit on the next fresh OOF flip. Live p is never used.",
         "Delete `_write_p_sizing` to remove. See `P_SIZING.md`.",
+        "",
+    ]
+    period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
+
+
+def _write_geometry_rr(report: BehaviorPeriodReport, out: Path) -> None:
+    """طبقة د قابلة للخلع — 1:4 إلى مستوى مجمّد عند t. احذف هذه الدالة لإزالتها."""
+    labeled = report.science.labeled
+    blended = report.blended
+    if labeled.height == 0 or blended.height == 0:
+        return
+    oof, oof_ts, cut_ts, months = _overlay_oof_cut(report)
+    overlay = run_geometry_rr(
+        labeled,
+        blended,
+        config=GeometryRRConfig(holdout_months=months),
+        oof_availability_ts=oof_ts,
+        holdout_cut_ts=cut_ts,
+        predictions=oof if oof.height else None,
+    )
+    write_geometry_rr_report(overlay, out)
+    period = out / "PERIOD.md"
+    extra = [
+        "",
+        "## Geometry 1:4 overlay (removable layer D)",
+        "",
+        "Same 30s states. Target is a level frozen at t; stop is that distance / 4.",
+        "Not a chart timeframe change and not a new science Y.",
+        "Delete `_write_geometry_rr` to remove. See `GEOMETRY.md`.",
         "",
     ]
     period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
