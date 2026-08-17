@@ -482,8 +482,8 @@ def _oof_skill_lines(cal: pl.DataFrame) -> list[str]:
         "",
         "## OOF skill (develop; holdout untouched)",
         "",
-        "| target | n | AUC | Brier skill |",
-        "|---|---:|---:|---:|",
+        "| target | n | base rate | AUC | Brier skill |",
+        "|---|---:|---:|---:|---:|",
     ]
     shown: set[str] = set()
     ordered = list(_SKILL_OUTCOMES)
@@ -498,8 +498,8 @@ def _oof_skill_lines(cal: pl.DataFrame) -> list[str]:
         shown.add(name)
         row = part.row(0, named=True)
         lines.append(
-            f"| `{name}` | {int(row['n'])} | {_fmt_metric(row['auc'])} | "
-            f"{_fmt_metric(row['brier_skill'])} |"
+            f"| `{name}` | {int(row['n'])} | {_fmt_metric(row['base_rate'])} | "
+            f"{_fmt_metric(row['auc'])} | {_fmt_metric(row['brier_skill'])} |"
         )
     return lines
 
