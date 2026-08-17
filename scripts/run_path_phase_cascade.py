@@ -22,10 +22,37 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from nq.auction_behavior.outcomes import SETUP_AVAILABILITY_TS  # noqa: E402
+from nq.contracts.temporal import AVAILABILITY_TS  # noqa: E402
 from nq.research.path_phase_cascade import (  # noqa: E402
     run_path_phase_cascade,
     write_cascade_report,
 )
+
+_SCORE_COLS = (
+    SETUP_AVAILABILITY_TS,
+    "outcome_name",
+    "p_cal",
+    "p_hat",
+    "prediction_is_oof",
+    "eligible_for_backtest",
+)
+_BLENDED_COLS = (
+    AVAILABILITY_TS,
+    "close",
+    "high",
+    "low",
+    "proj_break_direction",
+    "asia_vah",
+    "asia_val",
+    "_behavior_story_run",
+)
+
+
+def _read_columns(path: Path, wanted: tuple[str, ...]) -> pl.DataFrame:
+    names = set(pl.scan_parquet(path).collect_schema().names())
+    cols = [c for c in wanted if c in names]
+    return pl.read_parquet(path, columns=cols)
 
 
 def main() -> None:
@@ -37,8 +64,8 @@ def main() -> None:
     name = args.fold_scores.name.lower()
     if "live" in name:
         raise SystemExit("refuse live_predictions; pass fold_scores.parquet")
-    blended = pl.read_parquet(args.blended)
-    scores = pl.read_parquet(args.fold_scores)
+    blended = _read_columns(args.blended, _BLENDED_COLS)
+    scores = _read_columns(args.fold_scores, _SCORE_COLS)
     quality, diagnostics = run_path_phase_cascade(blended=blended, fold_scores=scores)
     written = write_cascade_report(quality, diagnostics, args.output)
     print((written / "CASCADE.md").read_text(encoding="utf-8"))
