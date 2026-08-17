@@ -190,6 +190,35 @@ def test_first_labeled_onset_is_not_first_success() -> None:
     assert "late_prediction" in text
 
 
+def test_first_model_fire_is_early_when_score_crosses_at_onset() -> None:
+    blended = _story_bars(story=1, start=10, beyond=[2.0, 10.0, 40.0, 50.0])
+    labeled = pl.DataFrame(
+        [
+            _setup(story=1, ts=10, y=0.0, beyond=2.0, extreme=2.0),
+            _setup(story=1, ts=12, y=1.0, beyond=40.0, extreme=40.0),
+        ]
+    )
+    predictions = pl.DataFrame(
+        {
+            AVAILABILITY_TS: [10, 12],
+            "p_y_path_further_beyond": [0.81, 0.90],
+        }
+    )
+    report = run_wave_position(
+        labeled,
+        blended,
+        config=WavePositionConfig(holdout_months=None, min_peak_ticks=8.0),
+        predictions=predictions,
+    )
+    model = report.first_signals.filter(pl.col("role") == "first_model")
+    assert model.height == 1
+    assert model[WAVE_BIN_COL][0] == "early_prediction"
+    assert report.diagnostics["n_first_model_primary"] == 1
+    text = render_wave_position_markdown(report)
+    assert "First OOF model fire" in text
+    assert "predictive signal appears before 20%" in text
+
+
 def test_refuses_raw_mbo() -> None:
     raw = pl.DataFrame(
         {

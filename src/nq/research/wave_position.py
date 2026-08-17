@@ -64,6 +64,8 @@ class WavePositionConfig:
     early_prediction: float = WAVE_BIN_EDGES[0]
     early_continuation: float = WAVE_BIN_EDGES[1]
     mid_wave: float = WAVE_BIN_EDGES[2]
+    score_col: str = "p_y_path_further_beyond"
+    score_threshold: float = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,6 +410,58 @@ def _first_success_per_story(setups: pl.DataFrame, group_col: str) -> pl.DataFra
     return ok.sort(SETUP_AVAILABILITY_TS).group_by(group_col, maintain_order=True).first()
 
 
+def _prediction_scores(predictions: pl.DataFrame | None, score_col: str) -> pl.DataFrame:
+    empty = pl.DataFrame(schema={SETUP_AVAILABILITY_TS: pl.Int64(), "model_p": pl.Float64()})
+    if predictions is None or predictions.height == 0 or score_col not in predictions.columns:
+        return empty
+    ts_col = (
+        SETUP_AVAILABILITY_TS if SETUP_AVAILABILITY_TS in predictions.columns else AVAILABILITY_TS
+    )
+    if ts_col not in predictions.columns:
+        return empty
+    return (
+        predictions.select(
+            pl.col(ts_col).cast(pl.Int64).alias(SETUP_AVAILABILITY_TS),
+            pl.col(score_col).cast(pl.Float64).alias("model_p"),
+        )
+        .filter(pl.col("model_p").is_finite())
+        .unique(subset=[SETUP_AVAILABILITY_TS], keep="first")
+    )
+
+
+def _join_model_p(setups: pl.DataFrame, scores: pl.DataFrame) -> pl.DataFrame:
+    if setups.height == 0:
+        return setups
+    if scores.height == 0:
+        return setups.with_columns(pl.lit(None, dtype=pl.Float64).alias("model_p"))
+    return setups.join(scores, on=SETUP_AVAILABILITY_TS, how="left")
+
+
+def _first_model_per_story(
+    setups: pl.DataFrame,
+    *,
+    scope: str,
+    group_col: str,
+    threshold: float,
+) -> pl.DataFrame:
+    if setups.height == 0 or "model_p" not in setups.columns or group_col not in setups.columns:
+        return setups.head(0)
+    work = setups.filter(
+        (pl.col("scope") == scope)
+        & (~pl.col("wave_too_small"))
+        & pl.col("model_p").is_finite()
+        & (pl.col("model_p") >= float(threshold))
+    )
+    if work.height == 0:
+        return work
+    return (
+        work.sort(SETUP_AVAILABILITY_TS)
+        .group_by(group_col, maintain_order=True)
+        .first()
+        .with_columns(pl.lit("first_model").alias("role"))
+    )
+
+
 def _scope_slice(
     frame: pl.DataFrame,
     *,
@@ -429,6 +483,7 @@ def run_wave_position(
     config: WavePositionConfig | None = None,
     oof_availability_ts: Sequence[int] | None = None,
     holdout_cut_ts: int | None = None,
+    predictions: pl.DataFrame | None = None,
     progress: ProgressLike | None = None,
 ) -> WavePositionReport:
     """يحسب كسر الموجة المحققة عند أول إشارة وعند كل إعداد ناجح."""
@@ -484,46 +539,48 @@ def run_wave_position(
         )
         all_parts.append(_attach_frac(primary, waves, cfg=cfg, scope=scope, role="all_setups"))
     first_signals = pl.concat(first_parts, how="diagonal_relaxed")
-    all_setups = pl.concat(all_parts, how="diagonal_relaxed")
-    first_summary_parts = [
-        _bin_summary(first_signals, scope="develop", role="first_signal", success_only=False),
-        _bin_summary(first_signals, scope="develop", role="first_signal", success_only=True),
-        _bin_summary(first_signals, scope="develop", role="first_success", success_only=True),
+    all_setups = _join_model_p(
+        pl.concat(all_parts, how="diagonal_relaxed"),
+        _prediction_scores(predictions, cfg.score_col),
+    )
+    model_first_parts = [
+        _first_model_per_story(
+            all_setups,
+            scope="develop",
+            group_col=cfg.group_col,
+            threshold=cfg.score_threshold,
+        )
     ]
     if scope != "develop":
-        first_summary_parts.extend(
-            [
-                _bin_summary(first_signals, scope=scope, role="first_signal", success_only=False),
-                _bin_summary(first_signals, scope=scope, role="first_signal", success_only=True),
-                _bin_summary(first_signals, scope=scope, role="first_success", success_only=True),
-            ]
+        model_first_parts.append(
+            _first_model_per_story(
+                all_setups,
+                scope=scope,
+                group_col=cfg.group_col,
+                threshold=cfg.score_threshold,
+            )
         )
-    first_summary = pl.concat(first_summary_parts, how="diagonal_relaxed")
+    model_first = pl.concat(model_first_parts, how="diagonal_relaxed")
+    if model_first.height:
+        first_signals = pl.concat([first_signals, model_first], how="diagonal_relaxed")
+    first_summary = pl.concat(
+        _first_summary_parts(first_signals, scope=scope), how="diagonal_relaxed"
+    )
+    all_model = _all_model_rows(all_setups, threshold=cfg.score_threshold)
     all_summary = pl.concat(
         [
             _bin_summary(all_setups, scope="develop", role="all_setups", success_only=False),
             _bin_summary(all_setups, scope=scope, role="all_setups", success_only=True),
+            _bin_summary(all_model, scope=scope, role="all_model", success_only=False),
         ],
         how="diagonal_relaxed",
     )
-    first_all = first_signals.filter(
-        (pl.col("scope") == scope)
-        & (~pl.col("wave_too_small"))
-        & (pl.col("role") == "first_signal")
-    )
-    first_ok = first_signals.filter(
-        (pl.col("scope") == scope)
-        & (~pl.col("wave_too_small"))
-        & (pl.col("role") == "first_success")
-    )
-    all_ok = all_setups.filter(
-        (pl.col("scope") == scope) & (~pl.col("wave_too_small")) & (pl.col("y") > _ONSET)
-    )
-    first_y: float | None = None
-    if first_all.height and "y" in first_all.columns:
-        y_arr = first_all["y"].drop_nulls().to_numpy().astype(np.float64)
-        if y_arr.size:
-            first_y = float(np.mean(y_arr))
+    first_all = _role_rows(first_signals, scope=scope, role="first_signal")
+    first_ok = _role_rows(first_signals, scope=scope, role="first_success")
+    first_model = _role_rows(first_signals, scope=scope, role="first_model")
+    all_ok = _role_rows(all_setups, scope=scope, role="all_setups").filter(pl.col("y") > _ONSET)
+    all_model_ok = all_model.filter((pl.col("scope") == scope) & (~pl.col("wave_too_small")))
+    first_y = _mean_y(first_all)
     diagnostics: dict[str, Any] = {
         "empty": False,
         "holdout_scored": False,
@@ -538,24 +595,35 @@ def run_wave_position(
         "n_first_primary": int(first_all.height),
         "n_first_success_primary": int(first_ok.height),
         "n_all_success_primary": int(all_ok.height),
+        "n_first_model_primary": int(first_model.height),
+        "n_all_model_primary": int(all_model_ok.height),
         "min_peak_ticks": float(cfg.min_peak_ticks),
+        "score_threshold": float(cfg.score_threshold),
         "mean_y_first_primary": first_y,
         "median_first_frac": _median_frac(first_all),
         "median_first_success_frac": _median_frac(first_ok),
+        "median_first_model_frac": _median_frac(first_model),
         "median_all_success_frac": _median_frac(all_ok),
+        "median_all_model_frac": _median_frac(all_model_ok),
         "share_first_early_prediction": _share(first_all, "early_prediction"),
         "share_first_late_prediction": _share(first_all, "late_prediction"),
         "share_first_success_early_prediction": _share(first_ok, "early_prediction"),
         "share_first_success_late_prediction": _share(first_ok, "late_prediction"),
+        "share_first_model_early_prediction": _share(first_model, "early_prediction"),
+        "share_first_model_late_prediction": _share(first_model, "late_prediction"),
         "share_all_success_early_prediction": _share(all_ok, "early_prediction"),
         "share_all_success_late_prediction": _share(all_ok, "late_prediction"),
+        "share_all_model_early_prediction": _share(all_model_ok, "early_prediction"),
+        "share_all_model_late_prediction": _share(all_model_ok, "late_prediction"),
         "principles": (
             "wave peak is look-ahead used only to score where the signal sat; not a feature",
             "extent at t is causal (path_beyond / path_extreme known at setup_availability_ts)",
             "holdout bars never enter the peak and holdout setups are never scored",
             "first_signal is the earliest labeled setup in the story (any y)",
             "first_success is the earliest successful further-beyond (y=1) in the story",
+            "first_model is the earliest OOF p>=threshold in the story (the predictive signal)",
             "all_setups are the further-beyond labels that produced the continuation skill",
+            "all_model are OOF rows with p>=threshold — where the model actually fires",
             "0-20 early_prediction · 20-40 early_continuation · 40-60 mid_wave · 60+ late",
         ),
         **holdout_meta,
@@ -568,6 +636,54 @@ def run_wave_position(
         all_summary=all_summary,
         diagnostics=diagnostics,
     )
+
+
+def _role_rows(frame: pl.DataFrame, *, scope: str, role: str) -> pl.DataFrame:
+    return frame.filter(
+        (pl.col("scope") == scope) & (~pl.col("wave_too_small")) & (pl.col("role") == role)
+    )
+
+
+def _mean_y(frame: pl.DataFrame) -> float | None:
+    if frame.height == 0 or "y" not in frame.columns:
+        return None
+    y_arr = frame["y"].drop_nulls().to_numpy().astype(np.float64)
+    if y_arr.size == 0:
+        return None
+    return float(np.mean(y_arr))
+
+
+def _concat_scope(parts: list[pl.DataFrame], extra: list[pl.DataFrame], *, scope: str) -> None:
+    if scope != "develop":
+        parts.extend(extra)
+
+
+def _first_summary_parts(first_signals: pl.DataFrame, *, scope: str) -> list[pl.DataFrame]:
+    parts = [
+        _bin_summary(first_signals, scope="develop", role="first_signal", success_only=False),
+        _bin_summary(first_signals, scope="develop", role="first_signal", success_only=True),
+        _bin_summary(first_signals, scope="develop", role="first_success", success_only=True),
+        _bin_summary(first_signals, scope="develop", role="first_model", success_only=False),
+    ]
+    _concat_scope(
+        parts,
+        [
+            _bin_summary(first_signals, scope=scope, role="first_signal", success_only=False),
+            _bin_summary(first_signals, scope=scope, role="first_signal", success_only=True),
+            _bin_summary(first_signals, scope=scope, role="first_success", success_only=True),
+            _bin_summary(first_signals, scope=scope, role="first_model", success_only=False),
+        ],
+        scope=scope,
+    )
+    return parts
+
+
+def _all_model_rows(all_setups: pl.DataFrame, *, threshold: float) -> pl.DataFrame:
+    if "model_p" not in all_setups.columns:
+        return all_setups.head(0)
+    return all_setups.filter(
+        pl.col("model_p").is_finite() & (pl.col("model_p") >= float(threshold))
+    ).with_columns(pl.lit("all_model").alias("role"))
 
 
 def _share(frame: pl.DataFrame, bin_name: str) -> float:
@@ -619,65 +735,101 @@ def _md_table(frame: pl.DataFrame, columns: Sequence[str]) -> list[str]:
     return lines
 
 
+def _share_claim(early: float, late: float, *, early_msg: str, late_msg: str) -> str | None:
+    if early >= _MAJORITY_SHARE:
+        return early_msg.format(p=f"{early:.0%}")
+    if late >= _MAJORITY_SHARE:
+        return late_msg.format(p=f"{late:.0%}")
+    return None
+
+
+def _median_claim(value: Any, template: str) -> str | None:
+    if value is None:
+        return None
+    return template.format(p=f"{float(value):.0%}")
+
+
 def _reading(report: WavePositionReport) -> tuple[str, ...]:
     d = report.diagnostics
     scope = str(d.get("primary_scope", "develop"))
-    first_early = float(d.get("share_first_early_prediction") or 0.0)
-    first_late = float(d.get("share_first_late_prediction") or 0.0)
     first_y = d.get("mean_y_first_primary")
-    first_succ_early = float(d.get("share_first_success_early_prediction") or 0.0)
-    first_succ_late = float(d.get("share_first_success_late_prediction") or 0.0)
-    all_early = float(d.get("share_all_success_early_prediction") or 0.0)
-    all_late = float(d.get("share_all_success_late_prediction") or 0.0)
-    med_first = d.get("median_first_frac")
-    med_first_ok = d.get("median_first_success_frac")
-    med_all = d.get("median_all_success_frac")
     claims: list[str] = []
-    if med_first is not None:
-        claims.append(
-            f"first labeled setup in the story sits at median {float(med_first):.0%} "
-            f"of the completed wave (scope={scope})."
-        )
+    for claim in (
+        _median_claim(
+            d.get("median_first_frac"),
+            "first labeled setup in the story sits at median {p} "
+            f"of the completed wave (scope={scope}).",
+        ),
+        _median_claim(
+            d.get("median_first_success_frac"),
+            "first successful further-beyond in the story sits at median {p} "
+            "of the completed wave.",
+        ),
+        _median_claim(
+            d.get("median_first_model_frac"),
+            "first OOF model fire (p>=threshold) sits at median {p} of the completed wave.",
+        ),
+        _median_claim(
+            d.get("median_all_success_frac"),
+            "successful further-beyond setups sit at median {p} of the completed wave.",
+        ),
+        _median_claim(
+            d.get("median_all_model_frac"),
+            "all OOF model fires sit at median {p} of the completed wave.",
+        ),
+        _share_claim(
+            float(d.get("share_first_early_prediction") or 0.0),
+            float(d.get("share_first_late_prediction") or 0.0),
+            early_msg=(
+                "first setups are mostly early_prediction ({p}) — "
+                "the story onset is at the start of the eventual wave."
+            ),
+            late_msg=(
+                "first setups are mostly late_prediction ({p}) — "
+                "the first labeled setup is already past 60% of the eventual wave."
+            ),
+        ),
+        _share_claim(
+            float(d.get("share_first_success_early_prediction") or 0.0),
+            float(d.get("share_first_success_late_prediction") or 0.0),
+            early_msg="first successful labels are mostly early_prediction ({p}).",
+            late_msg="first successful labels are mostly late_prediction ({p}).",
+        ),
+        _share_claim(
+            float(d.get("share_first_model_early_prediction") or 0.0),
+            float(d.get("share_first_model_late_prediction") or 0.0),
+            early_msg=(
+                "first model fires are mostly early_prediction ({p}) — "
+                "the predictive signal appears before 20% of the eventual wave."
+            ),
+            late_msg="first model fires are mostly late_prediction ({p}).",
+        ),
+    ):
+        if claim:
+            claims.append(claim)
     if first_y is not None:
         y_txt = f"those first setups have mean y_path_further_beyond={float(first_y):.2f}"
         if float(first_y) < _ONSET:
-            claims.append(
-                y_txt + " (the first labeled further-beyond is usually not a successful extension)."
+            claims.insert(
+                1,
+                y_txt
+                + " (the first labeled further-beyond is usually not a successful extension).",
             )
         else:
-            claims.append(y_txt + ".")
-    if med_first_ok is not None:
-        claims.append(
-            "first successful further-beyond in the story sits at median "
-            f"{float(med_first_ok):.0%} of the completed wave."
-        )
-    if med_all is not None:
-        claims.append(
-            "successful further-beyond setups sit at median "
-            f"{float(med_all):.0%} of the completed wave."
-        )
-    if first_early >= _MAJORITY_SHARE:
-        claims.append(
-            f"first setups are mostly early_prediction ({first_early:.0%}) — "
-            "the story onset is at the start of the eventual wave."
-        )
-    elif first_late >= _MAJORITY_SHARE:
-        claims.append(
-            f"first setups are mostly late_prediction ({first_late:.0%}) — "
-            "the first labeled setup is already past 60% of the eventual wave."
-        )
-    if first_succ_early >= _MAJORITY_SHARE:
-        claims.append(
-            f"first successful labels are mostly early_prediction ({first_succ_early:.0%})."
-        )
-    elif first_succ_late >= _MAJORITY_SHARE:
-        claims.append(
-            f"first successful labels are mostly late_prediction ({first_succ_late:.0%})."
-        )
+            claims.insert(1, y_txt + ".")
+    all_early = float(d.get("share_all_success_early_prediction") or 0.0)
+    all_late = float(d.get("share_all_success_late_prediction") or 0.0)
+    all_model_early = float(d.get("share_all_model_early_prediction") or 0.0)
+    all_model_late = float(d.get("share_all_model_late_prediction") or 0.0)
     if all_late >= _MAJORITY_SHARE and all_early < _LOW_EARLY_SHARE:
         claims.append(
             f"the continuation-skill rows are late ({all_late:.0%} at 60%+; "
             f"early_prediction={all_early:.0%}), matching 'the wave already started'."
+        )
+    if all_model_late >= _MAJORITY_SHARE and all_model_early < _LOW_EARLY_SHARE:
+        claims.append(
+            f"model fires overall are late ({all_model_late:.0%} at 60%+; "
+            f"early_prediction={all_model_early:.0%}) — continuation, not onset."
         )
     if not claims:
         claims.append("insufficient completed waves to locate the signal on the path.")
@@ -701,7 +853,9 @@ def render_wave_position_markdown(report: WavePositionReport) -> str:
         f"- first labeled setups: {d.get('n_first_primary')} "
         f"(mean y={d.get('mean_y_first_primary')})",
         f"- first successful further-beyond: {d.get('n_first_success_primary')}",
+        f"- first model fire p>={d.get('score_threshold')}: {d.get('n_first_model_primary')}",
         f"- successful further-beyond setups: {d.get('n_all_success_primary')}",
+        f"- model fires p>={d.get('score_threshold')}: {d.get('n_all_model_primary')}",
         f"- min peak ticks: {d.get('min_peak_ticks')}",
         f"- holdout excluded={d.get('holdout_excluded')} · scored={d.get('holdout_scored')}",
         "",
@@ -725,9 +879,15 @@ def render_wave_position_markdown(report: WavePositionReport) -> str:
             & (pl.col("success_only"))
             & (pl.col("role") == "first_success")
         )
+        first_model_tbl = first.filter(
+            (pl.col("scope") == scope)
+            & (~pl.col("success_only"))
+            & (pl.col("role") == "first_model")
+        )
     else:
         first_all_tbl = first
         first_ok_tbl = first
+        first_model_tbl = first
     lines.extend(["", "## First labeled setup in the story (any y)", ""])
     lines.extend(
         _md_table(
@@ -759,9 +919,36 @@ def render_wave_position_markdown(report: WavePositionReport) -> str:
             ),
         )
     )
+    lines.extend(["## First OOF model fire in the story (p>=threshold)", ""])
+    lines.extend(
+        _md_table(
+            first_model_tbl,
+            (
+                WAVE_BIN_COL,
+                "n",
+                "share",
+                "mean_wave_frac",
+                "median_wave_frac",
+                "mean_beyond_at_t",
+                "mean_peak",
+                "pos_rate",
+            ),
+        )
+    )
     all_s = report.all_summary
+    all_model_tbl = all_s
     if all_s.height and "success_only" in all_s.columns:
-        all_s = all_s.filter((pl.col("scope") == scope) & (pl.col("success_only")))
+        if "role" in all_s.columns:
+            all_model_tbl = all_s.filter(
+                (pl.col("scope") == scope) & (pl.col("role") == "all_model")
+            )
+            all_s = all_s.filter(
+                (pl.col("scope") == scope)
+                & (pl.col("success_only"))
+                & (pl.col("role") == "all_setups")
+            )
+        else:
+            all_s = all_s.filter((pl.col("scope") == scope) & (pl.col("success_only")))
     lines.extend(["## All successful further-beyond setups (continuation skill rows)", ""])
     lines.extend(
         _md_table(
@@ -774,6 +961,22 @@ def render_wave_position_markdown(report: WavePositionReport) -> str:
                 "median_wave_frac",
                 "mean_beyond_at_t",
                 "mean_peak",
+            ),
+        )
+    )
+    lines.extend(["## All OOF model fires (p>=threshold)", ""])
+    lines.extend(
+        _md_table(
+            all_model_tbl,
+            (
+                WAVE_BIN_COL,
+                "n",
+                "share",
+                "mean_wave_frac",
+                "median_wave_frac",
+                "mean_beyond_at_t",
+                "mean_peak",
+                "pos_rate",
             ),
         )
     )
@@ -826,9 +1029,11 @@ def run_wave_position_from_period_dir(
     labeled = pl.read_parquet(labeled_path)
     blended = pl.read_parquet(blended_path)
     oof_ts: list[int] | None = None
+    predictions: pl.DataFrame | None = None
     oof_path = root / "oof_predictions.parquet"
     if oof_path.is_file():
         oof = pl.read_parquet(oof_path)
+        predictions = oof
         ts_col = SETUP_AVAILABILITY_TS if SETUP_AVAILABILITY_TS in oof.columns else AVAILABILITY_TS
         if ts_col in oof.columns:
             oof_ts = [int(t) for t in oof[ts_col].to_list()]
@@ -847,6 +1052,7 @@ def run_wave_position_from_period_dir(
         config=config or WavePositionConfig(),
         oof_availability_ts=oof_ts,
         holdout_cut_ts=cut_ts,
+        predictions=predictions,
         progress=progress,
     )
 

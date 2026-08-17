@@ -612,6 +612,7 @@ def _write_wave_position(report: BehaviorPeriodReport, out: Path) -> None:
         config=WavePositionConfig(holdout_months=months),
         oof_availability_ts=oof_ts,
         holdout_cut_ts=cut_ts,
+        predictions=oof if oof.height else None,
     )
     write_wave_position_report(wave, out)
     period = out / "PERIOD.md"

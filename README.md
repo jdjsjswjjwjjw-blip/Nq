@@ -514,19 +514,19 @@ result = run_auction_behavior_analysis(
     mbo_frame,
     config=BehaviorConfig(
         include_deceptive_scores=True,  # درجات فقط، بلا حذف
-        include_level_flow=True,        # شدة/بقاء قرب VAH·VAL·POC·HVN
+        include_level_flow=True,  # شدة/بقاء قرب VAH·VAL·POC·HVN
         include_reliability_evidence=True,  # credibility evidence، بلا حذف
-        include_science=True,           # طبقة العلم
+        include_science=True,  # طبقة العلم
         holdout_frac=0.2,
         evaluate_holdout=True,
-        quiet=False,                   # نبض حي على stderr
+        quiet=False,  # نبض حي على stderr
         # progress_log_path="out/progress.log",
     ),
 )
 print(result.probabilities)
 print(behavior_probability_summary(result))  # ملخص؛ confidence ≠ calibrated p
-states = behavior_state_frame(result)        # «ما الذي أعرفه الآن؟»
-preds = behavior_prediction_frame(result)    # «ماذا أتوقع؟» p_y_* شرطية
+states = behavior_state_frame(result)  # «ما الذي أعرفه الآن؟»
+preds = behavior_prediction_frame(result)  # «ماذا أتوقع؟» p_y_* شرطية
 projection = result.projection
 science = result.science
 assert result.validation.ok
@@ -576,8 +576,8 @@ if science is not None and science.holdout_eval is not None:
 ```python
 from nq.auction_behavior import run_behavior_ablation
 
-report = run_behavior_ablation(result.blended)   # develop فقط؛ الـholdout لا يُمس
-print(report.frame)            # ستاك × هدف: Brier/log loss/AUC/ECE/BSS خارج العينة
+report = run_behavior_ablation(result.blended)  # develop فقط؛ الـholdout لا يُمس
+print(report.frame)  # ستاك × هدف: Brier/log loss/AUC/ECE/BSS خارج العينة
 print(report.competing_frame)  # نفس المقارنة لرأس المخاطر المتنافسة
 assert report.diagnostics["holdout_untouched"]
 ```
@@ -648,10 +648,10 @@ scripts/run_expansion_mechanics.py \
 
 **موقع الإشارة على الموجة (مرحلة 2c):** المهارة الحالية استمرار موجة بدأت،
 وليست إثباتًا أنها تمسك أول 20%. `nq.research.wave_position` يقيس
-`extent_at_t / completed_wave_peak` لأوّل إعداد في القصة: 0–20% early
-prediction، 20–40% early continuation، 40–60% mid-wave، 60%+ late.
-الذروة نظرة أمامية للتشخيص فقط، ليست ميزة. الـholdout لا يدخل الذروة ولا
-يُقاس. التشغيل:
+`extent_at_t / completed_wave_peak` لأوّل إعداد مسمّى، لأول نجاح `y=1`،
+ولأول إطلاق OOF (`p>=0.5`): 0–20% early prediction، 20–40% early
+continuation، 40–60% mid-wave، 60%+ late. الذروة نظرة أمامية للتشخيص فقط،
+ليست ميزة. الـholdout لا يدخل الذروة ولا يُقاس. التشغيل:
 
 ```text
 scripts/run_wave_position.py \
@@ -691,7 +691,7 @@ from nq.strategies.vp_auction import run_vp_auction_research
 cfg = PipelineConfig.from_toml("configs/research.toml")
 result = run_research_pipeline(
     "data/raw/nq.parquet",
-    "data/raw/nq.parquet",          # أو mnq؛ مع nq_only يُكرَّر NQ
+    "data/raw/nq.parquet",  # أو mnq؛ مع nq_only يُكرَّر NQ
     config=cfg,
     output_dir=Path("data/runs/api"),
 )
