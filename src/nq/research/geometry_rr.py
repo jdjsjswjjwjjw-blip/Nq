@@ -205,8 +205,8 @@ def _hit_stop_or_take(
 ) -> str | None:
     """وقف 1R قبل الهدف. سعر مجمّد إن وُجد، وإلا مسار ما بعد آسيا."""
     if px is not None:
-        adverse = px - stop_px if direction > 0.0 else stop_px - px
-        favorable = px - target_px if direction > 0.0 else target_px - px
+        adverse = (stop_px - px) * direction
+        favorable = (px - target_px) * direction
         if adverse >= 0.0:
             return "stop_1r"
         if favorable >= 0.0:
