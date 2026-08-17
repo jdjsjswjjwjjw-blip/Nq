@@ -45,6 +45,16 @@ from nq.research.expansion_mechanics import (
     run_expansion_mechanics,
     write_expansion_mechanics_report,
 )
+from nq.research.feature_exit import (
+    FeatureExitConfig,
+    run_feature_exit,
+    write_feature_exit_report,
+)
+from nq.research.p_sizing import (
+    PSizingConfig,
+    run_p_sizing,
+    write_p_sizing_report,
+)
 from nq.research.progress import ProgressLike
 from nq.research.wave_position import (
     WavePositionConfig,
@@ -559,6 +569,8 @@ def write_behavior_period_report(
     _write_expansion_mechanics(report, out)
     _write_wave_position(report, out)
     _write_causal_entry(report, out)
+    _write_feature_exit(report, out)
+    _write_p_sizing(report, out)
     return out
 
 
@@ -668,6 +680,78 @@ def _write_causal_entry(report: BehaviorPeriodReport, out: Path) -> None:
         "MFE / MAE / realized after a live model fire inside the labeled",
         "competing-risk window. Live entry is `p` at `t`; completed-wave 60%+",
         "is not a filter. Holdout never scored. See `CAUSAL.md`.",
+        "",
+    ]
+    period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
+
+
+def _overlay_oof_cut(
+    report: BehaviorPeriodReport,
+) -> tuple[pl.DataFrame, tuple[int, ...] | None, int | None, int | None]:
+    oof = report.science.conditional_oof_predictions
+    oof_ts: tuple[int, ...] | None = None
+    if oof.height:
+        ts_col = SETUP_AVAILABILITY_TS if SETUP_AVAILABILITY_TS in oof.columns else AVAILABILITY_TS
+        if ts_col in oof.columns:
+            oof_ts = tuple(int(t) for t in oof[ts_col].to_list())
+    cut_raw = report.science.diagnostics.get("holdout_cut_ts")
+    cut_ts = int(cut_raw) if cut_raw is not None and int(cut_raw) >= 0 else None
+    holdout_months = report.science.diagnostics.get("holdout_months")
+    months = int(holdout_months) if holdout_months is not None else None
+    return oof, oof_ts, cut_ts, months
+
+
+def _write_feature_exit(report: BehaviorPeriodReport, out: Path) -> None:
+    """طبقة ب قابلة للخلع — خروج فيتشز. احذف هذه الدالة لإزالتها."""
+    labeled = report.science.labeled
+    blended = report.blended
+    if labeled.height == 0 or blended.height == 0:
+        return
+    oof, oof_ts, cut_ts, months = _overlay_oof_cut(report)
+    overlay = run_feature_exit(
+        labeled,
+        blended,
+        config=FeatureExitConfig(holdout_months=months),
+        oof_availability_ts=oof_ts,
+        holdout_cut_ts=cut_ts,
+        predictions=oof if oof.height else None,
+    )
+    write_feature_exit_report(overlay, out)
+    period = out / "PERIOD.md"
+    extra = [
+        "",
+        "## Feature-exit overlay (removable layer B)",
+        "",
+        "Causal feature exit after an OOF fire. Not a numeric stop.",
+        "Delete `_write_feature_exit` to remove. See `FEATURE_EXIT.md`.",
+        "",
+    ]
+    period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
+
+
+def _write_p_sizing(report: BehaviorPeriodReport, out: Path) -> None:
+    """طبقة ج قابلة للخلع — حجم من p. احذف هذه الدالة لإزالتها."""
+    labeled = report.science.labeled
+    blended = report.blended
+    if labeled.height == 0 or blended.height == 0:
+        return
+    oof, oof_ts, cut_ts, months = _overlay_oof_cut(report)
+    overlay = run_p_sizing(
+        labeled,
+        blended,
+        config=PSizingConfig(holdout_months=months),
+        oof_availability_ts=oof_ts,
+        holdout_cut_ts=cut_ts,
+        predictions=oof if oof.height else None,
+    )
+    write_p_sizing_report(overlay, out)
+    period = out / "PERIOD.md"
+    extra = [
+        "",
+        "## P-sizing overlay (removable layer C)",
+        "",
+        "Size from OOF `p`; exit on the next fresh OOF flip. Live p is never used.",
+        "Delete `_write_p_sizing` to remove. See `P_SIZING.md`.",
         "",
     ]
     period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
