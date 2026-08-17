@@ -666,8 +666,8 @@ def _write_causal_entry(report: BehaviorPeriodReport, out: Path) -> None:
         "## Causal entry capture (develop / OOF only)",
         "",
         "MFE / MAE / realized after a live model fire inside the labeled",
-        "competing-risk window. Late confirmed uses a fixed printed threshold,",
-        "not completed-wave peak. Holdout never scored. See `CAUSAL.md`.",
+        "competing-risk window. Live entry is `p` at `t`; completed-wave 60%+",
+        "is not a filter. Holdout never scored. See `CAUSAL.md`.",
         "",
     ]
     period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")

@@ -106,6 +106,8 @@ def test_late_confirmed_is_fixed_printed_threshold_not_peak_fraction() -> None:
     report = run_causal_entry(labeled, blended, config=_cfg())
     assert report.diagnostics["completed_wave_peak_not_used"] is True
     assert report.diagnostics["wave_frac_not_used_as_entry_filter"] is True
+    assert report.diagnostics["completed_wave_60pct_is_not_a_live_filter"] is True
+    assert report.diagnostics["live_entry_is_p_at_t"] is True
     assert int(report.diagnostics["n_late_confirmed"]) == 1
     assert int(report.diagnostics["n_all_fires"]) == 2
     assert float(report.late_entries["printed_at_entry_ticks"][0]) == pytest.approx(80.0)
@@ -132,6 +134,24 @@ def test_lookahead_peak_columns_do_not_change_capture() -> None:
     assert float(clean.late_entries["mae_beyond_ticks"][0]) == float(
         leaked.late_entries["mae_beyond_ticks"][0]
     )
+
+
+def test_completed_wave_bin_is_not_a_live_filter() -> None:
+    blended = _story_bars(story=1, start=10, beyond=[20.0, 30.0, 40.0])
+    labeled = pl.DataFrame(
+        [_setup(story=1, ts=10, y=1.0, beyond=20.0, extreme=20.0, outcome_ts=12)]
+    ).with_columns(
+        pl.lit("late_prediction").alias("wave_bin"),
+        pl.lit(0.80).alias("wave_frac"),
+    )
+    report = run_causal_entry(labeled, blended, config=_cfg())
+    assert int(report.diagnostics["n_all_fires"]) == 1
+    assert int(report.diagnostics["n_late_confirmed"]) == 0
+    assert report.diagnostics["wave_bin_late_prediction_is_not_a_live_filter"] is True
+    text = render_causal_entry_markdown(report)
+    assert "Before live operation" in text
+    assert "not a live filter" in text
+    assert "60%" in text
 
 
 def test_holdout_entries_are_excluded() -> None:
@@ -277,5 +297,6 @@ def test_period_dir_roundtrip(tmp_path: Path) -> None:
     write_causal_entry_report(report, out)
     assert (out / "CAUSAL.md").is_file()
     text = (out / "CAUSAL.md").read_text(encoding="utf-8")
-    assert "completed-wave peak" in text.lower() or "completed_wave_peak_not_used" in text
+    assert "60%" in text
+    assert "not a live filter" in text.lower() or "not a live filter" in text
     assert "Holdout" in render_causal_entry_markdown(report) or "holdout" in text.lower()

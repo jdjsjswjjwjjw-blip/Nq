@@ -528,6 +528,9 @@ def run_causal_entry(
         "features_not_recomputed_from_mbo": True,
         "completed_wave_peak_not_used": True,
         "wave_frac_not_used_as_entry_filter": True,
+        "completed_wave_60pct_is_not_a_live_filter": True,
+        "wave_bin_late_prediction_is_not_a_live_filter": True,
+        "live_entry_is_p_at_t": True,
         "lookahead_wave_columns_ignored": lookahead_present,
         "primary_scope": scope,
         "n_further_develop": int(further.height),
@@ -541,10 +544,12 @@ def run_causal_entry(
         "all_fires": all_sum,
         "late_confirmed": late_sum,
         "principles": (
-            "entry uses OOF p, printed ticks at t, and optional live confirm only",
-            "late-confirmed is a fixed printed threshold (default 80 ticks / 20 NQ points)",
+            "live entry is OOF p at t plus live volume/depth — that is causal",
+            "completed-wave 60%+ / late_prediction is look-ahead; never a live filter",
+            "the 60%+ share is a reassurance statistic after the fact, not a gate",
+            "already-printed is a fixed tick threshold at t, not a peak fraction",
             "MFE/MAE/realized are inside the labeled competing-risk window only",
-            "completed-wave peak / wave_frac are never an entry filter",
+            "remaining-to-peak and completed-wave take-profits are the same leak",
             "holdout rows after holdout_cut_ts are excluded and never scored",
         ),
         **holdout_meta,
@@ -601,6 +606,10 @@ def _reading(report: CausalEntryReport) -> tuple[str, ...]:
             f"realized {_fmt_pts(all_f.get('realized_beyond_ticks_median'))}."
         ),
         "Capture is inside the labeled outcome window; completed-wave peak is not used.",
+        (
+            "Before live: enter on p at t. Do not wait to confirm a completed-wave "
+            "60%+ / late_prediction bin — that bin is look-ahead."
+        ),
     ]
     return tuple(lines)
 
@@ -610,17 +619,30 @@ def render_causal_entry_markdown(report: CausalEntryReport) -> str:
     lines = [
         "# Causal entry capture (no completed-wave leakage)",
         "",
-        "Live entry = OOF `p` + ticks already printed at `t`.",
-        "Late confirmed = that fire after a **fixed** printed threshold "
+        "Live entry = OOF `p` at `t` plus live volume/depth. That is causal.",
+        "Already-printed = that fire after a **fixed** tick threshold at `t` "
         f"(default {DEFAULT_MIN_PRINTED_LATE_TICKS:.0f} ticks / "
-        f"{ticks_to_nq_points(DEFAULT_MIN_PRINTED_LATE_TICKS):.0f} NQ points).",
+        f"{ticks_to_nq_points(DEFAULT_MIN_PRINTED_LATE_TICKS):.0f} NQ points). "
+        "It is **not** completed-wave 60%+ / `late_prediction`.",
         "MFE / MAE / realized use only bars with "
         "`setup_availability_ts < availability_ts <= outcome_available_ts`.",
         "",
+        "## Before live operation",
+        "",
+        "- Enter when `p` fires with live confirms. Do **not** wait until the wave",
+        "  is known to be in the last 60%. At `t` you cannot know whether this fire",
+        "  will sit at 30% or 80% of a wave that has not finished.",
+        "- Completed-wave `late_prediction` / 60%+ is a reassurance statistic after",
+        "  the fact, not a live filter and not a backtest entry gate.",
+        "- Remaining-to-peak is the same leak. Size the stop from the causal pullback",
+        "  already printed at `t`, not from the future high.",
+        "",
         f"- scope={d.get('primary_scope')} · holdout excluded={d.get('holdout_excluded')} · "
         f"scored={d.get('holdout_scored')}",
-        f"- all fires={d.get('n_all_fires')} · late confirmed={d.get('n_late_confirmed')}",
-        f"- completed_wave_peak_not_used={d.get('completed_wave_peak_not_used')}",
+        f"- all fires={d.get('n_all_fires')} · already printed={d.get('n_late_confirmed')}",
+        f"- live_entry_is_p_at_t={d.get('live_entry_is_p_at_t')}",
+        f"- completed_wave_60pct_is_not_a_live_filter="
+        f"{d.get('completed_wave_60pct_is_not_a_live_filter')}",
         "",
         "## Reading",
         "",
