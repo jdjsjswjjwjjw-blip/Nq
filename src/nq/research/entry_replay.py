@@ -326,7 +326,7 @@ def _payload(report: EntryReplayReport) -> dict[str, Any]:
     trades: list[dict[str, Any]] = []
     if report.trades.height == 0:
         return {"trades": [], "diagnostics": jsonable(report.diagnostics)}
-    bars_by: dict[int, list[dict[str, float | bool]]] = {}
+    bars_by: dict[int, list[dict[str, float | bool | None]]] = {}
     if report.bars.height:
         for row in report.bars.iter_rows(named=True):
             tid = int(row["trade_id"])
