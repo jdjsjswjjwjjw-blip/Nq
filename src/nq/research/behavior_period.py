@@ -40,6 +40,11 @@ from nq.research.causal_entry import (
     run_causal_entry,
     write_causal_entry_report,
 )
+from nq.research.early_momentum_filter import (
+    EarlyMomentumConfig,
+    run_early_momentum,
+    write_early_momentum_report,
+)
 from nq.research.expansion_mechanics import (
     ExpansionMechanicsConfig,
     run_expansion_mechanics,
@@ -571,6 +576,7 @@ def write_behavior_period_report(
     _write_causal_entry(report, out)
     _write_feature_exit(report, out)
     _write_p_sizing(report, out)
+    _write_early_momentum(report, out)
     return out
 
 
@@ -752,6 +758,36 @@ def _write_p_sizing(report: BehaviorPeriodReport, out: Path) -> None:
         "",
         "Size from OOF `p`; exit on the next fresh OOF flip. Live p is never used.",
         "Delete `_write_p_sizing` to remove. See `P_SIZING.md`.",
+        "",
+    ]
+    period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
+
+
+def _write_early_momentum(report: BehaviorPeriodReport, out: Path) -> None:
+    """طبقة ح قابلة للخلع — زخم مبكر عند t. احذف هذه الدالة لإزالتها."""
+    labeled = report.science.labeled
+    blended = report.blended
+    if labeled.height == 0 or blended.height == 0:
+        return
+    oof, oof_ts, cut_ts, months = _overlay_oof_cut(report)
+    overlay = run_early_momentum(
+        labeled,
+        blended,
+        config=EarlyMomentumConfig(holdout_months=months),
+        oof_availability_ts=oof_ts,
+        holdout_cut_ts=cut_ts,
+        predictions=oof if oof.height else None,
+    )
+    write_early_momentum_report(overlay, out)
+    period = out / "PERIOD.md"
+    extra = [
+        "",
+        "## Early-momentum entry filter (removable layer H) — OOF test",
+        "",
+        "Not live execution. Causal momentum / arrival-intensity / Asia-extreme",
+        "break at t. Completed-wave 20% is never a gate. Frozen 0.5/0.2 London",
+        "ATR basket after the filter. Delete `_write_early_momentum` to remove.",
+        "See `EARLY_MOMENTUM.md`.",
         "",
     ]
     period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
