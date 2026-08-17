@@ -4,8 +4,9 @@
 دون كسر نقطة الدخول بأكثر من ``0.1 × London_ATR``، وحقق حدًا أدنى
 ``0.2 × London_ATR`` — بغض النظر عن عدد النقاط.
 
-ATR لندن سببي: مدى جلسة ``[03:00, 09:30)`` ET لتواريخ الجلسة المكتملة
-السابقة فقط. مدى لندن لليوم الجاري لا يدخل التعريف.
+ATR لندن سببي: مدى جلسة ``[03:00, 09:30)`` ET (high−low) لتواريخ الجلسة
+المكتملة السابقة فقط. فجوة الإغلاق السابق لا تُحسب — ليست تقلب لندن.
+مدى لندن لليوم الجاري لا يدخل التعريف.
 """
 
 from __future__ import annotations
@@ -52,7 +53,11 @@ def _session_dates(ts: Sequence[int]) -> list[str]:
 
 
 def prior_london_atr14(frame: pl.DataFrame) -> np.ndarray:
-    """ATR(14) لندن لكل برميل بوحدة السعر الخام — أيام لندن السابقة فقط."""
+    """ATR(14) لندن لكل برميل بوحدة السعر الخام — أيام لندن السابقة فقط.
+
+    المدى = high−low داخل ``[03:00, 09:30)`` ET. لا يُستخدم True Range مع
+    إغلاق اليوم السابق حتى لا تدخل فجوة آسيا في تقلب لندن.
+    """
     n = frame.height
     if n == 0 or AVAILABILITY_TS not in frame.columns:
         return np.zeros(0, dtype=np.float64)
@@ -67,30 +72,17 @@ def prior_london_atr14(frame: pl.DataFrame) -> np.ndarray:
         london = work.filter(pl.col("_phase_sess") == _LONDON)
     if london.height == 0 or "high" not in work.columns or "low" not in work.columns:
         return np.zeros(n, dtype=np.float64)
-    close_expr = (
-        pl.col("close").cast(pl.Float64)
-        if "close" in london.columns
-        else pl.col("high").cast(pl.Float64)
-    )
     daily = (
         london.sort(AVAILABILITY_TS)
         .group_by("_phase_session_date", maintain_order=True)
         .agg(
             pl.col("high").cast(pl.Float64).max().alias("_lon_high"),
             pl.col("low").cast(pl.Float64).min().alias("_lon_low"),
-            close_expr.last().alias("_lon_close"),
         )
         .sort("_phase_session_date")
-        .with_columns(pl.col("_lon_close").shift(1).alias("_prev_close"))
+        .with_columns((pl.col("_lon_high") - pl.col("_lon_low")).alias("_london_range"))
         .with_columns(
-            pl.max_horizontal(
-                pl.col("_lon_high") - pl.col("_lon_low"),
-                (pl.col("_lon_high") - pl.col("_prev_close")).abs().fill_null(0.0),
-                (pl.col("_lon_low") - pl.col("_prev_close")).abs().fill_null(0.0),
-            ).alias("_tr")
-        )
-        .with_columns(
-            pl.col("_tr")
+            pl.col("_london_range")
             .shift(1)
             .rolling_mean(window_size=_LONDON_ATR_DAYS, min_samples=1)
             .alias("_london_atr14_prior")

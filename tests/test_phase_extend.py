@@ -77,6 +77,24 @@ def test_science_keeps_numeric_horizon_and_adds_phase() -> None:
     assert PHASE_GIVEBACK_ATR_FRAC == 0.1
 
 
+def test_london_atr_is_session_range_not_overnight_gap() -> None:
+    """فجوة آسيا بين يومين لا تُضخّم ATR لندن."""
+    prior = _london_story(day=2, n=3, close=120.0, high=150.0, low=100.0, story=0)
+    prior = prior.with_columns(
+        pl.lit(150.0).alias("high"),
+        pl.lit(100.0).alias("low"),
+        pl.lit(120.0).alias("close"),
+    )
+    today = _london_story(day=3, n=3, close=400.0, high=450.0, low=400.0, story=1)
+    today = today.with_columns(
+        pl.lit(450.0).alias("high"),
+        pl.lit(400.0).alias("low"),
+        pl.lit(420.0).alias("close"),
+    )
+    atr = prior_london_atr14(pl.concat([prior, today]))
+    assert atr[3:] == pytest.approx([50.0, 50.0, 50.0])
+
+
 def test_london_atr_excludes_current_london_session() -> None:
     prior = _london_story(day=2, n=3, close=110.0, high=150.0, low=100.0, story=0)
     # Force OHLC on prior day: range 50
