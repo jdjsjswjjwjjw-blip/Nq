@@ -620,8 +620,9 @@ def _write_wave_position(report: BehaviorPeriodReport, out: Path) -> None:
         "",
         "## Wave position (develop / OOF only)",
         "",
-        "Where the first labeled setup sits on the completed wave",
-        "(0–20 / 20–40 / 40–60 / 60+). Peak is diagnostic look-ahead, not a feature.",
+        "Where the first labeled setup sits on the expansion run after the",
+        "expansion is visible (0–20 second leg / 20–40 / 40–60 / 60+).",
+        "Short waves are dropped. Peak is diagnostic look-ahead, not a feature.",
         "Holdout never scored. See `WAVE.md`.",
         "",
     ]

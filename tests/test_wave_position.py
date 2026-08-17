@@ -12,6 +12,7 @@ import pytest
 from nq.auction_behavior.outcomes import OUTCOME_AVAILABLE_TS, SETUP_AVAILABILITY_TS
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.wave_position import (
+    PRE_EXPANSION_BIN,
     WAVE_BIN_COL,
     WavePositionConfig,
     assert_not_raw_mbo_stream,
@@ -85,30 +86,40 @@ def _setup(
     }
 
 
-def test_first_signal_at_onset_is_early_when_wave_continues() -> None:
+def _small_cfg() -> WavePositionConfig:
+    return WavePositionConfig(
+        holdout_months=None,
+        min_peak_ticks=8.0,
+        expansion_start_ticks=16.0,
+        min_expansion_run_ticks=8.0,
+    )
+
+
+def _large_cfg() -> WavePositionConfig:
+    return WavePositionConfig(
+        holdout_months=None,
+        min_peak_ticks=80.0,
+        expansion_start_ticks=16.0,
+        min_expansion_run_ticks=32.0,
+    )
+
+
+def test_first_signal_at_onset_is_pre_expansion() -> None:
     blended = _story_bars(story=1, start=10, beyond=[2.0, 10.0, 40.0, 50.0])
     labeled = pl.DataFrame([_setup(story=1, ts=10, y=1.0, beyond=2.0, extreme=2.0)])
-    report = run_wave_position(
-        labeled,
-        blended,
-        config=WavePositionConfig(holdout_months=None, min_peak_ticks=8.0),
-    )
+    report = run_wave_position(labeled, blended, config=_small_cfg())
     row = report.first_signals.filter(pl.col("role") == "first_signal").row(0, named=True)
-    assert row[WAVE_BIN_COL] == "early_prediction"
-    assert abs(float(row["wave_frac"]) - 2.0 / 50.0) < 1e-9
+    assert row[WAVE_BIN_COL] == PRE_EXPANSION_BIN
+    assert float(row["wave_frac"]) == 0.0
 
 
 def test_signal_near_peak_is_late_prediction() -> None:
     blended = _story_bars(story=2, start=10, beyond=[2.0, 20.0, 40.0, 50.0])
     labeled = pl.DataFrame([_setup(story=2, ts=12, y=1.0, beyond=40.0, extreme=40.0)])
-    report = run_wave_position(
-        labeled,
-        blended,
-        config=WavePositionConfig(holdout_months=None, min_peak_ticks=8.0),
-    )
+    report = run_wave_position(labeled, blended, config=_small_cfg())
     row = report.first_signals.filter(pl.col("role") == "first_signal").row(0, named=True)
     assert row[WAVE_BIN_COL] == "late_prediction"
-    assert float(row["wave_frac"]) == pytest.approx(0.8)
+    assert float(row["wave_frac"]) == pytest.approx((40.0 - 20.0) / (50.0 - 20.0))
 
 
 def test_holdout_waves_are_excluded() -> None:
@@ -133,7 +144,12 @@ def test_holdout_waves_are_excluded() -> None:
     report = run_wave_position(
         labeled,
         blended,
-        config=WavePositionConfig(holdout_months=4, min_peak_ticks=8.0),
+        config=WavePositionConfig(
+            holdout_months=4,
+            min_peak_ticks=8.0,
+            expansion_start_ticks=16.0,
+            min_expansion_run_ticks=8.0,
+        ),
     )
     assert report.diagnostics["holdout_scored"] is False
     assert report.diagnostics["holdout_excluded"] is True
@@ -171,23 +187,19 @@ def test_first_labeled_onset_is_not_first_success() -> None:
             _setup(story=1, ts=12, y=1.0, beyond=40.0, extreme=40.0),
         ]
     )
-    report = run_wave_position(
-        labeled,
-        blended,
-        config=WavePositionConfig(holdout_months=None, min_peak_ticks=8.0),
-    )
+    report = run_wave_position(labeled, blended, config=_small_cfg())
     first = report.first_signals.filter(pl.col("role") == "first_signal")
     assert first.height == 1
-    assert first[WAVE_BIN_COL][0] == "early_prediction"
+    assert first[WAVE_BIN_COL][0] == PRE_EXPANSION_BIN
     assert float(first["y"][0]) == 0.0
     assert report.diagnostics["mean_y_first_primary"] == 0.0
     succ = report.first_signals.filter(pl.col("role") == "first_success")
     assert succ.height == 1
-    assert succ[WAVE_BIN_COL][0] == "late_prediction"
+    assert succ[WAVE_BIN_COL][0] == "early_prediction"
     text = render_wave_position_markdown(report)
     assert "First labeled setup in the story (any y)" in text
     assert "usually not a successful extension" in text
-    assert "late_prediction" in text
+    assert "early_prediction" in text
 
 
 def test_first_model_fire_is_early_when_score_crosses_at_onset() -> None:
@@ -207,16 +219,35 @@ def test_first_model_fire_is_early_when_score_crosses_at_onset() -> None:
     report = run_wave_position(
         labeled,
         blended,
-        config=WavePositionConfig(holdout_months=None, min_peak_ticks=8.0),
+        config=_small_cfg(),
         predictions=predictions,
     )
     model = report.first_signals.filter(pl.col("role") == "first_model")
     assert model.height == 1
-    assert model[WAVE_BIN_COL][0] == "early_prediction"
+    assert model[WAVE_BIN_COL][0] == PRE_EXPANSION_BIN
     assert report.diagnostics["n_first_model_primary"] == 1
     text = render_wave_position_markdown(report)
     assert "First OOF model fire" in text
-    assert "predictive signal appears before 20%" in text
+    assert PRE_EXPANSION_BIN in text
+
+
+def test_second_leg_twenty_percent_after_expansion() -> None:
+    blended = _story_bars(story=1, start=10, beyond=[2.0, 16.0, 28.0, 48.0, 96.0])
+    labeled = pl.DataFrame([_setup(story=1, ts=12, y=1.0, beyond=28.0, extreme=28.0)])
+    report = run_wave_position(labeled, blended, config=_large_cfg())
+    row = report.first_signals.filter(pl.col("role") == "first_signal").row(0, named=True)
+    assert row["pre_expansion"] is False
+    assert row[WAVE_BIN_COL] == "early_prediction"
+    assert float(row["wave_frac"]) == pytest.approx((28.0 - 16.0) / (96.0 - 16.0))
+
+
+def test_short_waves_are_not_the_target() -> None:
+    blended = _story_bars(story=1, start=10, beyond=[2.0, 10.0, 20.0, 40.0])
+    labeled = pl.DataFrame([_setup(story=1, ts=12, y=1.0, beyond=20.0, extreme=20.0)])
+    report = run_wave_position(labeled, blended, config=_large_cfg())
+    row = report.first_signals.filter(pl.col("role") == "first_signal").row(0, named=True)
+    assert row["wave_too_small"] is True
+    assert report.diagnostics["n_large_waves"] == 0
 
 
 def test_refuses_raw_mbo() -> None:

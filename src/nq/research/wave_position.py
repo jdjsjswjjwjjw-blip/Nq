@@ -1,18 +1,18 @@
-"""موقع أول إشارة تنبؤية نسبةً إلى الموجة المكتملة.
+"""موقع الإشارة على مسار الامتداد بعد أن يبدأ — لا أول كسر، ولا الموجات القصيرة.
 
-نتائج الامتداد قالت إن المهارة الحالية استمرار حركة بدأت، لا إثبات أنها تمسك
-أول 20% من الموجة. هذه الطبقة تقيس ذلك صراحة:
+الدخول المستهدف ليس أول تكة من الموجة، وليس الحركة القصيرة. الساعة تبدأ عندما
+يصير الامتداد ظاهرًا، ثم تُقاس 20% من مسار الامتداد المتبقي (الموجة الثانية):
 
-  wave_frac = extent_at_signal / completed_wave_peak
+  expansion_frac = (extent_at_t - expansion_start) / (peak - expansion_start)
 
-  0–20%  early_prediction
-  20–40% early_continuation
-  40–60% mid_wave
-  60%+   late_prediction
+  pre_expansion     أول دفعة، قبل أن يُحسب الامتداد ظاهرًا
+  0–20%             early_prediction  ← نافذة الموجة الثانية
+  20–40%            early_continuation
+  40–60%            mid_wave
+  60%+              late_prediction
 
-``completed_wave_peak`` نظرة إلى الأمام **للتشخيص فقط** (مثل Y)، ليست ميزة.
-القرار عند ``setup_availability_ts`` يستخدم فقط المدى السببي حتى t.
-لا MBO، لا إعادة بناء، لا لمس holdout.
+الذروة وبداية الامتداد نظرة أمامية **للتشخيص فقط**. القرار عند t يستخدم المدى
+السببي فقط. موجات قصيرة تُستبعد. لا MBO، لا إعادة بناء، لا لمس holdout.
 """
 
 from __future__ import annotations
@@ -44,13 +44,18 @@ _GROUP = "_behavior_story_run"
 _EPS = 1e-12
 
 WAVE_BIN_COL = "wave_bin"
+PRE_EXPANSION_BIN = "pre_expansion"
 WAVE_BINS = (
+    PRE_EXPANSION_BIN,
     "early_prediction",
     "early_continuation",
     "mid_wave",
     "late_prediction",
 )
 WAVE_BIN_EDGES = (0.20, 0.40, 0.60)
+_DEFAULT_MIN_PEAK = 80.0
+_DEFAULT_EXPANSION_START = 16.0
+_DEFAULT_MIN_RUN = 32.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +64,9 @@ class WavePositionConfig:
 
     outcome_further: str = "y_path_further_beyond"
     group_col: str = _GROUP
-    min_peak_ticks: float = 8.0
+    min_peak_ticks: float = _DEFAULT_MIN_PEAK
+    expansion_start_ticks: float = _DEFAULT_EXPANSION_START
+    min_expansion_run_ticks: float = _DEFAULT_MIN_RUN
     holdout_months: int | None = 4
     early_prediction: float = WAVE_BIN_EDGES[0]
     early_continuation: float = WAVE_BIN_EDGES[1]
@@ -125,6 +132,7 @@ def build_wave_geometry(
     *,
     group_col: str = _GROUP,
     holdout_cut_ts: int | None = None,
+    expansion_start_ticks: float = _DEFAULT_EXPANSION_START,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
     """ذروة الموجة المكتملة لكل قصة — نظرة أمامية تشخيصية، ليست ميزة.
@@ -139,6 +147,9 @@ def build_wave_geometry(
         "wave_end_ts": pl.Int64(),
         "onset_beyond": pl.Float64(),
         "wave_peak_ticks": pl.Float64(),
+        "expansion_start_ts": pl.Int64(),
+        "expansion_start_extent": pl.Float64(),
+        "expansion_run_ticks": pl.Float64(),
         "n_bars": pl.Int64(),
         "n_bars_after_onset": pl.Int64(),
         "wave_censored_by_holdout": pl.Boolean(),
@@ -196,9 +207,27 @@ def build_wave_geometry(
     )
     n_bars = work.group_by(group_col).agg(pl.len().cast(pl.Int64).alias("n_bars"))
     waves = waves.join(n_bars, on=group_col, how="left")
-    return waves.with_columns(pl.lit(False).alias("wave_censored_by_holdout")).select(
-        list(schema.keys())
+    start_thr = float(expansion_start_ticks)
+    expansion = (
+        after.filter(pl.col("_extent") >= start_thr)
+        .sort([group_col, AVAILABILITY_TS])
+        .group_by(group_col, maintain_order=True)
+        .agg(
+            pl.col(AVAILABILITY_TS).first().alias("expansion_start_ts"),
+            pl.col("_extent").first().alias("expansion_start_extent"),
+        )
     )
+    waves = waves.join(expansion, on=group_col, how="left")
+    waves = waves.with_columns(
+        (
+            pl.col("wave_peak_ticks").cast(pl.Float64)
+            - pl.col("expansion_start_extent").cast(pl.Float64).fill_null(0.0)
+        )
+        .clip(lower_bound=0.0)
+        .alias("expansion_run_ticks"),
+        pl.lit(False).alias("wave_censored_by_holdout"),
+    )
+    return waves.select(list(schema.keys()))
 
 
 def _exclude_holdout(
@@ -260,50 +289,74 @@ def _attach_frac(
     scope: str,
     role: str,
 ) -> pl.DataFrame:
+    empty_schema = {
+        "scope": pl.Utf8(),
+        "role": pl.Utf8(),
+        cfg.group_col: pl.Int64(),
+        SETUP_AVAILABILITY_TS: pl.Int64(),
+        "y": pl.Float64(),
+        "beyond_at_t": pl.Float64(),
+        "extreme_at_t": pl.Float64(),
+        "wave_peak_ticks": pl.Float64(),
+        "full_wave_frac": pl.Float64(),
+        "expansion_start_extent": pl.Float64(),
+        "expansion_run_ticks": pl.Float64(),
+        "wave_frac": pl.Float64(),
+        WAVE_BIN_COL: pl.Utf8(),
+        "wave_too_small": pl.Boolean(),
+        "pre_expansion": pl.Boolean(),
+    }
     if setups.height == 0 or waves.height == 0 or cfg.group_col not in setups.columns:
-        return pl.DataFrame(
-            schema={
-                "scope": pl.Utf8(),
-                "role": pl.Utf8(),
-                cfg.group_col: pl.Int64(),
-                SETUP_AVAILABILITY_TS: pl.Int64(),
-                "y": pl.Float64(),
-                "beyond_at_t": pl.Float64(),
-                "extreme_at_t": pl.Float64(),
-                "wave_peak_ticks": pl.Float64(),
-                "wave_frac": pl.Float64(),
-                WAVE_BIN_COL: pl.Utf8(),
-                "wave_too_small": pl.Boolean(),
-            }
-        )
+        return pl.DataFrame(schema=empty_schema)
     beyond = _f64(setups, "path_beyond_asia_ticks")
     extreme = _f64(setups, "path_extreme_ticks")
     extent_t = pl.max_horizontal(beyond, extreme)
+    wave_cols = [
+        cfg.group_col,
+        "wave_onset_ts",
+        "wave_peak_ts",
+        "wave_peak_ticks",
+        "onset_beyond",
+        "wave_censored_by_holdout",
+    ]
+    for extra in ("expansion_start_ts", "expansion_start_extent", "expansion_run_ticks"):
+        if extra in waves.columns:
+            wave_cols.append(extra)
     joined = setups.with_columns(
         beyond.alias("beyond_at_t"),
         extreme.alias("extreme_at_t"),
         extent_t.alias("_extent_t"),
-    ).join(
-        waves.select(
-            cfg.group_col,
-            "wave_onset_ts",
-            "wave_peak_ts",
-            "wave_peak_ticks",
-            "onset_beyond",
-            "wave_censored_by_holdout",
-        ),
-        on=cfg.group_col,
-        how="inner",
-    )
+    ).join(waves.select(wave_cols), on=cfg.group_col, how="inner")
+    if "expansion_start_ts" not in joined.columns:
+        joined = joined.with_columns(
+            pl.lit(None, dtype=pl.Int64).alias("expansion_start_ts"),
+            pl.lit(None, dtype=pl.Float64).alias("expansion_start_extent"),
+            pl.col("wave_peak_ticks").cast(pl.Float64).alias("expansion_run_ticks"),
+        )
     peak = pl.col("wave_peak_ticks").cast(pl.Float64)
-    frac = (pl.col("_extent_t") / (peak + _EPS)).clip(0.0, 1.0)
-    too_small = peak < float(cfg.min_peak_ticks)
+    start_ext = pl.col("expansion_start_extent").cast(pl.Float64).fill_null(0.0)
+    run = pl.col("expansion_run_ticks").cast(pl.Float64).fill_null(0.0)
+    full_frac = (pl.col("_extent_t") / (peak + _EPS)).clip(0.0, 1.0)
+    exp_frac = ((pl.col("_extent_t") - start_ext) / (run + _EPS)).clip(0.0, 1.0)
+    start_thr = float(cfg.expansion_start_ticks)
+    pre = (
+        pl.col("expansion_start_ts").is_null()
+        | (pl.col("_extent_t") < start_thr)
+        | (pl.col(SETUP_AVAILABILITY_TS) < pl.col("expansion_start_ts"))
+    )
+    too_small = (
+        (peak < float(cfg.min_peak_ticks))
+        | pl.col("expansion_start_ts").is_null()
+        | (run < float(cfg.min_expansion_run_ticks))
+    )
     bin_expr = (
         pl.when(too_small)
         .then(pl.lit(None, dtype=pl.Utf8))
+        .when(pre)
+        .then(pl.lit(PRE_EXPANSION_BIN))
         .otherwise(
             classify_wave_bin(
-                frac,
+                exp_frac,
                 early=cfg.early_prediction,
                 early_cont=cfg.early_continuation,
                 mid=cfg.mid_wave,
@@ -314,23 +367,15 @@ def _attach_frac(
     return joined.with_columns(
         pl.lit(scope).alias("scope"),
         pl.lit(role).alias("role"),
-        frac.alias("wave_frac"),
+        full_frac.alias("full_wave_frac"),
+        start_ext.alias("expansion_start_extent"),
+        run.alias("expansion_run_ticks"),
+        pl.when(pre).then(pl.lit(0.0)).otherwise(exp_frac).alias("wave_frac"),
         too_small.alias("wave_too_small"),
+        pre.alias("pre_expansion"),
         bin_expr.alias(WAVE_BIN_COL),
         y_col.alias("y"),
-    ).select(
-        "scope",
-        "role",
-        cfg.group_col,
-        SETUP_AVAILABILITY_TS,
-        "y",
-        "beyond_at_t",
-        "extreme_at_t",
-        "wave_peak_ticks",
-        "wave_frac",
-        WAVE_BIN_COL,
-        "wave_too_small",
-    )
+    ).select(list(empty_schema.keys()))
 
 
 def _bin_summary(frame: pl.DataFrame, *, scope: str, role: str, success_only: bool) -> pl.DataFrame:
@@ -356,7 +401,22 @@ def _bin_summary(frame: pl.DataFrame, *, scope: str, role: str, success_only: bo
     if success_only and "y" in work.columns:
         work = work.filter(pl.col("y") > _ONSET)
     if work.height == 0:
-        return pl.DataFrame(schema=schema)
+        n_bins = len(WAVE_BINS)
+        return pl.DataFrame(
+            {
+                "scope": [scope] * n_bins,
+                "role": [role] * n_bins,
+                "success_only": [success_only] * n_bins,
+                WAVE_BIN_COL: list(WAVE_BINS),
+                "n": [0] * n_bins,
+                "share": [0.0] * n_bins,
+                "mean_wave_frac": [0.0] * n_bins,
+                "median_wave_frac": [0.0] * n_bins,
+                "mean_beyond_at_t": [0.0] * n_bins,
+                "mean_peak": [0.0] * n_bins,
+                "pos_rate": [0.0] * n_bins,
+            }
+        ).select(list(schema.keys()))
     total = float(work.height)
     stats = work.group_by(WAVE_BIN_COL).agg(
         pl.len().cast(pl.Int64).alias("n"),
@@ -517,6 +577,7 @@ def run_wave_position(
         blended,
         group_col=cfg.group_col,
         holdout_cut_ts=cut_i,
+        expansion_start_ticks=cfg.expansion_start_ticks,
         progress=progress,
     )
     further = _outcome_frame(develop, cfg.outcome_further)
@@ -590,6 +651,15 @@ def run_wave_position(
         "wave_peak_is_diagnostic_lookahead_not_a_feature": True,
         "primary_scope": scope,
         "n_waves": int(waves.height),
+        "n_large_waves": int(
+            waves.filter(
+                (pl.col("wave_peak_ticks") >= float(cfg.min_peak_ticks))
+                & pl.col("expansion_start_ts").is_not_null()
+                & (pl.col("expansion_run_ticks") >= float(cfg.min_expansion_run_ticks))
+            ).height
+            if waves.height and "expansion_start_ts" in waves.columns
+            else 0
+        ),
         "n_further_develop": int(further.height),
         "n_further_primary": int(primary.height),
         "n_first_primary": int(first_all.height),
@@ -598,6 +668,8 @@ def run_wave_position(
         "n_first_model_primary": int(first_model.height),
         "n_all_model_primary": int(all_model_ok.height),
         "min_peak_ticks": float(cfg.min_peak_ticks),
+        "expansion_start_ticks": float(cfg.expansion_start_ticks),
+        "min_expansion_run_ticks": float(cfg.min_expansion_run_ticks),
         "score_threshold": float(cfg.score_threshold),
         "mean_y_first_primary": first_y,
         "median_first_frac": _median_frac(first_all),
@@ -607,16 +679,24 @@ def run_wave_position(
         "median_all_model_frac": _median_frac(all_model_ok),
         "share_first_early_prediction": _share(first_all, "early_prediction"),
         "share_first_late_prediction": _share(first_all, "late_prediction"),
+        "share_first_pre_expansion": _share(first_all, PRE_EXPANSION_BIN),
         "share_first_success_early_prediction": _share(first_ok, "early_prediction"),
         "share_first_success_late_prediction": _share(first_ok, "late_prediction"),
+        "share_first_success_pre_expansion": _share(first_ok, PRE_EXPANSION_BIN),
         "share_first_model_early_prediction": _share(first_model, "early_prediction"),
         "share_first_model_late_prediction": _share(first_model, "late_prediction"),
+        "share_first_model_pre_expansion": _share(first_model, PRE_EXPANSION_BIN),
         "share_all_success_early_prediction": _share(all_ok, "early_prediction"),
         "share_all_success_late_prediction": _share(all_ok, "late_prediction"),
+        "share_all_success_pre_expansion": _share(all_ok, PRE_EXPANSION_BIN),
         "share_all_model_early_prediction": _share(all_model_ok, "early_prediction"),
         "share_all_model_late_prediction": _share(all_model_ok, "late_prediction"),
+        "share_all_model_pre_expansion": _share(all_model_ok, PRE_EXPANSION_BIN),
         "principles": (
-            "wave peak is look-ahead used only to score where the signal sat; not a feature",
+            "clock starts at visible expansion, not the first poke",
+            "early_prediction is the first 20% of the expansion run — the second-leg window",
+            "pre_expansion is the first impulse; short waves (peak < min_peak) are dropped",
+            "wave peak and expansion start are look-ahead used only to score where the signal sat",
             "extent at t is causal (path_beyond / path_extreme known at setup_availability_ts)",
             "holdout bars never enter the peak and holdout setups are never scored",
             "first_signal is the earliest labeled setup in the story (any y)",
@@ -757,36 +837,35 @@ def _reading(report: WavePositionReport) -> tuple[str, ...]:
     for claim in (
         _median_claim(
             d.get("median_first_frac"),
-            "first labeled setup in the story sits at median {p} "
-            f"of the completed wave (scope={scope}).",
+            "first labeled setup sits at median {p} of the expansion run "
+            f"(after visible expansion; scope={scope}).",
         ),
         _median_claim(
             d.get("median_first_success_frac"),
-            "first successful further-beyond in the story sits at median {p} "
-            "of the completed wave.",
+            "first successful further-beyond sits at median {p} of the expansion run.",
         ),
         _median_claim(
             d.get("median_first_model_frac"),
-            "first OOF model fire (p>=threshold) sits at median {p} of the completed wave.",
+            "first OOF model fire (p>=threshold) sits at median {p} of the expansion run.",
         ),
         _median_claim(
             d.get("median_all_success_frac"),
-            "successful further-beyond setups sit at median {p} of the completed wave.",
+            "successful further-beyond setups sit at median {p} of the expansion run.",
         ),
         _median_claim(
             d.get("median_all_model_frac"),
-            "all OOF model fires sit at median {p} of the completed wave.",
+            "all OOF model fires sit at median {p} of the expansion run.",
         ),
         _share_claim(
             float(d.get("share_first_early_prediction") or 0.0),
             float(d.get("share_first_late_prediction") or 0.0),
             early_msg=(
                 "first setups are mostly early_prediction ({p}) — "
-                "the story onset is at the start of the eventual wave."
+                "the second-leg 20% window after expansion has started."
             ),
             late_msg=(
                 "first setups are mostly late_prediction ({p}) — "
-                "the first labeled setup is already past 60% of the eventual wave."
+                "already past 60% of the expansion run."
             ),
         ),
         _share_claim(
@@ -800,13 +879,19 @@ def _reading(report: WavePositionReport) -> tuple[str, ...]:
             float(d.get("share_first_model_late_prediction") or 0.0),
             early_msg=(
                 "first model fires are mostly early_prediction ({p}) — "
-                "the predictive signal appears before 20% of the eventual wave."
+                "the signal sits in the first 20% of the expansion run."
             ),
             late_msg="first model fires are mostly late_prediction ({p}).",
         ),
     ):
         if claim:
             claims.append(claim)
+    pre_model = float(d.get("share_first_model_pre_expansion") or 0.0)
+    if pre_model >= _MAJORITY_SHARE:
+        claims.append(
+            f"first model fires are mostly pre_expansion ({pre_model:.0%}) — "
+            "still the first impulse, not the second-leg 20% after expansion."
+        )
     if first_y is not None:
         y_txt = f"those first setups have mean y_path_further_beyond={float(first_y):.2f}"
         if float(first_y) < _ONSET:
@@ -823,13 +908,13 @@ def _reading(report: WavePositionReport) -> tuple[str, ...]:
     all_model_late = float(d.get("share_all_model_late_prediction") or 0.0)
     if all_late >= _MAJORITY_SHARE and all_early < _LOW_EARLY_SHARE:
         claims.append(
-            f"the continuation-skill rows are late ({all_late:.0%} at 60%+; "
-            f"early_prediction={all_early:.0%}), matching 'the wave already started'."
+            f"the continuation-skill rows are late ({all_late:.0%} at 60%+ of the expansion run; "
+            f"second-leg 20%={all_early:.0%})."
         )
     if all_model_late >= _MAJORITY_SHARE and all_model_early < _LOW_EARLY_SHARE:
         claims.append(
-            f"model fires overall are late ({all_model_late:.0%} at 60%+; "
-            f"early_prediction={all_model_early:.0%}) — continuation, not onset."
+            f"model fires overall are late ({all_model_late:.0%} at 60%+ of the expansion run; "
+            f"second-leg 20%={all_model_early:.0%})."
         )
     if not claims:
         claims.append("insufficient completed waves to locate the signal on the path.")
@@ -840,23 +925,27 @@ def render_wave_position_markdown(report: WavePositionReport) -> str:
     d = report.diagnostics
     scope = str(d.get("primary_scope", "develop"))
     lines = [
-        "# wave position — first signal vs completed wave",
+        "# wave position — second-leg entry after expansion (large waves)",
         "",
-        "Diagnostic look-ahead for the completed peak only. Features at t stay causal.",
+        "Clock starts when expansion is visible, not at the first poke.",
+        "early_prediction = first 20% of the expansion run (the second leg).",
+        "pre_expansion = first impulse. Short waves are dropped.",
+        "Diagnostic look-ahead for peak and expansion start only. Features at t stay causal.",
         "Holdout never scored. No MBO reload. No book reconstruction.",
         "",
-        "Bins: 0–20% early_prediction · 20–40% early_continuation · "
-        "40–60% mid_wave · 60%+ late_prediction.",
+        "Bins after expansion start: 0–20% early_prediction · 20–40% early_continuation · "
+        "40–60% mid_wave · 60%+ late_prediction · plus pre_expansion.",
         "",
         f"- primary scope: `{scope}`",
-        f"- waves: {d.get('n_waves')}",
+        f"- waves: {d.get('n_waves')} · large waves: {d.get('n_large_waves')}",
+        f"- expansion start ticks: {d.get('expansion_start_ticks')} · "
+        f"min peak: {d.get('min_peak_ticks')} · min run: {d.get('min_expansion_run_ticks')}",
         f"- first labeled setups: {d.get('n_first_primary')} "
         f"(mean y={d.get('mean_y_first_primary')})",
         f"- first successful further-beyond: {d.get('n_first_success_primary')}",
         f"- first model fire p>={d.get('score_threshold')}: {d.get('n_first_model_primary')}",
         f"- successful further-beyond setups: {d.get('n_all_success_primary')}",
         f"- model fires p>={d.get('score_threshold')}: {d.get('n_all_model_primary')}",
-        f"- min peak ticks: {d.get('min_peak_ticks')}",
         f"- holdout excluded={d.get('holdout_excluded')} · scored={d.get('holdout_scored')}",
         "",
         "## Isolation",
@@ -1058,6 +1147,7 @@ def run_wave_position_from_period_dir(
 
 
 __all__ = [
+    "PRE_EXPANSION_BIN",
     "WAVE_BINS",
     "WAVE_BIN_COL",
     "WavePositionConfig",

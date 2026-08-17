@@ -40,10 +40,16 @@ def main() -> None:
     )
     parser.add_argument("--period-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--min-peak-ticks", type=float, default=8.0)
+    parser.add_argument("--min-peak-ticks", type=float, default=80.0)
+    parser.add_argument("--expansion-start-ticks", type=float, default=16.0)
+    parser.add_argument("--min-expansion-run-ticks", type=float, default=32.0)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
-    cfg = WavePositionConfig(min_peak_ticks=float(args.min_peak_ticks))
+    cfg = WavePositionConfig(
+        min_peak_ticks=float(args.min_peak_ticks),
+        expansion_start_ticks=float(args.expansion_start_ticks),
+        min_expansion_run_ticks=float(args.min_expansion_run_ticks),
+    )
     log = PipelineProgress(enabled=not args.quiet)
     log.begin("wave_position", total_steps=2)
     report = run_wave_position_from_period_dir(args.period_dir, config=cfg, progress=log)

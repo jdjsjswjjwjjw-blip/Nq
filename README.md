@@ -646,12 +646,12 @@ scripts/run_expansion_mechanics.py \
   --output data/runs/auction_behavior_year/period_realized_path
 ```
 
-**موقع الإشارة على الموجة (مرحلة 2c):** المهارة الحالية استمرار موجة بدأت،
-وليست إثباتًا أنها تمسك أول 20%. `nq.research.wave_position` يقيس
-`extent_at_t / completed_wave_peak` لأوّل إعداد مسمّى، لأول نجاح `y=1`،
-ولأول إطلاق OOF (`p>=0.5`): 0–20% early prediction، 20–40% early
-continuation، 40–60% mid-wave، 60%+ late. الذروة نظرة أمامية للتشخيص فقط،
-ليست ميزة. الـholdout لا يدخل الذروة ولا يُقاس. التشغيل:
+**موقع الإشارة على الموجة (مرحلة 2c):** الهدف موجات **كبيرة** والدخول بعد أن
+يبدأ الامتداد — أول 20% من مسار الامتداد (الموجة الثانية)، لا أول كسر ولا
+الحركة القصيرة. `nq.research.wave_position` يقيس
+`(extent_at_t - expansion_start) / (peak - expansion_start)`. الافتراضي:
+ذروة ≥ 80 تكة، بداية امتداد عند 16 تكة. `pre_expansion` = الدفعة الأولى.
+الذروة وبداية الامتداد نظرة أمامية للتشخيص فقط. الـholdout لا يُقاس. التشغيل:
 
 ```text
 scripts/run_wave_position.py \
