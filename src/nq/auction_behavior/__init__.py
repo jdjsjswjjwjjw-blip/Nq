@@ -24,6 +24,11 @@ from nq.auction_behavior.path_confirm import (
     PATH_CONFIRM_COLUMNS,
     attach_path_depth_confirmation,
 )
+from nq.auction_behavior.phase_extend import (
+    PHASE_EXTEND_TARGETS,
+    Y_PHASE_EXTEND,
+    build_phase_extend_outcomes,
+)
 from nq.auction_behavior.pipeline import (
     AuctionBehaviorResult,
     BehaviorConfig,
@@ -55,8 +60,10 @@ __all__ = [
     "FIRST_TRANSITION_CLASSES",
     "MOMENTUM_FEATURE_COLUMNS",
     "PATH_CONFIRM_COLUMNS",
+    "PHASE_EXTEND_TARGETS",
     "PROJECTION_NUMERIC_COLUMNS",
     "REALIZED_NEXT_PATH_CLASSES",
+    "Y_PHASE_EXTEND",
     "AblationReport",
     "AsiaLondonProjectionConfig",
     "AuctionBehaviorResult",
@@ -77,6 +84,7 @@ __all__ = [
     "behavior_probability_summary",
     "behavior_state_frame",
     "build_asia_london_projection",
+    "build_phase_extend_outcomes",
     "build_realized_next_path_outcomes",
     "latest_state_snapshot",
     "run_auction_behavior_analysis",
