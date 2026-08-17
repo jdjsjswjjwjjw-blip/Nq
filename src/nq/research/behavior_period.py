@@ -50,6 +50,11 @@ from nq.research.feature_exit import (
     run_feature_exit,
     write_feature_exit_report,
 )
+from nq.research.london_atr_target import (
+    LondonAtrConfig,
+    run_london_atr,
+    write_london_atr_report,
+)
 from nq.research.p_sizing import (
     PSizingConfig,
     run_p_sizing,
@@ -571,6 +576,7 @@ def write_behavior_period_report(
     _write_causal_entry(report, out)
     _write_feature_exit(report, out)
     _write_p_sizing(report, out)
+    _write_london_atr(report, out)
     return out
 
 
@@ -752,6 +758,36 @@ def _write_p_sizing(report: BehaviorPeriodReport, out: Path) -> None:
         "",
         "Size from OOF `p`; exit on the next fresh OOF flip. Live p is never used.",
         "Delete `_write_p_sizing` to remove. See `P_SIZING.md`.",
+        "",
+    ]
+    period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
+
+
+def _write_london_atr(report: BehaviorPeriodReport, out: Path) -> None:
+    """طبقة ز قابلة للخلع — ATR لندن + هاي آسيا. احذف هذه الدالة لإزالتها."""
+    labeled = report.science.labeled
+    blended = report.blended
+    if labeled.height == 0 or blended.height == 0:
+        return
+    oof, oof_ts, cut_ts, months = _overlay_oof_cut(report)
+    overlay = run_london_atr(
+        labeled,
+        blended,
+        config=LondonAtrConfig(holdout_months=months),
+        oof_availability_ts=oof_ts,
+        holdout_cut_ts=cut_ts,
+        predictions=oof if oof.height else None,
+    )
+    write_london_atr_report(overlay, out)
+    period = out / "PERIOD.md"
+    extra = [
+        "",
+        "## London ATR target (removable layer G) — OOF test, London-session vol only",
+        "",
+        "Not live execution. ATR from previous 14 completed London High-Low",
+        "ranges; target is Asia session extreme capped at 0.5 London ATR;",
+        "stop is 0.2 London ATR; min RR 2; hold until London session end.",
+        "Delete `_write_london_atr` to remove. See `LONDON_ATR.md`.",
         "",
     ]
     period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")

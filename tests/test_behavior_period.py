@@ -286,6 +286,8 @@ def test_period_science_is_pooled_walk_forward_not_daily_average(tmp_path: Path)
     assert "removable" in (out / "FEATURE_EXIT.md").read_text(encoding="utf-8").lower()
     assert (out / "P_SIZING.md").is_file()
     assert "removable" in (out / "P_SIZING.md").read_text(encoding="utf-8").lower()
+    assert (out / "LONDON_ATR.md").is_file()
+    assert "removable" in (out / "LONDON_ATR.md").read_text(encoding="utf-8").lower()
 
 
 def test_period_helpers_not_reexported_from_package_init() -> None:
@@ -294,3 +296,4 @@ def test_period_helpers_not_reexported_from_package_init() -> None:
     assert "run_behavior_period_science" not in nq.auction_behavior.__all__
     assert "run_feature_exit" not in nq.research.__all__
     assert "run_p_sizing" not in nq.research.__all__
+    assert "run_london_atr" not in nq.research.__all__
