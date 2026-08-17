@@ -278,6 +278,9 @@ def test_period_science_is_pooled_walk_forward_not_daily_average(tmp_path: Path)
     assert (out / "WAVE.md").is_file()
     wave = (out / "WAVE.md").read_text(encoding="utf-8")
     assert "Holdout never scored" in wave
+    assert (out / "CAUSAL.md").is_file()
+    causal = (out / "CAUSAL.md").read_text(encoding="utf-8")
+    assert "completed-wave" in causal.lower() or "Holdout" in causal
 
 
 def test_period_helpers_not_reexported_from_package_init() -> None:

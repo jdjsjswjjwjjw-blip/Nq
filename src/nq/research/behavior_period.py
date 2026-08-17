@@ -35,6 +35,11 @@ from nq.auction_behavior.outcomes import (
 from nq.auction_behavior.science import BehaviorScienceReport, ScienceConfig, run_behavior_science
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.session import VP_LIQUIDITY_SESSION, VpLiquiditySession, session_date_from_ns
+from nq.research.causal_entry import (
+    CausalEntryConfig,
+    run_causal_entry,
+    write_causal_entry_report,
+)
 from nq.research.expansion_mechanics import (
     ExpansionMechanicsConfig,
     run_expansion_mechanics,
@@ -553,6 +558,7 @@ def write_behavior_period_report(
     (out / "PERIOD.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     _write_expansion_mechanics(report, out)
     _write_wave_position(report, out)
+    _write_causal_entry(report, out)
     return out
 
 
@@ -624,6 +630,44 @@ def _write_wave_position(report: BehaviorPeriodReport, out: Path) -> None:
         "expansion is visible (0–20 second leg / 20–40 / 40–60 / 60+).",
         "Short waves are dropped. Peak is diagnostic look-ahead, not a feature.",
         "Holdout never scored. See `WAVE.md`.",
+        "",
+    ]
+    period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
+
+
+def _write_causal_entry(report: BehaviorPeriodReport, out: Path) -> None:
+    """التقاط سببي بعد الإطلاق داخل نافذة التسمية — بلا ذروة وبلا holdout."""
+    labeled = report.science.labeled
+    blended = report.blended
+    if labeled.height == 0 or blended.height == 0:
+        return
+    oof = report.science.conditional_oof_predictions
+    oof_ts: tuple[int, ...] | None = None
+    if oof.height:
+        ts_col = SETUP_AVAILABILITY_TS if SETUP_AVAILABILITY_TS in oof.columns else AVAILABILITY_TS
+        if ts_col in oof.columns:
+            oof_ts = tuple(int(t) for t in oof[ts_col].to_list())
+    cut_raw = report.science.diagnostics.get("holdout_cut_ts")
+    cut_ts = int(cut_raw) if cut_raw is not None and int(cut_raw) >= 0 else None
+    holdout_months = report.science.diagnostics.get("holdout_months")
+    months = int(holdout_months) if holdout_months is not None else None
+    causal = run_causal_entry(
+        labeled,
+        blended,
+        config=CausalEntryConfig(holdout_months=months),
+        oof_availability_ts=oof_ts,
+        holdout_cut_ts=cut_ts,
+        predictions=oof if oof.height else None,
+    )
+    write_causal_entry_report(causal, out)
+    period = out / "PERIOD.md"
+    extra = [
+        "",
+        "## Causal entry capture (develop / OOF only)",
+        "",
+        "MFE / MAE / realized after a live model fire inside the labeled",
+        "competing-risk window. Late confirmed uses a fixed printed threshold,",
+        "not completed-wave peak. Holdout never scored. See `CAUSAL.md`.",
         "",
     ]
     period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
