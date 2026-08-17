@@ -32,6 +32,7 @@ MIN_P_PHASE = 0.5
 QUALITY_HORIZON_BARS = 50
 FAR_TARGET_POINTS = 20.0
 _GROUP = "_behavior_story_run"
+_DAY = "_period_day_id"
 _ONSET = 0.5
 _FIXED_POINT_FLOOR = 1.0 / float(PRICE_SCALE)
 
@@ -170,6 +171,8 @@ def score_entry_quality(
         "hit_far": pl.Boolean(),
         "window_complete": pl.Boolean(),
         "horizon_bars": pl.Int64(),
+        "story_run": pl.Int64(),
+        "day_id": pl.Utf8(),
     }
     if fires.height == 0 or blended.height == 0:
         return pl.DataFrame(schema=schema)
@@ -217,6 +220,10 @@ def score_entry_quality(
         if has_asia
         else np.zeros(n, dtype=np.float64)
     )
+    has_day = _DAY in work.columns
+    day_ids = (
+        [str(x) if x is not None else "" for x in work[_DAY].to_list()] if has_day else [""] * n
+    )
     rows: list[dict[str, object]] = []
     for rec in fires.iter_rows(named=True):
         setup = int(rec[SETUP_AVAILABILITY_TS])
@@ -254,6 +261,8 @@ def score_entry_quality(
                 "hit_far": q["hit_far"],
                 "window_complete": q["window_complete"],
                 "horizon_bars": int(q["horizon_bars"]),
+                "story_run": int(groups[i]),
+                "day_id": day_ids[i],
             }
         )
     return pl.DataFrame(rows, schema=schema) if rows else pl.DataFrame(schema=schema)
@@ -325,9 +334,17 @@ def summarize_cohort(quality: pl.DataFrame, cohort: str) -> dict[str, Any]:
     mae = part["mae_pts"].to_list() if n else []
     mfe = part["mfe_pts"].to_list() if n else []
     hits = int(part.filter(pl.col("hit_far")).height) if n else 0
+    n_stories = int(part["story_run"].n_unique()) if n and "story_run" in part.columns else 0
+    if n and "day_id" in part.columns:
+        days = [str(x) for x in part["day_id"].to_list() if str(x)]
+        n_days = len(set(days))
+    else:
+        n_days = 0
     return {
         "cohort": cohort,
         "n_fires": n,
+        "n_unique_stories": n_stories,
+        "n_unique_days": n_days,
         "mean_mae_pts": _finite_mean(mae) if n else float("nan"),
         "median_mae_pts": _finite_median(mae) if n else float("nan"),
         "mean_mfe_pts": _finite_mean(mfe) if n else float("nan"),
@@ -420,17 +437,17 @@ def write_cascade_report(
         f"- holdout_touched={holdout} · retrained={retrained}",
         f"- path gate={n_path_gate} · cascade gate={n_cas_gate}",
         "",
-        "| cohort | n gate | n scored | mean MAE | median MAE | mean MFE | hit 20+ |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| cohort | n gate | n scored | stories | mean MAE | median MAE | mean MFE | hit 20+ |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
         (
             f"| path_only | {int(diagnostics.get('n_path_only_gate', 0))} | "
-            f"{int(path_s.get('n_fires', 0))} | "
+            f"{int(path_s.get('n_fires', 0))} | {int(path_s.get('n_unique_stories', 0))} | "
             f"{_fmt(path_s.get('mean_mae_pts'))} | {_fmt(path_s.get('median_mae_pts'))} | "
             f"{_fmt(path_s.get('mean_mfe_pts'))} | {_fmt(path_s.get('hit_far_rate'))} |"
         ),
         (
             f"| path_and_phase | {int(diagnostics.get('n_path_and_phase_gate', 0))} | "
-            f"{int(cas_s.get('n_fires', 0))} | "
+            f"{int(cas_s.get('n_fires', 0))} | {int(cas_s.get('n_unique_stories', 0))} | "
             f"{_fmt(cas_s.get('mean_mae_pts'))} | {_fmt(cas_s.get('median_mae_pts'))} | "
             f"{_fmt(cas_s.get('mean_mfe_pts'))} | {_fmt(cas_s.get('hit_far_rate'))} |"
         ),

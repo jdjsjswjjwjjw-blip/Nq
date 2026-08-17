@@ -173,6 +173,8 @@ def test_cascade_improves_mae_on_synthetic_path() -> None:
     assert diag["is_live_overlay"] is False
     assert diag["overlay_fire_set_used"] is False
     assert diag["thresholds_tuned_on_oof"] is False
+    assert int(diag["path_only"]["n_unique_stories"]) == 2
+    assert int(diag["path_and_phase"]["n_unique_stories"]) == 1
 
 
 def test_write_cascade_report(tmp_path: Path) -> None:

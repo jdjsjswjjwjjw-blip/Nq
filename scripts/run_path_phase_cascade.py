@@ -46,11 +46,12 @@ _BLENDED_COLS = (
     "asia_vah",
     "asia_val",
     "_behavior_story_run",
+    "_period_day_id",
 )
 
 
 def _read_columns(path: Path, wanted: tuple[str, ...]) -> pl.DataFrame:
-    names = set(pl.scan_parquet(path).collect_schema().names())
+    names = set(pl.read_parquet_schema(path))
     cols = [c for c in wanted if c in names]
     return pl.read_parquet(path, columns=cols)
 
