@@ -294,3 +294,4 @@ def test_period_helpers_not_reexported_from_package_init() -> None:
     assert "run_behavior_period_science" not in nq.auction_behavior.__all__
     assert "run_feature_exit" not in nq.research.__all__
     assert "run_p_sizing" not in nq.research.__all__
+    assert "run_entry_replay" not in nq.research.__all__

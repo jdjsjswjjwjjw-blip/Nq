@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>NQ entry replay — 30s</title>
+<style>
+:root { --bg:#0e1116; --panel:#171b22; --line:#2a3140; --tx:#e8edf4; --mut:#8b97a8;
+  --up:#3dd68c; --dn:#f07178; --ent:#f5c542; --asia:#6ea8fe; --dec:#c084fc; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 ui-sans-serif,system-ui,sans-serif}
+header{padding:12px 18px;border-bottom:1px solid var(--line);display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+h1{margin:0;font-size:16px}
+.mut{color:var(--mut)}
+nav{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+button,select{background:#222834;color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
+input[type=number]{width:88px;background:#222834;color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:6px}
+main{display:grid;grid-template-columns:280px 1fr;min-height:calc(100vh - 58px)}
+aside{border-left:1px solid var(--line);overflow:auto;background:var(--panel)}
+aside button.row{display:block;width:100%;text-align:right;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:8px 12px;background:transparent}
+aside button.row.on{background:#243049}
+.wrap{padding:12px 16px}
+canvas{width:100%;height:420px;background:#10141c;border:1px solid var(--line);border-radius:8px}
+.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.card b{display:block;color:var(--mut);font-weight:500;font-size:11px}
+.warn{margin-top:10px;color:var(--mut);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>إطلاقات النموذج — 30 ثانية</h1>
+  <span class="mut">10 دقائق قبل الإشارة · 15 دقيقة بعدها · للعين فقط</span>
+  <nav>
+    <button id="prev" type="button">السابق</button>
+    <input id="idx" type="number" min="1" value="1"/>
+    <span class="mut" id="count">/ 0</span>
+    <button id="next" type="button">التالي</button>
+    <select id="filt">
+      <option value="all">كل الإطلاقات</option>
+      <option value="first">أول إطلاق لكل قصة</option>
+      <option value="long">صعود فقط</option>
+      <option value="short">هبوط فقط</option>
+    </select>
+  </nav>
+</header>
+<main>
+<aside id="list"></aside>
+<div class="wrap">
+  <canvas id="chart" width="1400" height="420"></canvas>
+  <div class="meta" id="meta"></div>
+  <p class="warn">المسار بعد خط الدخول نظرة أمامية للفحص. ليس فلتر تداول وليس Y علميًا.
+    الساعة هي براميل 30ث الممزوجة — لم يُغيَّر فريم الشارت.</p>
+</div>
+</main>
+<script id="data" type="application/json">%%DATA%%</script>
+<script>
+const DATA = JSON.parse(document.getElementById("data").textContent);
+let ids = [];
+let pos = 0;
+function trades(){return DATA.trades || [];}
+function applyFilter(){
+  const f = document.getElementById("filt").value;
+  ids = [];
+  trades().forEach((t,i)=>{
+    if(f==="first" && !t.first_in_story) return;
+    if(f==="long" && !(t.direction>0)) return;
+    if(f==="short" && !(t.direction<0)) return;
+    ids.push(i);
+  });
+  pos = 0;
+  renderList();
+  show();
+}
+function renderList(){
+  const el = document.getElementById("list");
+  el.innerHTML = "";
+  ids.forEach((ti, pi)=>{
+    const t = trades()[ti];
+    const b = document.createElement("button");
+    b.className = "row"+(pi===pos?" on":"");
+    b.type = "button";
+    const dir = t.direction>0?"↑":(t.direction<0?"↓":"·");
+    b.textContent = (pi+1)+". "+dir+" "+(t.entry_utc||"")+"  p="+(t.model_p==null?"?":Number(t.model_p).toFixed(2));
+    b.onclick = ()=>{pos=pi; show(); renderList();};
+    el.appendChild(b);
+  });
+  document.getElementById("count").textContent = "/ "+ids.length;
+}
+function card(k,v){return '<div class="card"><b>'+k+"</b>"+(v==null||v===""?"—":v)+"</div>";}
+function lvl(v){return (v==null||!isFinite(v))?"—":Number(v).toFixed(2);}
+function show(){
+  if(!ids.length){
+    document.getElementById("meta").innerHTML = card("صفقات","لا شيء");
+    draw(null); return;
+  }
+  const t = trades()[ids[pos]];
+  document.getElementById("idx").value = String(pos+1);
+  document.getElementById("meta").innerHTML = [
+    card("التوقيت", t.entry_utc),
+    card("p", t.model_p==null?"—":Number(t.model_p).toFixed(3)),
+    card("الاتجاه", t.direction>0?"صعود":(t.direction<0?"هبوط":"غير محدد")),
+    card("مطبوع عند الدخول", t.printed_at_entry_pts==null?"—":Number(t.printed_at_entry_pts).toFixed(2)+" نقطة"),
+    card("إغلاق الدخول", lvl(t.close_pts)),
+    card("Y التيك", t.y_tick==null?"—":Number(t.y_tick).toFixed(0)),
+    card("آسيا VAH / VAL", lvl(t.asia_vah_pts)+" / "+lvl(t.asia_val_pts)),
+    card("قرار VAH / VAL", lvl(t.decision_vah_pts)+" / "+lvl(t.decision_val_pts)),
+    card("براميل قبل / بعد", (t.n_bars_before||0)+" / "+(t.n_bars_after||0)),
+    card("قصة", t._behavior_story_run)
+  ].join("");
+  draw(t);
+}
+function draw(t){
+  const cv = document.getElementById("chart");
+  const ctx = cv.getContext("2d");
+  const w = cv.width, h = cv.height;
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle = "#10141c"; ctx.fillRect(0,0,w,h);
+  if(!t || !t.m || !t.m.length){
+    ctx.fillStyle = "#8b97a8"; ctx.fillText("لا مسار في النافذة", 24, 40); return;
+  }
+  const m = t.m, c = t.c.map(v => v==null?NaN:Number(v));
+  const finite = c.filter(v => isFinite(v));
+  const extras = [t.asia_vah_pts,t.asia_val_pts,t.decision_vah_pts,t.decision_val_pts,t.close_pts]
+    .map(Number).filter(v => isFinite(v));
+  const all = finite.concat(extras);
+  let ymin = Math.min.apply(null, all), ymax = Math.max.apply(null, all);
+  if(!(ymax>ymin)) { ymin -= 1; ymax += 1; }
+  const pad = (ymax-ymin)*0.08 || 1;
+  ymin -= pad; ymax += pad;
+  const xmin = -10, xmax = 15;
+  const L=56, R=16, T=16, B=36;
+  const X = x => L + (x-xmin)/(xmax-xmin)*(w-L-R);
+  const Y = y => T + (ymax-y)/(ymax-ymin)*(h-T-B);
+  ctx.fillStyle = "rgba(110,168,254,0.08)";
+  ctx.fillRect(X(xmin), T, X(0)-X(xmin), h-T-B);
+  ctx.strokeStyle = "#2a3140"; ctx.beginPath();
+  for(let k=-10;k<=15;k+=5){ ctx.moveTo(X(k),T); ctx.lineTo(X(k),h-B); }
+  ctx.stroke();
+  function hline(y, color, dash){
+    if(!isFinite(y)) return;
+    ctx.strokeStyle = color; ctx.setLineDash(dash||[]);
+    ctx.beginPath(); ctx.moveTo(L, Y(y)); ctx.lineTo(w-R, Y(y)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  hline(t.asia_vah_pts, "#6ea8fe", [6,4]);
+  hline(t.asia_val_pts, "#6ea8fe", [2,4]);
+  hline(t.decision_vah_pts, "#c084fc", [6,4]);
+  hline(t.decision_val_pts, "#c084fc", [2,4]);
+  ctx.strokeStyle = "#f5c542"; ctx.beginPath();
+  ctx.moveTo(X(0), T); ctx.lineTo(X(0), h-B); ctx.stroke();
+  ctx.strokeStyle = "#3dd68c"; ctx.lineWidth = 1.6; ctx.beginPath();
+  let started=false;
+  for(let i=0;i<m.length;i++){
+    if(!isFinite(c[i])) continue;
+    const px=X(m[i]), py=Y(c[i]);
+    if(!started){ ctx.moveTo(px,py); started=true; } else ctx.lineTo(px,py);
+  }
+  ctx.stroke(); ctx.lineWidth=1;
+  const ei = m.findIndex((_,i)=>Math.abs(m[i])<1e-9);
+  if(ei>=0 && isFinite(c[ei])){
+    ctx.fillStyle="#f5c542"; ctx.beginPath();
+    ctx.arc(X(m[ei]), Y(c[ei]), 4, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.fillStyle="#8b97a8"; ctx.font="12px sans-serif";
+  for(let k=-10;k<=15;k+=5){
+    ctx.fillText((k>0?"+":"")+k+"د", X(k)-10, h-12);
+  }
+  ctx.fillText("دخول", X(0)+6, T+14);
+}
+document.getElementById("prev").onclick=()=>{if(!ids.length)return; pos=(pos-1+ids.length)%ids.length; show(); renderList();};
+document.getElementById("next").onclick=()=>{if(!ids.length)return; pos=(pos+1)%ids.length; show(); renderList();};
+document.getElementById("idx").onchange=()=>{
+  const v=Number(document.getElementById("idx").value);
+  if(!ids.length) return;
+  pos=Math.min(ids.length, Math.max(1, v))-1; show(); renderList();
+};
+document.getElementById("filt").onchange=applyFilter;
+document.addEventListener("keydown", ev=>{
+  if(ev.key==="ArrowRight"||ev.key==="j") document.getElementById("next").click();
+  if(ev.key==="ArrowLeft"||ev.key==="k") document.getElementById("prev").click();
+});
+applyFilter();
+</script>
+</body>
+</html>
