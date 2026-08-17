@@ -17,6 +17,7 @@ from nq.research.wave_position import (
     assert_not_raw_mbo_stream,
     build_wave_geometry,
     classify_wave_bin,
+    render_wave_position_markdown,
     run_wave_position,
     run_wave_position_from_period_dir,
     write_wave_position_report,
@@ -92,7 +93,7 @@ def test_first_signal_at_onset_is_early_when_wave_continues() -> None:
         blended,
         config=WavePositionConfig(holdout_months=None, min_peak_ticks=8.0),
     )
-    row = report.first_signals.row(0, named=True)
+    row = report.first_signals.filter(pl.col("role") == "first_signal").row(0, named=True)
     assert row[WAVE_BIN_COL] == "early_prediction"
     assert abs(float(row["wave_frac"]) - 2.0 / 50.0) < 1e-9
 
@@ -105,7 +106,7 @@ def test_signal_near_peak_is_late_prediction() -> None:
         blended,
         config=WavePositionConfig(holdout_months=None, min_peak_ticks=8.0),
     )
-    row = report.first_signals.row(0, named=True)
+    row = report.first_signals.filter(pl.col("role") == "first_signal").row(0, named=True)
     assert row[WAVE_BIN_COL] == "late_prediction"
     assert float(row["wave_frac"]) == pytest.approx(0.8)
 
@@ -140,6 +141,7 @@ def test_holdout_waves_are_excluded() -> None:
         (pl.col("scope") == "develop")
         & (pl.col(WAVE_BIN_COL) == "late_prediction")
         & (pl.col("success_only"))
+        & (pl.col("role") == "first_signal")
     )
     assert late.height == 1
     assert int(late["n"][0]) == 0
@@ -159,6 +161,33 @@ def test_y_shuffle_does_not_change_wave_frac() -> None:
     left = a.all_setups.sort(SETUP_AVAILABILITY_TS)["wave_frac"].to_list()
     right = b.all_setups.sort(SETUP_AVAILABILITY_TS)["wave_frac"].to_list()
     assert left == right
+
+
+def test_first_labeled_onset_is_not_first_success() -> None:
+    blended = _story_bars(story=1, start=10, beyond=[2.0, 10.0, 40.0, 50.0])
+    labeled = pl.DataFrame(
+        [
+            _setup(story=1, ts=10, y=0.0, beyond=2.0, extreme=2.0),
+            _setup(story=1, ts=12, y=1.0, beyond=40.0, extreme=40.0),
+        ]
+    )
+    report = run_wave_position(
+        labeled,
+        blended,
+        config=WavePositionConfig(holdout_months=None, min_peak_ticks=8.0),
+    )
+    first = report.first_signals.filter(pl.col("role") == "first_signal")
+    assert first.height == 1
+    assert first[WAVE_BIN_COL][0] == "early_prediction"
+    assert float(first["y"][0]) == 0.0
+    assert report.diagnostics["mean_y_first_primary"] == 0.0
+    succ = report.first_signals.filter(pl.col("role") == "first_success")
+    assert succ.height == 1
+    assert succ[WAVE_BIN_COL][0] == "late_prediction"
+    text = render_wave_position_markdown(report)
+    assert "First labeled setup in the story (any y)" in text
+    assert "usually not a successful extension" in text
+    assert "late_prediction" in text
 
 
 def test_refuses_raw_mbo() -> None:
@@ -209,5 +238,6 @@ def test_period_dir_roundtrip(tmp_path: Path) -> None:
     text = (out / "WAVE.md").read_text(encoding="utf-8")
     assert "Holdout never scored" in text
     assert "early_prediction" in text
+    assert "First labeled setup in the story (any y)" in text
     assert report.diagnostics["holdout_scored"] is False
     assert report.diagnostics["wave_peak_is_diagnostic_lookahead_not_a_feature"] is True

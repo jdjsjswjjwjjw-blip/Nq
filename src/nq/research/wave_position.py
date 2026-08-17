@@ -398,6 +398,16 @@ def _first_per_story(setups: pl.DataFrame, group_col: str) -> pl.DataFrame:
     return setups.sort(SETUP_AVAILABILITY_TS).group_by(group_col, maintain_order=True).first()
 
 
+def _first_success_per_story(setups: pl.DataFrame, group_col: str) -> pl.DataFrame:
+    """أول امتداد ناجح في القصة — ليس أول صف مُسمّى ثم تصفيته."""
+    if setups.height == 0 or group_col not in setups.columns or "y" not in setups.columns:
+        return setups.head(0)
+    ok = setups.filter(pl.col("y") > _ONSET)
+    if ok.height == 0:
+        return ok
+    return ok.sort(SETUP_AVAILABILITY_TS).group_by(group_col, maintain_order=True).first()
+
+
 def _scope_slice(
     frame: pl.DataFrame,
     *,
@@ -458,22 +468,37 @@ def run_wave_position(
     primary, scope = _scope_slice(further, oof_availability_ts=oof_availability_ts)
     first_dev = _first_per_story(further, cfg.group_col)
     first_pri = _first_per_story(primary, cfg.group_col)
-    first_parts = [_attach_frac(first_dev, waves, cfg=cfg, scope="develop", role="first_signal")]
+    first_ok_dev = _first_success_per_story(further, cfg.group_col)
+    first_ok_pri = _first_success_per_story(primary, cfg.group_col)
+    first_parts = [
+        _attach_frac(first_dev, waves, cfg=cfg, scope="develop", role="first_signal"),
+        _attach_frac(first_ok_dev, waves, cfg=cfg, scope="develop", role="first_success"),
+    ]
     all_parts = [_attach_frac(further, waves, cfg=cfg, scope="develop", role="all_setups")]
     if scope != "develop":
-        first_parts.append(
-            _attach_frac(first_pri, waves, cfg=cfg, scope=scope, role="first_signal")
+        first_parts.extend(
+            [
+                _attach_frac(first_pri, waves, cfg=cfg, scope=scope, role="first_signal"),
+                _attach_frac(first_ok_pri, waves, cfg=cfg, scope=scope, role="first_success"),
+            ]
         )
         all_parts.append(_attach_frac(primary, waves, cfg=cfg, scope=scope, role="all_setups"))
     first_signals = pl.concat(first_parts, how="diagonal_relaxed")
     all_setups = pl.concat(all_parts, how="diagonal_relaxed")
-    first_summary = pl.concat(
-        [
-            _bin_summary(first_signals, scope="develop", role="first_signal", success_only=False),
-            _bin_summary(first_signals, scope=scope, role="first_signal", success_only=True),
-        ],
-        how="diagonal_relaxed",
-    )
+    first_summary_parts = [
+        _bin_summary(first_signals, scope="develop", role="first_signal", success_only=False),
+        _bin_summary(first_signals, scope="develop", role="first_signal", success_only=True),
+        _bin_summary(first_signals, scope="develop", role="first_success", success_only=True),
+    ]
+    if scope != "develop":
+        first_summary_parts.extend(
+            [
+                _bin_summary(first_signals, scope=scope, role="first_signal", success_only=False),
+                _bin_summary(first_signals, scope=scope, role="first_signal", success_only=True),
+                _bin_summary(first_signals, scope=scope, role="first_success", success_only=True),
+            ]
+        )
+    first_summary = pl.concat(first_summary_parts, how="diagonal_relaxed")
     all_summary = pl.concat(
         [
             _bin_summary(all_setups, scope="develop", role="all_setups", success_only=False),
@@ -481,12 +506,24 @@ def run_wave_position(
         ],
         how="diagonal_relaxed",
     )
+    first_all = first_signals.filter(
+        (pl.col("scope") == scope)
+        & (~pl.col("wave_too_small"))
+        & (pl.col("role") == "first_signal")
+    )
     first_ok = first_signals.filter(
-        (pl.col("scope") == scope) & (~pl.col("wave_too_small")) & (pl.col("y") > _ONSET)
+        (pl.col("scope") == scope)
+        & (~pl.col("wave_too_small"))
+        & (pl.col("role") == "first_success")
     )
     all_ok = all_setups.filter(
         (pl.col("scope") == scope) & (~pl.col("wave_too_small")) & (pl.col("y") > _ONSET)
     )
+    first_y: float | None = None
+    if first_all.height and "y" in first_all.columns:
+        y_arr = first_all["y"].drop_nulls().to_numpy().astype(np.float64)
+        if y_arr.size:
+            first_y = float(np.mean(y_arr))
     diagnostics: dict[str, Any] = {
         "empty": False,
         "holdout_scored": False,
@@ -498,11 +535,16 @@ def run_wave_position(
         "n_waves": int(waves.height),
         "n_further_develop": int(further.height),
         "n_further_primary": int(primary.height),
+        "n_first_primary": int(first_all.height),
         "n_first_success_primary": int(first_ok.height),
         "n_all_success_primary": int(all_ok.height),
         "min_peak_ticks": float(cfg.min_peak_ticks),
+        "mean_y_first_primary": first_y,
+        "median_first_frac": _median_frac(first_all),
         "median_first_success_frac": _median_frac(first_ok),
         "median_all_success_frac": _median_frac(all_ok),
+        "share_first_early_prediction": _share(first_all, "early_prediction"),
+        "share_first_late_prediction": _share(first_all, "late_prediction"),
         "share_first_success_early_prediction": _share(first_ok, "early_prediction"),
         "share_first_success_late_prediction": _share(first_ok, "late_prediction"),
         "share_all_success_early_prediction": _share(all_ok, "early_prediction"),
@@ -511,7 +553,8 @@ def run_wave_position(
             "wave peak is look-ahead used only to score where the signal sat; not a feature",
             "extent at t is causal (path_beyond / path_extreme known at setup_availability_ts)",
             "holdout bars never enter the peak and holdout setups are never scored",
-            "first_signal is the earliest labeled setup in the story",
+            "first_signal is the earliest labeled setup in the story (any y)",
+            "first_success is the earliest successful further-beyond (y=1) in the story",
             "all_setups are the further-beyond labels that produced the continuation skill",
             "0-20 early_prediction · 20-40 early_continuation · 40-60 mid_wave · 60+ late",
         ),
@@ -579,17 +622,34 @@ def _md_table(frame: pl.DataFrame, columns: Sequence[str]) -> list[str]:
 def _reading(report: WavePositionReport) -> tuple[str, ...]:
     d = report.diagnostics
     scope = str(d.get("primary_scope", "develop"))
-    first_early = float(d.get("share_first_success_early_prediction") or 0.0)
-    first_late = float(d.get("share_first_success_late_prediction") or 0.0)
+    first_early = float(d.get("share_first_early_prediction") or 0.0)
+    first_late = float(d.get("share_first_late_prediction") or 0.0)
+    first_y = d.get("mean_y_first_primary")
+    first_succ_early = float(d.get("share_first_success_early_prediction") or 0.0)
+    first_succ_late = float(d.get("share_first_success_late_prediction") or 0.0)
     all_early = float(d.get("share_all_success_early_prediction") or 0.0)
     all_late = float(d.get("share_all_success_late_prediction") or 0.0)
-    med_first = d.get("median_first_success_frac")
+    med_first = d.get("median_first_frac")
+    med_first_ok = d.get("median_first_success_frac")
     med_all = d.get("median_all_success_frac")
     claims: list[str] = []
     if med_first is not None:
         claims.append(
-            f"first successful signal sits at median {float(med_first):.0%} of the completed wave "
-            f"(scope={scope})."
+            f"first labeled setup in the story sits at median {float(med_first):.0%} "
+            f"of the completed wave (scope={scope})."
+        )
+    if first_y is not None:
+        y_txt = f"those first setups have mean y_path_further_beyond={float(first_y):.2f}"
+        if float(first_y) < _ONSET:
+            claims.append(
+                y_txt + " (the first labeled further-beyond is usually not a successful extension)."
+            )
+        else:
+            claims.append(y_txt + ".")
+    if med_first_ok is not None:
+        claims.append(
+            "first successful further-beyond in the story sits at median "
+            f"{float(med_first_ok):.0%} of the completed wave."
         )
     if med_all is not None:
         claims.append(
@@ -598,18 +658,21 @@ def _reading(report: WavePositionReport) -> tuple[str, ...]:
         )
     if first_early >= _MAJORITY_SHARE:
         claims.append(
-            f"first signals are mostly early_prediction ({first_early:.0%}) — "
-            "the system can catch the start of the wave."
+            f"first setups are mostly early_prediction ({first_early:.0%}) — "
+            "the story onset is at the start of the eventual wave."
         )
     elif first_late >= _MAJORITY_SHARE:
         claims.append(
-            f"first signals are mostly late_prediction ({first_late:.0%}) — "
+            f"first setups are mostly late_prediction ({first_late:.0%}) — "
             "the first labeled setup is already past 60% of the eventual wave."
         )
-    else:
+    if first_succ_early >= _MAJORITY_SHARE:
         claims.append(
-            f"first-signal mass is mixed (early={first_early:.0%}, late={first_late:.0%}); "
-            "this does not prove a 0–20% catch."
+            f"first successful labels are mostly early_prediction ({first_succ_early:.0%})."
+        )
+    elif first_succ_late >= _MAJORITY_SHARE:
+        claims.append(
+            f"first successful labels are mostly late_prediction ({first_succ_late:.0%})."
         )
     if all_late >= _MAJORITY_SHARE and all_early < _LOW_EARLY_SHARE:
         claims.append(
@@ -635,7 +698,9 @@ def render_wave_position_markdown(report: WavePositionReport) -> str:
         "",
         f"- primary scope: `{scope}`",
         f"- waves: {d.get('n_waves')}",
-        f"- first successful signals: {d.get('n_first_success_primary')}",
+        f"- first labeled setups: {d.get('n_first_primary')} "
+        f"(mean y={d.get('mean_y_first_primary')})",
+        f"- first successful further-beyond: {d.get('n_first_success_primary')}",
         f"- successful further-beyond setups: {d.get('n_all_success_primary')}",
         f"- min peak ticks: {d.get('min_peak_ticks')}",
         f"- holdout excluded={d.get('holdout_excluded')} · scored={d.get('holdout_scored')}",
@@ -650,15 +715,39 @@ def render_wave_position_markdown(report: WavePositionReport) -> str:
         lines.append(f"- {claim}")
     first = report.first_summary
     if first.height and "success_only" in first.columns:
-        first = first.filter(
+        first_all_tbl = first.filter(
             (pl.col("scope") == scope)
-            & (pl.col("success_only"))
+            & (~pl.col("success_only"))
             & (pl.col("role") == "first_signal")
         )
-    lines.extend(["", "## First signal in the story (successful further-beyond)", ""])
+        first_ok_tbl = first.filter(
+            (pl.col("scope") == scope)
+            & (pl.col("success_only"))
+            & (pl.col("role") == "first_success")
+        )
+    else:
+        first_all_tbl = first
+        first_ok_tbl = first
+    lines.extend(["", "## First labeled setup in the story (any y)", ""])
     lines.extend(
         _md_table(
-            first,
+            first_all_tbl,
+            (
+                WAVE_BIN_COL,
+                "n",
+                "share",
+                "mean_wave_frac",
+                "median_wave_frac",
+                "mean_beyond_at_t",
+                "mean_peak",
+                "pos_rate",
+            ),
+        )
+    )
+    lines.extend(["## First successful further-beyond in the story", ""])
+    lines.extend(
+        _md_table(
+            first_ok_tbl,
             (
                 WAVE_BIN_COL,
                 "n",
