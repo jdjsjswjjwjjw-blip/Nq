@@ -1,8 +1,11 @@
 """تسلسل أوامر داخل البرميل (1ث) → MLP وLSTM صغير. بلا دفتر وبلا concat MBO.
 
-الضغط إلى ``lf_*`` على 30ث يفقد ترتيب الإضافة/الإلغاء. هذه الطبقة تُبقي
-التسلسل داخل البرميل المكتمل عند ``t``، يومًا بيوم، ثم تقارن مجاميع 30ث
-مع MLP مسطّح وLSTM 32 وحدة على ``(T, F)``. ليست Torch وليست Transformer.
+قفل: لا تُكدَّس طبقات أعمق على هذا المدخل. OOF السنة (May–Aug 2025،
+``y_phase_extend``): aggregate AUC 0.608، MLP 0.529، LSTM-32 0.616.
+مسار 40 برميل OHLC كان 0.60–0.62. التيك/المسار ``y_path_further_beyond``
+يبقى AUC 0.94. الإشارة الناقصة ليست في البرميل ولا في صناديق 1ث ولا في
+شريط OHLC. التشغيل العملي: رأس المسار + خروج يدوي. ليست overlay حيّة.
+
 احذف الملف + السكربت + الاختبار للإزالة.
 """
 
@@ -693,6 +696,9 @@ def write_mbo_sequence_report(
         "",
         "If LSTM ≈ aggregate, 1s add/cancel order is not the missing signal.",
         "If LSTM beats aggregate and MLP, the choke was flattened time.",
+        "",
+        "Freeze: do not stack deeper nets on 30s bars, 1s MBO bins, or 40-bar OHLC.",
+        "Path/tick head (y_path_further_beyond) stays the working model; exits stay manual.",
         "",
     ]
     (out / "MBO_SEQUENCE.md").write_text("\n".join(lines), encoding="utf-8")

@@ -165,3 +165,4 @@ def test_report_writes(tmp_path: Path) -> None:
     text = (out / "MBO_SEQUENCE.md").read_text(encoding="utf-8")
     assert "mlp sequence" in text
     assert "lstm sequence" in text
+    assert "Freeze: do not stack deeper nets" in text
