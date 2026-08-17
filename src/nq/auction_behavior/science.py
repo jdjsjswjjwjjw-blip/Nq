@@ -47,9 +47,11 @@ from nq.auction_behavior.outcomes import (
     filter_resolved_outcomes,
 )
 from nq.auction_behavior.realized_path import (
+    EXTEND_HORIZON_BARS,
+    EXTEND_HORIZON_POINTS,
     build_competing_outcomes_for_family,
-    build_realized_path_binary_outcomes,
     competing_family_spec,
+    concat_path_and_horizon_binaries,
     science_outcome_targets,
 )
 from nq.auction_behavior.walk_forward import (
@@ -78,7 +80,7 @@ class ScienceConfig:
     min_train_size: int = 16
     holdout_frac: float = 0.2
     l2: float = 1.0
-    max_features: int = 64
+    max_features: int = 68
     use_month_folds: bool = True
     evaluate_holdout: bool = False
     #: Holdout بآخر N شهور تقويمية (سنة 4/4/4). إن وُجد يُلغى ``holdout_frac``.
@@ -99,6 +101,9 @@ class ScienceConfig:
     competing_window: int = 30
     competing_min_train: int = 24
     competing_min_class: int = 3
+    #: أفق الامتداد: 50 برميل × 30ث = 25 دقيقة، 5 نقاط NQ. لا يغيّر نافذة المسار.
+    extend_horizon_bars: int = EXTEND_HORIZON_BARS
+    extend_points: float = EXTEND_HORIZON_POINTS
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,17 +205,19 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         group_col=group_col,
         progress=progress,
     )
-    path_binaries = build_realized_path_binary_outcomes(
+    path_and_horizon = concat_path_and_horizon_binaries(
         blended,
-        window=max(int(cfg.competing_window), int(cfg.outcome_window)),
+        path_window=max(int(cfg.competing_window), int(cfg.outcome_window)),
+        extend_window=int(cfg.extend_horizon_bars),
+        extend_points=float(cfg.extend_points),
         group_col=group_col,
         progress=progress,
     )
-    if path_binaries.height:
+    if path_and_horizon.height:
         outcomes = (
-            pl.concat([outcomes, path_binaries], how="diagonal_relaxed")
+            pl.concat([outcomes, path_and_horizon], how="diagonal_relaxed")
             if outcomes.height
-            else path_binaries
+            else path_and_horizon
         )
     labeled_all = attach_outcome_availability_guard(blended, outcomes)
     if labeled_all.height and "outcome_name" in labeled_all.columns:
@@ -656,6 +663,11 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
     n_lf = sum(1 for c in feature_names if c.startswith("lf_"))
     n_rel = sum(1 for c in feature_names if c.startswith("rel_"))
     n_path = sum(1 for c in feature_names if c.startswith("path_"))
+    n_momentum = sum(
+        1
+        for c in feature_names
+        if c in {"roc_10", "cvd_20", "distance_to_vwap", "range_width_ratio"}
+    )
     n_mem = sum(
         1
         for c in feature_names
@@ -725,6 +737,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
             "n_level_flow_features": n_lf,
             "n_reliability_features": n_rel,
             "n_path_features": n_path,
+            "n_momentum_features": n_momentum,
             "n_memory_features": n_mem,
             "n_folds": len(folds),
             "n_oof_prediction_rows": int(conditional_oof_predictions.height),
@@ -751,6 +764,8 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 "family_aware_feature_selection",
                 "asia_london_projection_state",
                 "path_depth_confirmation_no_if",
+                "momentum_roc_cvd_vwap_range_beside_vp",
+                "extend_5pts_25min_horizon_y",
                 "platt_calibration_causal_tail",
                 "calibration_ece_brier_bss",
                 "walk_forward_unique_setup",

@@ -23,6 +23,7 @@ from nq.auction_behavior.outcomes import (
     SETUP_AVAILABILITY_TS,
     build_first_transition_outcomes,
 )
+from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.progress import ProgressLike
 from nq.validation.leakage import assert_causal_order
@@ -77,6 +78,13 @@ REALIZED_PATH_BINARY_TARGETS = (
     "y_path_continue",
     "y_path_reverse",
 )
+
+#: امتداد 5 نقاط NQ خلال 25 دقيقة (50 برميل × 30ث) — بجانب ثنائيات المسار، لا بدلًا منها.
+Y_EXTEND_5PTS_25MIN = "y_extend_5pts_25min"
+EXTEND_HORIZON_TARGETS = (Y_EXTEND_5PTS_25MIN,)
+EXTEND_HORIZON_BARS = 50
+EXTEND_HORIZON_POINTS = 5.0
+_FIXED_POINT_FLOOR = 1.0 / float(PRICE_SCALE)
 
 _BEYOND = "path_beyond_asia_ticks"
 _INSIDE = "path_inside_asia_va"
@@ -401,6 +409,165 @@ def build_realized_path_binary_outcomes(
     return out
 
 
+def _price_to_points(px: float) -> float:
+    """إغلاق ``blended`` ثابت-النقطة → نقاط NQ؛ الاختبارات الصغيرة تبقى بالدولار."""
+    value = float(px)
+    if abs(value) >= _FIXED_POINT_FLOOR:
+        return value * float(PRICE_SCALE)
+    return value
+
+
+def build_extend_horizon_outcomes(  # noqa: PLR0912, PLR0915
+    frame: pl.DataFrame,
+    *,
+    window: int = EXTEND_HORIZON_BARS,
+    extend_points: float = EXTEND_HORIZON_POINTS,
+    group_col: str | None = None,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
+    """هل امتد السعر ``extend_points`` نقطة خلال ``window`` برميل بعد onset المسار؟
+
+    النافذة تنظر إلى ``t+1..t+window`` داخل نفس القصة فقط. الاتجاه من
+    ``proj_break_direction`` إن وُجد، وإلا من موقع الإغلاق مقابل آسيا VA،
+    وإلا أي اتجاه. نافذة ناقصة بلا إصابة = censored.
+    """
+    schema = _binary_schema()
+    if window < 1:
+        raise ValueError(f"window must be >= 1, got {window}")
+    if extend_points <= 0.0:
+        raise ValueError(f"extend_points must be > 0, got {extend_points}")
+    if frame.height == 0 or AVAILABILITY_TS not in frame.columns:
+        return pl.DataFrame(schema=schema)
+    if group_col is not None and group_col not in frame.columns:
+        raise ValueError(f"group_col is missing: {group_col}")
+
+    work = frame.sort(AVAILABILITY_TS)
+    n = work.height
+    ts = work[AVAILABILITY_TS].to_numpy().astype(np.int64)
+    assert_causal_order(ts)
+    groups = (
+        work[group_col].fill_null(-1).to_numpy().astype(np.int64)
+        if group_col is not None
+        else np.zeros(n, dtype=np.int64)
+    )
+    beyond = _col_array(work, _BEYOND, n)
+    brk = _active(_col_array(work, _BREAK, n))
+    retest = _active(_col_array(work, _RETEST, n))
+    onset = _onset_mask(beyond, brk, retest, groups)
+    close_pts = np.array(
+        [_price_to_points(v) for v in _col_array(work, "close", n)], dtype=np.float64
+    )
+    high_pts = np.array(
+        [_price_to_points(v) for v in _col_array(work, "high", n)], dtype=np.float64
+    )
+    low_pts = np.array([_price_to_points(v) for v in _col_array(work, "low", n)], dtype=np.float64)
+    brk_dir = _col_array(work, "proj_break_direction", n)
+    asia_vah = np.array(
+        [_price_to_points(v) for v in _col_array(work, "asia_vah", n)], dtype=np.float64
+    )
+    asia_val = np.array(
+        [_price_to_points(v) for v in _col_array(work, "asia_val", n)], dtype=np.float64
+    )
+    has_asia = "asia_vah" in work.columns and "asia_val" in work.columns
+
+    if progress is not None:
+        progress.op(f"extend-horizon bars={n:,} window={window} pts={extend_points}")
+    out_rows: list[dict[str, object]] = []
+    for i in range(n):
+        if progress is not None:
+            progress.heartbeat(i + 1, n, label="extend-horizon")
+        if not onset[i]:
+            continue
+        direction = float(brk_dir[i])
+        if abs(direction) < _ONSET and has_asia:
+            if close_pts[i] >= asia_vah[i] > 0.0:
+                direction = 1.0
+            elif asia_val[i] > 0.0 and close_pts[i] <= asia_val[i]:
+                direction = -1.0
+            else:
+                direction = 0.0
+        up_level = close_pts[i] + float(extend_points)
+        down_level = close_pts[i] - float(extend_points)
+        visible = 0
+        last_j = i
+        hit_j = -1
+        for j in range(i + 1, min(n, i + window + 1)):
+            if groups[j] != groups[i]:
+                break
+            visible += 1
+            last_j = j
+            went_up = high_pts[j] >= up_level
+            went_down = low_pts[j] <= down_level
+            if direction > _ONSET:
+                hit = went_up
+            elif direction < -_ONSET:
+                hit = went_down
+            else:
+                hit = went_up or went_down
+            if hit:
+                hit_j = j
+                break
+        window_complete = visible >= int(window)
+        if hit_j >= 0:
+            status = "resolved"
+            y = 1.0
+            out_ts = int(ts[hit_j])
+            horizon = int(hit_j - i)
+        elif window_complete:
+            status = "resolved"
+            y = 0.0
+            out_ts = int(ts[last_j])
+            horizon = int(last_j - i)
+        else:
+            status = "censored"
+            y = 0.0
+            out_ts = int(ts[last_j])
+            horizon = int(last_j - i)
+        out_rows.append(
+            {
+                SETUP_AVAILABILITY_TS: int(ts[i]),
+                OUTCOME_AVAILABLE_TS: out_ts,
+                "outcome_name": Y_EXTEND_5PTS_25MIN,
+                "y": y,
+                "horizon_bars": horizon,
+                "group_id": int(groups[i]),
+                "label_status": status,
+            }
+        )
+    out = pl.DataFrame(out_rows, schema=schema) if out_rows else pl.DataFrame(schema=schema)
+    if progress is not None:
+        progress.op(f"extend_horizon rows={out.height:,}")
+    return out
+
+
+def concat_path_and_horizon_binaries(
+    frame: pl.DataFrame,
+    *,
+    path_window: int,
+    extend_window: int = EXTEND_HORIZON_BARS,
+    extend_points: float = EXTEND_HORIZON_POINTS,
+    group_col: str | None = None,
+    progress: ProgressLike | None = None,
+) -> pl.DataFrame:
+    """ثنائيات المسار + أفق الامتداد — نفس إعدادات onset، نافذتان مستقلتان."""
+    path_binaries = build_realized_path_binary_outcomes(
+        frame, window=path_window, group_col=group_col, progress=progress
+    )
+    horizon = build_extend_horizon_outcomes(
+        frame,
+        window=extend_window,
+        extend_points=extend_points,
+        group_col=group_col,
+        progress=progress,
+    )
+    parts = [part for part in (path_binaries, horizon) if part.height]
+    if not parts:
+        return path_binaries
+    if len(parts) == 1:
+        return parts[0]
+    return pl.concat(parts, how="diagonal_relaxed")
+
+
 VP_REALIZED_OUTCOME_TARGETS = (
     "y_true_break",
     "y_false_break",
@@ -422,10 +589,15 @@ def competing_family_spec(family: str) -> tuple[str, tuple[str, ...]]:
 
 
 def science_outcome_targets(*, include_assumed_scripts: bool) -> tuple[str, ...]:
-    """أهداف الثنائيات: مسار متحقق + نبض VP. القالب الجاهز اختياري للتشخيص."""
+    """أهداف الثنائيات: مسار متحقق + نبض VP + أفق الامتداد. القالب الجاهز اختياري."""
 
     scripts = PRIMARY_OUTCOME_TARGETS if include_assumed_scripts else ()
-    return (*scripts, *VP_REALIZED_OUTCOME_TARGETS, *REALIZED_PATH_BINARY_TARGETS)
+    return (
+        *scripts,
+        *VP_REALIZED_OUTCOME_TARGETS,
+        *REALIZED_PATH_BINARY_TARGETS,
+        *EXTEND_HORIZON_TARGETS,
+    )
 
 
 def build_competing_outcomes_for_family(
@@ -448,12 +620,18 @@ def build_competing_outcomes_for_family(
 
 
 __all__ = [
+    "EXTEND_HORIZON_BARS",
+    "EXTEND_HORIZON_POINTS",
+    "EXTEND_HORIZON_TARGETS",
     "REALIZED_NEXT_PATH_CLASSES",
     "REALIZED_PATH_BINARY_TARGETS",
     "VP_REALIZED_OUTCOME_TARGETS",
+    "Y_EXTEND_5PTS_25MIN",
     "build_competing_outcomes_for_family",
+    "build_extend_horizon_outcomes",
     "build_realized_next_path_outcomes",
     "build_realized_path_binary_outcomes",
     "competing_family_spec",
+    "concat_path_and_horizon_binaries",
     "science_outcome_targets",
 ]

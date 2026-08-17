@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from math import isnan
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ import numpy as np
 import polars as pl
 
 from nq.auction_behavior.ablation import AblationReport, run_behavior_ablation
+from nq.auction_behavior.momentum import attach_momentum_features
 from nq.auction_behavior.outcomes import (
     OUTCOME_AVAILABLE_TS,
     SETUP_AVAILABILITY_TS,
@@ -390,6 +392,7 @@ def run_behavior_period_science(
                 )
     if progress is not None:
         progress.op(f"period science bars={pooled.height:,} days={len(ids)}")
+    pooled = attach_momentum_features(pooled, progress=progress)
     science = run_behavior_science(pooled, config=cfg, progress=progress)
     _assert_period_science_causal(science, pooled, evaluate_holdout=bool(cfg.evaluate_holdout))
     ablation: AblationReport | None = None
@@ -423,6 +426,8 @@ def run_behavior_period_science(
             "not a mean of per-day p_*; OOF is from period folds on unique setups",
             "story runs reminted so label windows cannot cross session dates or phase-1 day files",
             "scenario labels are features/annotations; Y is the next realized transition",
+            "momentum ROC/CVD/VWAP/range attach from blended bars only (no MBO reload)",
+            "y_extend_5pts_25min sits beside path binaries; it does not replace them",
             (
                 f"protocol: {cfg.min_train_months} train / "
                 f"{cfg.walk_forward_months} walk-forward / "
@@ -444,6 +449,59 @@ def run_behavior_period_science(
 def _write_parquet(frame: pl.DataFrame, path: Path) -> None:
     if frame.height:
         frame.write_parquet(path)
+
+
+_SKILL_OUTCOMES = (
+    "y_extend_5pts_25min",
+    "y_path_further_beyond",
+    "y_path_reverse",
+    "y_retest_fail",
+    "y_false_break",
+)
+
+
+def _fmt_metric(value: object) -> str:
+    if value is None:
+        return "nan"
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return "nan"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "nan"
+    if isnan(number):
+        return "nan"
+    return f"{number:.2f}"
+
+
+def _oof_skill_lines(cal: pl.DataFrame) -> list[str]:
+    """جدول مهارة OOF للهدف الجديد وأهداف المسار/النبض المرجعية."""
+    if cal.height == 0 or "outcome_name" not in cal.columns:
+        return []
+    lines = [
+        "",
+        "## OOF skill (develop; holdout untouched)",
+        "",
+        "| target | n | base rate | AUC | Brier skill |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    shown: set[str] = set()
+    ordered = list(_SKILL_OUTCOMES)
+    present = [str(x) for x in cal["outcome_name"].to_list()]
+    for name in present:
+        if name not in ordered:
+            ordered.append(name)
+    for name in ordered:
+        part = cal.filter(pl.col("outcome_name") == name)
+        if part.height == 0 or name in shown:
+            continue
+        shown.add(name)
+        row = part.row(0, named=True)
+        lines.append(
+            f"| `{name}` | {int(row['n'])} | {_fmt_metric(row['base_rate'])} | "
+            f"{_fmt_metric(row['auc'])} | {_fmt_metric(row['brier_skill'])} |"
+        )
+    return lines
 
 
 def write_behavior_period_report(
@@ -484,6 +542,7 @@ def write_behavior_period_report(
         "n_level_flow_features": science.diagnostics.get("n_level_flow_features"),
         "n_reliability_features": science.diagnostics.get("n_reliability_features"),
         "n_path_features": science.diagnostics.get("n_path_features"),
+        "n_momentum_features": science.diagnostics.get("n_momentum_features"),
         "n_memory_features": science.diagnostics.get("n_memory_features"),
         "competing_class_counts": science.diagnostics.get("competing_class_counts"),
         "n_competing_develop": science.diagnostics.get("n_competing_develop"),
@@ -533,7 +592,9 @@ def write_behavior_period_report(
         f"- features: total={science.diagnostics.get('n_features')} "
         f"lf={science.diagnostics.get('n_level_flow_features')} "
         f"rel={science.diagnostics.get('n_reliability_features')} "
-        f"path={science.diagnostics.get('n_path_features')}",
+        f"path={science.diagnostics.get('n_path_features')} "
+        f"momentum={science.diagnostics.get('n_momentum_features')}",
+        *_oof_skill_lines(science.calibration_by_outcome),
         "",
         "## Isolation",
         "",

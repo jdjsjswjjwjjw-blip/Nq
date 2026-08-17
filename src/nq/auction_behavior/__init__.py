@@ -15,6 +15,10 @@ from nq.auction_behavior.ablation import (
     run_behavior_ablation,
 )
 from nq.auction_behavior.competing import CompetingRiskModel
+from nq.auction_behavior.momentum import (
+    MOMENTUM_FEATURE_COLUMNS,
+    attach_momentum_features,
+)
 from nq.auction_behavior.outcomes import FIRST_TRANSITION_CLASSES
 from nq.auction_behavior.path_confirm import (
     PATH_CONFIRM_COLUMNS,
@@ -49,6 +53,7 @@ from nq.auction_behavior.validate import BehaviorValidationReport
 __all__ = [
     "ABLATION_STACKS",
     "FIRST_TRANSITION_CLASSES",
+    "MOMENTUM_FEATURE_COLUMNS",
     "PATH_CONFIRM_COLUMNS",
     "PROJECTION_NUMERIC_COLUMNS",
     "REALIZED_NEXT_PATH_CLASSES",
@@ -62,6 +67,7 @@ __all__ = [
     "BehaviorValidationReport",
     "CompetingRiskModel",
     "ScienceConfig",
+    "attach_momentum_features",
     "attach_path_depth_confirmation",
     "behavior_competing_prediction_frame",
     "behavior_live_prediction_frame",

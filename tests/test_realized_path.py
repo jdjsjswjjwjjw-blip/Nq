@@ -54,6 +54,8 @@ def test_science_default_does_not_fit_assumed_scripts() -> None:
     names = science_outcome_targets(include_assumed_scripts=False)
     for script in PRIMARY_OUTCOME_TARGETS:
         assert script not in names
+    assert "y_extend_5pts_25min" in names
+    assert "y_path_further_beyond" in names
     family, classes = competing_family_spec(cfg.competing_family)
     assert family == "realized_path"
     assert classes == REALIZED_NEXT_PATH_CLASSES
