@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -61,10 +61,12 @@ def _relu(z: np.ndarray) -> np.ndarray:
 
 
 def assert_single_day_mbo(mbo: pl.DataFrame) -> None:
-    """يرفض لصق تدفق MBO عبر الأيام."""
+    """يرفض لصق تدفق MBO عبر الأيام. يفحص الحدّين فقط حتى لا يُمسَح اليوم كاملًا."""
     if mbo.height == 0 or EVENT_TS not in mbo.columns:
         return
-    dates = {session_date_from_ns(int(t)) for t in mbo[EVENT_TS].to_list()}
+    lo = int(mbo.select(pl.col(EVENT_TS).min()).item())
+    hi = int(mbo.select(pl.col(EVENT_TS).max()).item())
+    dates = {session_date_from_ns(lo), session_date_from_ns(hi)}
     if len(dates) > 1:
         raise ValueError(
             "refuse concatenated multi-day MBO; extract sequences one session day at a time"
@@ -82,6 +84,93 @@ def assert_no_future_events(mbo: pl.DataFrame, setup_ts: int) -> pl.DataFrame:
     return work
 
 
+def _mbo_event_arrays(
+    mbo: pl.DataFrame,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """مصفوفات مرتّبة بـ ``event_ts`` لنافذة البحث. بلا دفتر."""
+    if mbo.height == 0:
+        empty_i = np.zeros(0, dtype=np.int64)
+        empty_f = np.zeros(0, dtype=np.float64)
+        empty_u = np.zeros(0, dtype=np.str_)
+        return empty_i, empty_i, empty_u, empty_u, empty_f
+    work = sort_causal(mbo)
+    times = work[EVENT_TS].to_numpy().astype(np.int64, copy=False)
+    ingest = (
+        work[INGEST_TS].to_numpy().astype(np.int64, copy=False)
+        if INGEST_TS in work.columns
+        else times
+    )
+    actions = work["action"].cast(pl.Utf8).fill_null("").to_numpy()
+    sides = (
+        work["side"].cast(pl.Utf8).fill_null("N").to_numpy()
+        if "side" in work.columns
+        else np.full(work.height, "N", dtype=np.str_)
+    )
+    sizes = (
+        work["size"].cast(pl.Float64).fill_null(0.0).to_numpy()
+        if "size" in work.columns
+        else np.zeros(work.height, dtype=np.float64)
+    )
+    order = np.argsort(times, kind="mergesort")
+    return times[order], ingest[order], actions[order], sides[order], sizes[order]
+
+
+def _fill_window(
+    seq: np.ndarray,
+    *,
+    times: np.ndarray,
+    ingest: np.ndarray,
+    actions: np.ndarray,
+    sides: np.ndarray,
+    sizes: np.ndarray,
+    t_end: int,
+    n_bins: int,
+    bin_ns: int,
+) -> None:
+    t_start = int(t_end) - int(n_bins) * int(bin_ns)
+    lo = int(np.searchsorted(times, t_start, side="right"))
+    hi = int(np.searchsorted(times, t_end, side="right"))
+    if hi <= lo:
+        return
+    sl = slice(lo, hi)
+    known = ingest[sl] <= int(t_end)
+    if not np.any(known):
+        return
+    win_t = times[sl][known]
+    win_a = actions[sl][known]
+    win_s = sides[sl][known]
+    win_z = sizes[sl][known]
+    bin_end = ((win_t - 1) // int(bin_ns) + 1) * int(bin_ns)
+    idx = int(n_bins) - 1 - ((int(t_end) - bin_end) // int(bin_ns))
+    valid = (idx >= 0) & (idx < int(n_bins)) & (bin_end <= int(t_end))
+    if not np.any(valid):
+        return
+    idx_v = idx[valid]
+    act_v = win_a[valid]
+    side_v = win_s[valid]
+    sz_v = win_z[valid]
+    is_add = act_v == _ADD
+    is_cancel = act_v == _CANCEL
+    is_trade = (act_v == _TRADE) | (act_v == _FILL)
+    is_mod = act_v == _MODIFY
+    if np.any(is_add):
+        np.add.at(seq[:, 0], idx_v[is_add], 1.0)
+        np.add.at(seq[:, 4], idx_v[is_add], sz_v[is_add])
+        bid = is_add & (side_v == _BID)
+        ask = is_add & (side_v == _ASK)
+        if np.any(bid):
+            np.add.at(seq[:, 6], idx_v[bid], 1.0)
+        if np.any(ask):
+            np.add.at(seq[:, 7], idx_v[ask], 1.0)
+    if np.any(is_cancel):
+        np.add.at(seq[:, 1], idx_v[is_cancel], 1.0)
+        np.add.at(seq[:, 5], idx_v[is_cancel], sz_v[is_cancel])
+    if np.any(is_trade):
+        np.add.at(seq[:, 2], idx_v[is_trade], 1.0)
+    if np.any(is_mod):
+        np.add.at(seq[:, 3], idx_v[is_mod], 1.0)
+
+
 def build_intra_bar_sequence(
     mbo: pl.DataFrame,
     setup_ts: int,
@@ -90,60 +179,37 @@ def build_intra_bar_sequence(
     bin_ns: int = BIN_NS,
 ) -> np.ndarray:
     """``(30, 8)`` براميل 1ث مكتملة تنتهي عند ``t``. لا دفتر."""
-    seq = np.zeros((int(n_bins), N_CHANNELS), dtype=np.float64)
-    if mbo.height == 0:
-        return seq
-    t_end = int(setup_ts)
-    t_start = t_end - int(n_bins) * int(bin_ns)
-    known = assert_no_future_events(mbo, t_end)
-    known = known.filter((pl.col(EVENT_TS) > t_start) & (pl.col(EVENT_TS) <= t_end))
-    if known.height == 0:
-        return seq
-    times = known[EVENT_TS].to_numpy().astype(np.int64)
-    actions = known["action"].cast(pl.Utf8).to_list()
-    sides = (
-        known["side"].cast(pl.Utf8).to_list() if "side" in known.columns else ["N"] * known.height
+    seq = build_sequences_for_setups(
+        mbo, np.asarray([int(setup_ts)], dtype=np.int64), n_bins=n_bins, bin_ns=bin_ns
     )
-    sizes = (
-        known["size"].cast(pl.Float64).fill_null(0.0).to_list()
-        if "size" in known.columns
-        else [0.0] * known.height
-    )
-    for ts, action, side, size in zip(times.tolist(), actions, sides, sizes, strict=True):
-        bin_end = ((int(ts) - 1) // int(bin_ns) + 1) * int(bin_ns)
-        if bin_end > t_end:
-            continue
-        idx = int(n_bins) - 1 - int((t_end - bin_end) // int(bin_ns))
-        if idx < 0 or idx >= int(n_bins):
-            continue
-        act = str(action)
-        sz = float(size)
-        if act == _ADD:
-            seq[idx, 0] += 1.0
-            seq[idx, 4] += sz
-            if str(side) == _BID:
-                seq[idx, 6] += 1.0
-            elif str(side) == _ASK:
-                seq[idx, 7] += 1.0
-        elif act == _CANCEL:
-            seq[idx, 1] += 1.0
-            seq[idx, 5] += sz
-        elif act in (_TRADE, _FILL):
-            seq[idx, 2] += 1.0
-        elif act == _MODIFY:
-            seq[idx, 3] += 1.0
-    return seq
+    return np.asarray(seq[0], dtype=np.float64)
 
 
 def build_sequences_for_setups(
     mbo: pl.DataFrame,
     setup_ts: np.ndarray,
+    *,
+    n_bins: int = N_BINS,
+    bin_ns: int = BIN_NS,
 ) -> np.ndarray:
     assert_single_day_mbo(mbo)
     setups = np.asarray(setup_ts, dtype=np.int64)
-    out = np.zeros((setups.size, N_BINS, N_CHANNELS), dtype=np.float64)
+    out = np.zeros((setups.size, int(n_bins), N_CHANNELS), dtype=np.float64)
+    if mbo.height == 0 or setups.size == 0:
+        return out
+    times, ingest, actions, sides, sizes = _mbo_event_arrays(mbo)
     for i, t in enumerate(setups.tolist()):
-        out[i] = build_intra_bar_sequence(mbo, int(t))
+        _fill_window(
+            out[i],
+            times=times,
+            ingest=ingest,
+            actions=actions,
+            sides=sides,
+            sizes=sizes,
+            t_end=int(t),
+            n_bins=int(n_bins),
+            bin_ns=int(bin_ns),
+        )
     return out
 
 
@@ -256,6 +322,23 @@ def _score(y: np.ndarray, p: np.ndarray, *, train_y: np.ndarray) -> dict[str, fl
     }
 
 
+def resolve_idrive_mbo(mbo_root: Path | str, day: str) -> Path | None:
+    """``2025-05-01`` → ملف جلسة IDrive لذلك اليوم فقط. لا لصق عبر الأيام."""
+    root = Path(mbo_root)
+    yyyy, mm, dd = day.split("-")
+    stem = f"glbx-mdp3-{yyyy}{mm}{dd}"
+    month_dir = root / f"MES_MBO_{yyyy}_{mm}"
+    candidates = (
+        month_dir / f"{stem}.continuous.clean.parquet",
+        month_dir / f"{stem}.mbo.continuous.clean.parquet",
+        root / day / "mbo.parquet",
+    )
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
 def labels_from_blended(blended: pl.DataFrame) -> pl.DataFrame:
     labeled = build_phase_extend_outcomes(
         blended,
@@ -291,7 +374,7 @@ def sequences_from_day(
 
 
 def run_mbo_sequence_mlp(
-    days: Sequence[tuple[pl.DataFrame, pl.DataFrame]],
+    days: Iterable[tuple[pl.DataFrame, pl.DataFrame]],
     *,
     seed: int = 0,
     epochs: int = _EPOCHS,
@@ -327,7 +410,7 @@ def run_mbo_sequence_mlp(
         "bin_ns": BIN_NS,
         "n_bins": N_BINS,
         "target": Y_TARGET,
-        "n_days": len(days),
+        "n_days": len(xs),
         "aggregate": {"n": 0.0, "auc": float("nan"), "brier_skill": float("nan")},
         "mlp": {"n": 0.0, "auc": float("nan"), "brier_skill": float("nan")},
     }
@@ -445,6 +528,7 @@ __all__ = [
     "collapse_sequence",
     "fit_predict_logistic",
     "fit_predict_mlp",
+    "resolve_idrive_mbo",
     "run_mbo_sequence_mlp",
     "sequences_from_day",
     "write_mbo_sequence_report",

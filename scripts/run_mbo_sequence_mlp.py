@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """تسلسل MBO داخل البرميل → MLP. يوم بيوم، بلا لصق تدفق خام وبلا دفتر.
 
-يتطلب ``YYYY-MM-DD/mbo.parquet`` إلى جانب ``blended.parquet``.
-تشغيل السنة الحالي على Vast فيه blended فقط — بدون MBO لا يُقاس OOF.
+يقرأ ``blended.parquet`` من تشغيل السنة، وMBO ذلك اليوم من IDrive
+(``MES_MBO_YYYY_MM/glbx-mdp3-YYYYMMDD.continuous.clean.parquet``) أو من
+``YYYY-MM-DD/mbo.parquet``. يحمّل يوماً واحداً في الذاكرة ثم يسقطه.
 
     .venv/bin/python scripts/run_mbo_sequence_mlp.py \\
       --days-root data/runs/auction_behavior_year \\
+      --mbo-root /opt/IDriveForLinux/.../Restore_Data/2025 \\
       --output data/runs/auction_behavior_year/mbo_sequence_mlp
 """
 
@@ -13,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import polars as pl
@@ -21,7 +24,10 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from nq.ingestion.reader import load_mbo_frame  # noqa: E402
 from nq.research.mbo_sequence_mlp import (  # noqa: E402
+    HOLDOUT_START_DATE,
+    resolve_idrive_mbo,
     run_mbo_sequence_mlp,
     write_mbo_sequence_report,
 )
@@ -29,39 +35,76 @@ from nq.research.mbo_sequence_mlp import (  # noqa: E402
 _DAY_DIR_NAME_LEN = 10
 
 
-def _day_pairs(root: Path) -> list[tuple[pl.DataFrame, pl.DataFrame]]:
-    days: list[tuple[pl.DataFrame, pl.DataFrame]] = []
+def iter_day_pairs(
+    days_root: Path,
+    *,
+    mbo_root: Path | None,
+    holdout_start: str,
+    max_days: int | None,
+) -> Iterator[tuple[pl.DataFrame, pl.DataFrame]]:
+    n = 0
     missing_mbo = 0
-    for path in sorted(root.iterdir()):
+    for path in sorted(days_root.iterdir()):
         if not path.is_dir() or len(path.name) != _DAY_DIR_NAME_LEN:
             continue
+        if path.name >= holdout_start:
+            continue
         blended_path = path / "blended.parquet"
-        mbo_path = path / "mbo.parquet"
         if not blended_path.is_file():
             continue
-        if not mbo_path.is_file():
+        mbo_path = path / "mbo.parquet"
+        if mbo_root is not None:
+            resolved = resolve_idrive_mbo(mbo_root, path.name)
+            if resolved is None:
+                missing_mbo += 1
+                continue
+            mbo_path = resolved
+        elif not mbo_path.is_file():
             missing_mbo += 1
             continue
-        days.append((pl.read_parquet(mbo_path), pl.read_parquet(blended_path)))
-    if not days:
+        print(f"load {path.name} from {mbo_path}", flush=True)
+        mbo = load_mbo_frame(mbo_path)
+        blended = pl.read_parquet(blended_path)
+        yield mbo, blended
+        n += 1
+        if max_days is not None and n >= max_days:
+            return
+    if n == 0:
         raise SystemExit(
-            f"no per-day mbo.parquet under {root} "
-            f"(blended-only days={missing_mbo}). "
-            "This layer cannot run on period_blended.parquet; it needs daily MBO."
+            f"no per-day MBO under days-root={days_root} mbo-root={mbo_root} "
+            f"(blended-only/missing={missing_mbo}). "
+            "This layer cannot run on period_blended.parquet."
         )
-    return days
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Intra-bar MBO sequence MLP vs 30s aggregates")
     parser.add_argument("--days-root", type=Path, required=True)
+    parser.add_argument(
+        "--mbo-root",
+        type=Path,
+        default=None,
+        help="IDrive Restore_Data/2025 root with MES_MBO_YYYY_MM day files",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--max-days", type=int, default=None)
+    parser.add_argument("--holdout-start", type=str, default=HOLDOUT_START_DATE)
     args = parser.parse_args()
-    if "live" in str(args.days_root).lower():
+    joined = f"{args.days_root} {args.mbo_root} {args.output}".lower()
+    if "live" in joined:
         raise SystemExit("refuse live paths")
-    days = _day_pairs(args.days_root)
-    scored, diagnostics = run_mbo_sequence_mlp(days, seed=args.seed)
+    days = iter_day_pairs(
+        args.days_root,
+        mbo_root=args.mbo_root,
+        holdout_start=args.holdout_start,
+        max_days=args.max_days,
+    )
+    scored, diagnostics = run_mbo_sequence_mlp(
+        days, seed=args.seed, holdout_start=args.holdout_start
+    )
+    diagnostics["mbo_root"] = None if args.mbo_root is None else str(args.mbo_root)
+    diagnostics["max_days"] = args.max_days
     written = write_mbo_sequence_report(scored, diagnostics, args.output)
     print((written / "MBO_SEQUENCE.md").read_text(encoding="utf-8"))
 

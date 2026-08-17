@@ -19,9 +19,11 @@ from nq.research.mbo_sequence_mlp import (
     Y_TARGET,
     assert_single_day_mbo,
     build_intra_bar_sequence,
+    build_sequences_for_setups,
     collapse_sequence,
     fit_predict_logistic,
     fit_predict_mlp,
+    resolve_idrive_mbo,
     write_mbo_sequence_report,
 )
 from tests.mbo_factory import make_stream
@@ -91,6 +93,36 @@ def test_mlp_reads_cancel_order_that_aggregates_miss() -> None:
     assert float(np.min(pos) - np.max(neg)) > 0.05
     assert Y_TARGET == "y_phase_extend"
     assert HOLDOUT_START_DATE == "2025-09-01"
+
+
+def test_batched_window_matches_two_setups() -> None:
+    t = _setup_ts()
+    mbo = make_stream(
+        [
+            ("A", "B", 20_000_000_000, 3, 1),
+            ("C", "N", 0, 2, 1),
+            ("A", "A", 20_000_000_001, 1, 1),
+        ],
+        event_ts=[t - 5 * BIN_NS, t, t - BIN_NS],
+    )
+    setups = np.asarray([t - BIN_NS, t], dtype=np.int64)
+    batched = build_sequences_for_setups(mbo, setups)
+    first = build_intra_bar_sequence(mbo, int(setups[0]))
+    second = build_intra_bar_sequence(mbo, int(setups[1]))
+    assert batched.shape == (2, N_BINS, 8)
+    assert np.allclose(batched[0], first)
+    assert np.allclose(batched[1], second)
+    assert float(batched[1, :, 1].sum()) == 1.0
+    assert float(batched[0, :, 1].sum()) == 0.0
+
+
+def test_idrive_day_path_resolution(tmp_path: Path) -> None:
+    month = tmp_path / "MES_MBO_2025_05"
+    month.mkdir()
+    target = month / "glbx-mdp3-20250501.continuous.clean.parquet"
+    target.write_bytes(b"parquet")
+    assert resolve_idrive_mbo(tmp_path, "2025-05-01") == target
+    assert resolve_idrive_mbo(tmp_path, "2025-05-02") is None
 
 
 def test_report_writes(tmp_path: Path) -> None:
