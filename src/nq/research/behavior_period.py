@@ -56,6 +56,11 @@ from nq.research.p_sizing import (
     write_p_sizing_report,
 )
 from nq.research.progress import ProgressLike
+from nq.research.structure_basket import (
+    StructureBasketConfig,
+    run_structure_basket,
+    write_structure_basket_report,
+)
 from nq.research.wave_position import (
     WavePositionConfig,
     run_wave_position,
@@ -571,6 +576,7 @@ def write_behavior_period_report(
     _write_causal_entry(report, out)
     _write_feature_exit(report, out)
     _write_p_sizing(report, out)
+    _write_structure_basket(report, out)
     return out
 
 
@@ -752,6 +758,35 @@ def _write_p_sizing(report: BehaviorPeriodReport, out: Path) -> None:
         "",
         "Size from OOF `p`; exit on the next fresh OOF flip. Live p is never used.",
         "Delete `_write_p_sizing` to remove. See `P_SIZING.md`.",
+        "",
+    ]
+    period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
+
+
+def _write_structure_basket(report: BehaviorPeriodReport, out: Path) -> None:
+    """طبقة هـ قابلة للخلع — باسكت هيكل على OOF. احذف هذه الدالة لإزالتها."""
+    labeled = report.science.labeled
+    blended = report.blended
+    if labeled.height == 0 or blended.height == 0:
+        return
+    oof, oof_ts, cut_ts, months = _overlay_oof_cut(report)
+    overlay = run_structure_basket(
+        labeled,
+        blended,
+        config=StructureBasketConfig(holdout_months=months),
+        oof_availability_ts=oof_ts,
+        holdout_cut_ts=cut_ts,
+        predictions=oof if oof.height else None,
+    )
+    write_structure_basket_report(overlay, out)
+    period = out / "PERIOD.md"
+    extra = [
+        "",
+        "## Structure basket overlay (removable layer E) — OOF test",
+        "",
+        "Not live execution. Target is known liquidity at t; stop is last 5–10 bar low.",
+        "Not a 1:4 VP basket, not a chart timeframe change, not a new science Y.",
+        "Delete `_write_structure_basket` to remove. See `STRUCTURE.md`.",
         "",
     ]
     period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
