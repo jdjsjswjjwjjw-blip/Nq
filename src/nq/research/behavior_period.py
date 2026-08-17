@@ -56,6 +56,11 @@ from nq.research.p_sizing import (
     write_p_sizing_report,
 )
 from nq.research.progress import ProgressLike
+from nq.research.volatility_adjusted_target import (
+    VolatilityTargetConfig,
+    run_volatility_target,
+    write_volatility_target_report,
+)
 from nq.research.wave_position import (
     WavePositionConfig,
     run_wave_position,
@@ -571,6 +576,7 @@ def write_behavior_period_report(
     _write_causal_entry(report, out)
     _write_feature_exit(report, out)
     _write_p_sizing(report, out)
+    _write_volatility_target(report, out)
     return out
 
 
@@ -752,6 +758,35 @@ def _write_p_sizing(report: BehaviorPeriodReport, out: Path) -> None:
         "",
         "Size from OOF `p`; exit on the next fresh OOF flip. Live p is never used.",
         "Delete `_write_p_sizing` to remove. See `P_SIZING.md`.",
+        "",
+    ]
+    period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
+
+
+def _write_volatility_target(report: BehaviorPeriodReport, out: Path) -> None:
+    """طبقة و قابلة للخلع — ATR + هاي آسيا. احذف هذه الدالة لإزالتها."""
+    labeled = report.science.labeled
+    blended = report.blended
+    if labeled.height == 0 or blended.height == 0:
+        return
+    oof, oof_ts, cut_ts, months = _overlay_oof_cut(report)
+    overlay = run_volatility_target(
+        labeled,
+        blended,
+        config=VolatilityTargetConfig(holdout_months=months),
+        oof_availability_ts=oof_ts,
+        holdout_cut_ts=cut_ts,
+        predictions=oof if oof.height else None,
+    )
+    write_volatility_target_report(overlay, out)
+    period = out / "PERIOD.md"
+    extra = [
+        "",
+        "## Volatility-adjusted target (removable layer F) — OOF test, high-vol only",
+        "",
+        "Not live execution. ATR from previous 14 completed days; target is Asia",
+        "session extreme capped at 0.4 ATR; stop is 0.2 ATR; min RR 2.",
+        "Delete `_write_volatility_target` to remove. See `VOLATILITY.md`.",
         "",
     ]
     period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
