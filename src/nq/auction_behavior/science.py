@@ -46,6 +46,11 @@ from nq.auction_behavior.outcomes import (
     filter_outcomes_known_by,
     filter_resolved_outcomes,
 )
+from nq.auction_behavior.phase_extend import (
+    PHASE_EXPAND_ATR_FRAC,
+    PHASE_GIVEBACK_ATR_FRAC,
+    PHASE_HORIZON_BARS,
+)
 from nq.auction_behavior.realized_path import (
     EXTEND_HORIZON_BARS,
     EXTEND_HORIZON_POINTS,
@@ -104,6 +109,10 @@ class ScienceConfig:
     #: أفق الامتداد: 50 برميل × 30ث = 25 دقيقة، 5 نقاط NQ. لا يغيّر نافذة المسار.
     extend_horizon_bars: int = EXTEND_HORIZON_BARS
     extend_points: float = EXTEND_HORIZON_POINTS
+    #: طور هيكلي: 15 برميلًا + حد ATR لندن الديناميكي. لا يستبدل الأفق الرقمي.
+    phase_horizon_bars: int = PHASE_HORIZON_BARS
+    phase_expand_atr_frac: float = PHASE_EXPAND_ATR_FRAC
+    phase_giveback_atr_frac: float = PHASE_GIVEBACK_ATR_FRAC
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +219,9 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         path_window=max(int(cfg.competing_window), int(cfg.outcome_window)),
         extend_window=int(cfg.extend_horizon_bars),
         extend_points=float(cfg.extend_points),
+        phase_window=int(cfg.phase_horizon_bars),
+        phase_expand_atr_frac=float(cfg.phase_expand_atr_frac),
+        phase_giveback_atr_frac=float(cfg.phase_giveback_atr_frac),
         group_col=group_col,
         progress=progress,
     )
@@ -766,6 +778,7 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
                 "path_depth_confirmation_no_if",
                 "momentum_roc_cvd_vwap_range_beside_vp",
                 "extend_5pts_25min_horizon_y",
+                "phase_extend_london_atr_structural_y",
                 "platt_calibration_causal_tail",
                 "calibration_ece_brier_bss",
                 "walk_forward_unique_setup",

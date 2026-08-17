@@ -84,6 +84,9 @@ Y_EXTEND_5PTS_25MIN = "y_extend_5pts_25min"
 EXTEND_HORIZON_TARGETS = (Y_EXTEND_5PTS_25MIN,)
 EXTEND_HORIZON_BARS = 50
 EXTEND_HORIZON_POINTS = 5.0
+#: طور هيكلي — التنفيذ في ``phase_extend`` حتى لا تُستبدل أهداف النقاط.
+Y_PHASE_EXTEND = "y_phase_extend"
+PHASE_EXTEND_TARGETS = (Y_PHASE_EXTEND,)
 _FIXED_POINT_FLOOR = 1.0 / float(PRICE_SCALE)
 
 _BEYOND = "path_beyond_asia_ticks"
@@ -546,10 +549,20 @@ def concat_path_and_horizon_binaries(
     path_window: int,
     extend_window: int = EXTEND_HORIZON_BARS,
     extend_points: float = EXTEND_HORIZON_POINTS,
+    phase_window: int | None = None,
+    phase_expand_atr_frac: float | None = None,
+    phase_giveback_atr_frac: float | None = None,
     group_col: str | None = None,
     progress: ProgressLike | None = None,
 ) -> pl.DataFrame:
-    """ثنائيات المسار + أفق الامتداد — نفس إعدادات onset، نافذتان مستقلتان."""
+    """ثنائيات المسار + أفق النقاط + طور الامتداد — نفس onset، نوافذ مستقلة."""
+    from nq.auction_behavior.phase_extend import (  # noqa: PLC0415
+        PHASE_EXPAND_ATR_FRAC,
+        PHASE_GIVEBACK_ATR_FRAC,
+        PHASE_HORIZON_BARS,
+        build_phase_extend_outcomes,
+    )
+
     path_binaries = build_realized_path_binary_outcomes(
         frame, window=path_window, group_col=group_col, progress=progress
     )
@@ -560,7 +573,21 @@ def concat_path_and_horizon_binaries(
         group_col=group_col,
         progress=progress,
     )
-    parts = [part for part in (path_binaries, horizon) if part.height]
+    phase = build_phase_extend_outcomes(
+        frame,
+        window=PHASE_HORIZON_BARS if phase_window is None else int(phase_window),
+        expand_atr_frac=(
+            PHASE_EXPAND_ATR_FRAC if phase_expand_atr_frac is None else float(phase_expand_atr_frac)
+        ),
+        giveback_atr_frac=(
+            PHASE_GIVEBACK_ATR_FRAC
+            if phase_giveback_atr_frac is None
+            else float(phase_giveback_atr_frac)
+        ),
+        group_col=group_col,
+        progress=progress,
+    )
+    parts = [part for part in (path_binaries, horizon, phase) if part.height]
     if not parts:
         return path_binaries
     if len(parts) == 1:
@@ -589,7 +616,7 @@ def competing_family_spec(family: str) -> tuple[str, tuple[str, ...]]:
 
 
 def science_outcome_targets(*, include_assumed_scripts: bool) -> tuple[str, ...]:
-    """أهداف الثنائيات: مسار متحقق + نبض VP + أفق الامتداد. القالب الجاهز اختياري."""
+    """أهداف الثنائيات: مسار متحقق + نبض VP + أفق رقمي + طور هيكلي."""
 
     scripts = PRIMARY_OUTCOME_TARGETS if include_assumed_scripts else ()
     return (
@@ -597,6 +624,7 @@ def science_outcome_targets(*, include_assumed_scripts: bool) -> tuple[str, ...]
         *VP_REALIZED_OUTCOME_TARGETS,
         *REALIZED_PATH_BINARY_TARGETS,
         *EXTEND_HORIZON_TARGETS,
+        *PHASE_EXTEND_TARGETS,
     )
 
 
@@ -623,10 +651,12 @@ __all__ = [
     "EXTEND_HORIZON_BARS",
     "EXTEND_HORIZON_POINTS",
     "EXTEND_HORIZON_TARGETS",
+    "PHASE_EXTEND_TARGETS",
     "REALIZED_NEXT_PATH_CLASSES",
     "REALIZED_PATH_BINARY_TARGETS",
     "VP_REALIZED_OUTCOME_TARGETS",
     "Y_EXTEND_5PTS_25MIN",
+    "Y_PHASE_EXTEND",
     "build_competing_outcomes_for_family",
     "build_extend_horizon_outcomes",
     "build_realized_next_path_outcomes",

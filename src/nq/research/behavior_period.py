@@ -428,6 +428,7 @@ def run_behavior_period_science(
             "scenario labels are features/annotations; Y is the next realized transition",
             "momentum ROC/CVD/VWAP/range attach from blended bars only (no MBO reload)",
             "y_extend_5pts_25min sits beside path binaries; it does not replace them",
+            "y_phase_extend is structural continuity vs London ATR, not a fixed point target",
             (
                 f"protocol: {cfg.min_train_months} train / "
                 f"{cfg.walk_forward_months} walk-forward / "
@@ -452,6 +453,7 @@ def _write_parquet(frame: pl.DataFrame, path: Path) -> None:
 
 
 _SKILL_OUTCOMES = (
+    "y_phase_extend",
     "y_extend_5pts_25min",
     "y_path_further_beyond",
     "y_path_reverse",

@@ -185,3 +185,6 @@ def test_day_science_defaults_are_unchanged() -> None:
     assert cfg.max_features == 68
     assert cfg.extend_horizon_bars == 50
     assert cfg.extend_points == 5.0
+    assert cfg.phase_horizon_bars == 15
+    assert cfg.phase_expand_atr_frac == 0.2
+    assert cfg.phase_giveback_atr_frac == 0.1
