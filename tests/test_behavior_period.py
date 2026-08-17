@@ -275,6 +275,9 @@ def test_period_science_is_pooled_walk_forward_not_daily_average(tmp_path: Path)
     assert (out / "EXPANSION.md").is_file()
     expansion = (out / "EXPANSION.md").read_text(encoding="utf-8")
     assert "Holdout never scored" in expansion
+    assert (out / "WAVE.md").is_file()
+    wave = (out / "WAVE.md").read_text(encoding="utf-8")
+    assert "Holdout never scored" in wave
 
 
 def test_period_helpers_not_reexported_from_package_init() -> None:

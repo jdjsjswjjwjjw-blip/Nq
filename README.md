@@ -646,6 +646,19 @@ scripts/run_expansion_mechanics.py \
   --output data/runs/auction_behavior_year/period_realized_path
 ```
 
+**موقع الإشارة على الموجة (مرحلة 2c):** المهارة الحالية استمرار موجة بدأت،
+وليست إثباتًا أنها تمسك أول 20%. `nq.research.wave_position` يقيس
+`extent_at_t / completed_wave_peak` لأوّل إعداد في القصة: 0–20% early
+prediction، 20–40% early continuation، 40–60% mid-wave، 60%+ late.
+الذروة نظرة أمامية للتشخيص فقط، ليست ميزة. الـholdout لا يدخل الذروة ولا
+يُقاس. التشغيل:
+
+```text
+scripts/run_wave_position.py \
+  --period-dir data/runs/auction_behavior_year/period_realized_path \
+  --output data/runs/auction_behavior_year/period_realized_path
+```
+
 سبتمبر–ديسمبر 2025 لُمِس كـholdout للنسخة السابقة (`holdout_touched=true`)
 فلا يُعاد استخدامه حكمًا للنسخة الجديدة؛ التطوير على يناير–أغسطس، والحكم
 النهائي على holdout مستقل لاحقًا.
@@ -831,6 +844,7 @@ Nq/
 │   ├── run_auction_behavior_days.py    # سلوك المزاد يوم-بيوم (مرحلة 1)
 │   ├── run_auction_behavior_period.py  # علم الفترة على الحالات المجمّعة (مرحلة 2)
 │   ├── run_expansion_mechanics.py      # سبق حجم/سعر + تسلسل المزاد + حماية الامتداد
+│   ├── run_wave_position.py            # موقع أول إشارة على الموجة المكتملة
 │   └── run_liquidity_edge.py  # غلاف توافق → نفس vp_auction
 ├── docs/
 │   ├── architecture.md
