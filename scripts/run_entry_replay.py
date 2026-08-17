@@ -25,7 +25,9 @@ if sys.version_info < _MIN_PYTHON:
 
 from nq.research.entry_replay import (  # noqa: E402
     EntryReplayConfig,
+    limit_replay,
     run_entry_replay_from_period_dir,
+    write_entry_replay_png_sheets,
     write_entry_replay_report,
 )
 from nq.research.progress import PipelineProgress  # noqa: E402
@@ -40,6 +42,8 @@ def main() -> None:
     parser.add_argument("--min-p", type=float, default=0.5)
     parser.add_argument("--lookback-minutes", type=float, default=10.0)
     parser.add_argument("--lookahead-minutes", type=float, default=15.0)
+    parser.add_argument("--max-trades", type=int, default=0, help="0 = all fires")
+    parser.add_argument("--png-sheets", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
     ns_min = 60 * 1_000_000_000
@@ -51,7 +55,13 @@ def main() -> None:
     log = PipelineProgress(enabled=not args.quiet)
     log.begin("entry_replay", total_steps=2)
     report = run_entry_replay_from_period_dir(args.period_dir, config=cfg, progress=log)
+    if int(args.max_trades) > 0:
+        report = limit_replay(report, int(args.max_trades))
     written = write_entry_replay_report(report, args.output)
+    if args.png_sheets:
+        sheets = write_entry_replay_png_sheets(report, args.output)
+        for path in sheets:
+            print(f"png: {path.resolve()}", flush=True)
     log.done(f"layer=entry_replay trades={report.diagnostics.get('n_trades')}")
     html = written / "ENTRY_REPLAY.html"
     print(f"outputs: {written.resolve()}/", flush=True)

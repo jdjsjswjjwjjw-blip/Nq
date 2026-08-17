@@ -15,6 +15,8 @@ from nq.research.entry_replay import (
     DEFAULT_LOOKBACK_NS,
     EntryReplayConfig,
     extract_entry_windows,
+    limit_replay,
+    render_entry_replay_gallery_html,
     render_entry_replay_html,
     run_entry_replay,
     run_entry_replay_from_period_dir,
@@ -180,3 +182,33 @@ def test_html_roundtrip(tmp_path: Path) -> None:
     rendered = render_entry_replay_html(report)
     assert "entry_utc" in rendered
     assert "inspection" in (out / "ENTRY_REPLAY.md").read_text(encoding="utf-8")
+    gallery = (out / "ENTRY_REPLAY_GALLERY.html").read_text(encoding="utf-8")
+    assert "<svg" in gallery
+
+
+def test_limit_replay_keeps_first_n() -> None:
+    t0 = 1_000_000_000_000_000_000
+    blended = pl.concat(
+        [
+            _story(story=1, t0=t0, n_before=2, n_after=2),
+            _story(story=2, t0=t0 + 3_600_000_000_000, n_before=2, n_after=2),
+        ]
+    )
+    labeled = pl.DataFrame(
+        [
+            _setup(story=1, t0=t0),
+            _setup(story=2, t0=t0 + 3_600_000_000_000),
+        ]
+    )
+    report = run_entry_replay(
+        labeled,
+        blended,
+        config=EntryReplayConfig(
+            holdout_months=None, lookback_ns=2 * _BAR_NS, lookahead_ns=2 * _BAR_NS
+        ),
+    )
+    limited = limit_replay(report, 1)
+    assert limited.trades.height == 1
+    assert int(limited.trades["trade_id"][0]) == int(report.trades["trade_id"][0])
+    html = render_entry_replay_gallery_html(limited)
+    assert html.count("<svg") == 1
