@@ -1,8 +1,12 @@
-"""تسلسل أوامر داخل البرميل (1ث) → MLP بسيط. بلا إعادة بناء دفتر وبلا concat MBO.
+"""تسلسل أوامر داخل البرميل (1ث) → MLP وLSTM صغير. بلا دفتر وبلا concat MBO.
 
-الضغط إلى ``lf_*`` على 30ث يفقد ترتيب الإضافة/الإلغاء. هذه الطبقة تُبقي
-التسلسل داخل البرميل المكتمل عند ``t``، يومًا بيوم، ثم MLP ضحل على المصفوفة.
-ليست Torch وليست Transformer. احذف الملف + السكربت + الاختبار للإزالة.
+قفل: لا تُكدَّس طبقات أعمق على هذا المدخل. OOF السنة (May–Aug 2025،
+``y_phase_extend``): aggregate AUC 0.608، MLP 0.529، LSTM-32 0.616.
+مسار 40 برميل OHLC كان 0.60–0.62. التيك/المسار ``y_path_further_beyond``
+يبقى AUC 0.94. الإشارة الناقصة ليست في البرميل ولا في صناديق 1ث ولا في
+شريط OHLC. التشغيل العملي: رأس المسار + خروج يدوي. ليست overlay حيّة.
+
+احذف الملف + السكربت + الاختبار للإزالة.
 """
 
 from __future__ import annotations
@@ -42,6 +46,11 @@ _EPOCHS = 40
 _LR = 0.05
 _L2 = 0.01
 _BATCH = 64
+_LSTM_HIDDEN = 32
+_LSTM_EPOCHS = 25
+_LSTM_LR = 0.02
+_LSTM_L2 = 0.001
+_LSTM_CLIP = 5.0
 _MAX_SESSION_SPAN_NS = 36 * 3600 * 1_000_000_000
 _ADD = MboAction.ADD.value
 _CANCEL = MboAction.CANCEL.value
@@ -317,6 +326,142 @@ def fit_predict_mlp(
     return out
 
 
+def _tanh(z: np.ndarray) -> np.ndarray:
+    return np.asarray(np.tanh(np.clip(z, -20.0, 20.0)), dtype=np.float64)
+
+
+def _standardize_seq(x: np.ndarray, train: np.ndarray) -> np.ndarray:
+    """متوسط/انحراف القنوات من القطار فقط."""
+    src = x[train]
+    mu = src.mean(axis=(0, 1), keepdims=True)
+    sd = src.std(axis=(0, 1), keepdims=True)
+    sd = np.where(sd < _EPS, 1.0, sd)
+    return np.asarray((x - mu) / sd, dtype=np.float64)
+
+
+def _lstm_forward(
+    xb: np.ndarray,
+    wx: np.ndarray,
+    wh: np.ndarray,
+    bias: np.ndarray,
+) -> tuple[np.ndarray, list[tuple[np.ndarray, ...]]]:
+    """``xb`` شكل ``(B, T, F)``. يعيد آخر ``h`` والكاش للخلف."""
+    batch, steps, _feat = xb.shape
+    hidden = wh.shape[0]
+    h = np.zeros((batch, hidden), dtype=np.float64)
+    cell = np.zeros((batch, hidden), dtype=np.float64)
+    cache: list[tuple[np.ndarray, ...]] = []
+    for step in range(steps):
+        x_t = xb[:, step]
+        h_prev = h
+        c_prev = cell
+        pre = x_t @ wx + h_prev @ wh + bias
+        f_g = _sigmoid(pre[:, :hidden])
+        i_g = _sigmoid(pre[:, hidden : 2 * hidden])
+        o_g = _sigmoid(pre[:, 2 * hidden : 3 * hidden])
+        g_g = _tanh(pre[:, 3 * hidden :])
+        cell = f_g * c_prev + i_g * g_g
+        h = o_g * _tanh(cell)
+        cache.append((x_t, h_prev, c_prev, f_g, i_g, o_g, g_g, cell, h))
+    return h, cache
+
+
+def _lstm_backward(
+    d_h_last: np.ndarray,
+    cache: list[tuple[np.ndarray, ...]],
+    wx: np.ndarray,
+    wh: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    hidden = wh.shape[0]
+    d_wx = np.zeros_like(wx)
+    d_wh = np.zeros_like(wh)
+    d_b = np.zeros(4 * hidden, dtype=np.float64)
+    d_h = d_h_last
+    d_c = np.zeros_like(d_h)
+    for x_t, h_prev, c_prev, f_g, i_g, o_g, g_g, c_t, _h_t in reversed(cache):
+        tanh_c = _tanh(c_t)
+        d_o = d_h * tanh_c
+        d_c = d_c + d_h * o_g * (1.0 - tanh_c**2)
+        d_f = d_c * c_prev
+        d_i = d_c * g_g
+        d_g = d_c * i_g
+        d_c = d_c * f_g
+        d_pre = np.concatenate(
+            [
+                d_f * f_g * (1.0 - f_g),
+                d_i * i_g * (1.0 - i_g),
+                d_o * o_g * (1.0 - o_g),
+                d_g * (1.0 - g_g**2),
+            ],
+            axis=1,
+        )
+        d_wx = d_wx + x_t.T @ d_pre
+        d_wh = d_wh + h_prev.T @ d_pre
+        d_b = d_b + d_pre.sum(axis=0)
+        d_h = d_pre @ wh.T
+    return d_wx, d_wh, d_b
+
+
+def fit_predict_lstm(
+    x: np.ndarray,
+    y: np.ndarray,
+    train: np.ndarray,
+    *,
+    rng: np.random.Generator,
+    hidden: int = _LSTM_HIDDEN,
+    epochs: int = _LSTM_EPOCHS,
+) -> np.ndarray:
+    """LSTM واحد 32 وحدة على ``(T, F)``. حتمي من ``rng``. بلا Torch."""
+    if train.size == 0:
+        return np.full(x.shape[0], 0.5, dtype=np.float64)
+    seq = _standardize_seq(x, train)
+    n_feat = int(seq.shape[2])
+    n_hidden = int(hidden)
+    scale = 0.1
+    wx = rng.normal(0.0, scale, size=(n_feat, 4 * n_hidden))
+    wh = rng.normal(0.0, scale, size=(n_hidden, 4 * n_hidden))
+    bias = np.zeros(4 * n_hidden, dtype=np.float64)
+    bias[:n_hidden] = 1.0
+    w_out = rng.normal(0.0, scale, size=n_hidden)
+    b_out = 0.0
+    idx = train.copy()
+    for _ in range(int(epochs)):
+        rng.shuffle(idx)
+        for start in range(0, idx.size, _BATCH):
+            batch = idx[start : start + _BATCH]
+            xb = seq[batch]
+            yb = y[batch]
+            h_last, cache = _lstm_forward(xb, wx, wh, bias)
+            logit = h_last @ w_out + b_out
+            pred = _sigmoid(logit)
+            d_logit = (pred - yb) / max(1, batch.size)
+            d_w_out = h_last.T @ d_logit + _LSTM_L2 * w_out
+            d_b_out = float(d_logit.sum())
+            d_h = d_logit[:, None] * w_out[None, :]
+            d_wx, d_wh, d_b = _lstm_backward(d_h, cache, wx, wh)
+            d_wx = _clip_grad(d_wx + _LSTM_L2 * wx)
+            d_wh = _clip_grad(d_wh + _LSTM_L2 * wh)
+            d_w_out = _clip_grad(d_w_out)
+            wx = wx - _LSTM_LR * d_wx
+            wh = wh - _LSTM_LR * d_wh
+            bias = bias - _LSTM_LR * d_b
+            w_out = w_out - _LSTM_LR * d_w_out
+            b_out = b_out - _LSTM_LR * d_b_out
+    out = np.empty(seq.shape[0], dtype=np.float64)
+    for start in range(0, seq.shape[0], _BATCH):
+        sl = slice(start, start + _BATCH)
+        h_last, _cache = _lstm_forward(seq[sl], wx, wh, bias)
+        out[sl] = _sigmoid(h_last @ w_out + b_out)
+    return out
+
+
+def _clip_grad(grad: np.ndarray) -> np.ndarray:
+    norm = float(np.linalg.norm(grad))
+    if norm > _LSTM_CLIP:
+        return grad * (_LSTM_CLIP / norm)
+    return grad
+
+
 def _score(y: np.ndarray, p: np.ndarray, *, train_y: np.ndarray) -> dict[str, float]:
     base = float(np.mean(train_y)) if train_y.size else 0.5
     baseline = np.full(y.shape, base, dtype=np.float64)
@@ -423,6 +568,7 @@ def run_mbo_sequence_mlp(
             "y": pl.Float64(),
             "p_aggregate": pl.Float64(),
             "p_mlp": pl.Float64(),
+            "p_lstm": pl.Float64(),
             "fold": pl.Int64(),
         }
     )
@@ -437,8 +583,10 @@ def run_mbo_sequence_mlp(
         "n_bins": N_BINS,
         "target": Y_TARGET,
         "n_days": len(xs),
+        "lstm_hidden": _LSTM_HIDDEN,
         "aggregate": {"n": 0.0, "auc": float("nan"), "brier_skill": float("nan")},
         "mlp": {"n": 0.0, "auc": float("nan"), "brier_skill": float("nan")},
+        "lstm": {"n": 0.0, "auc": float("nan"), "brier_skill": float("nan")},
     }
     if not xs:
         return empty, diagnostics
@@ -453,10 +601,12 @@ def run_mbo_sequence_mlp(
     rng = make_generator(seed)
     p_agg = np.full(y.size, np.nan)
     p_mlp = np.full(y.size, np.nan)
+    p_lstm = np.full(y.size, np.nan)
     fold_id = np.full(y.size, -1, dtype=np.int64)
     y_oof: list[np.ndarray] = []
     agg_oof: list[np.ndarray] = []
     mlp_oof: list[np.ndarray] = []
+    lstm_oof: list[np.ndarray] = []
     train_parts: list[np.ndarray] = []
     x_agg = collapse_sequence(x)
     for sf in folds:
@@ -467,21 +617,25 @@ def run_mbo_sequence_mlp(
         p_mlp[sf.test_idx] = fit_predict_mlp(x, y, sf.train_idx, rng=rng, epochs=epochs)[
             sf.test_idx
         ]
+        p_lstm[sf.test_idx] = fit_predict_lstm(x, y, sf.train_idx, rng=rng)[sf.test_idx]
         fold_id[sf.test_idx] = int(sf.fold)
         y_oof.append(y[sf.test_idx])
         agg_oof.append(p_agg[sf.test_idx])
         mlp_oof.append(p_mlp[sf.test_idx])
+        lstm_oof.append(p_lstm[sf.test_idx])
         train_parts.append(y[sf.train_idx])
     y_cat = np.concatenate(y_oof)
     train_cat = np.concatenate(train_parts)
     diagnostics["aggregate"] = _score(y_cat, np.concatenate(agg_oof), train_y=train_cat)
     diagnostics["mlp"] = _score(y_cat, np.concatenate(mlp_oof), train_y=train_cat)
+    diagnostics["lstm"] = _score(y_cat, np.concatenate(lstm_oof), train_y=train_cat)
     scored = pl.DataFrame(
         {
             SETUP_AVAILABILITY_TS: setup,
             "y": y,
             "p_aggregate": p_agg,
             "p_mlp": p_mlp,
+            "p_lstm": p_lstm,
             "fold": fold_id,
         }
     ).filter(pl.col("fold") >= 0)
@@ -503,6 +657,7 @@ def write_mbo_sequence_report(
     )
     agg_s = diagnostics.get("aggregate", {})
     mlp_s = diagnostics.get("mlp", {})
+    lstm_s = diagnostics.get("lstm", {})
 
     def _fmt(block: object, key: str) -> str:
         if not isinstance(block, Mapping):
@@ -517,11 +672,12 @@ def write_mbo_sequence_report(
         return f"{number:.3f}"
 
     lines = [
-        "# MBO intra-bar sequence MLP",
+        "# MBO intra-bar sequence MLP / LSTM",
         "",
         "1-second bins inside the completed 30s bar at t. No book reconstruction.",
         "Raw MBO is never concatenated across days. Holdout excluded.",
-        "Aggregate = same events summed (lf_* analogue). MLP sees order.",
+        "Aggregate = same events summed (lf_* analogue).",
+        "MLP sees flattened order. LSTM (32) sees (T, F) order.",
         "",
         "| model | n | AUC | Brier skill |",
         "|---|---:|---:|---:|",
@@ -533,9 +689,16 @@ def write_mbo_sequence_report(
             f"| mlp sequence | {_fmt(mlp_s, 'n')} | {_fmt(mlp_s, 'auc')} | "
             f"{_fmt(mlp_s, 'brier_skill')} |"
         ),
+        (
+            f"| lstm sequence | {_fmt(lstm_s, 'n')} | {_fmt(lstm_s, 'auc')} | "
+            f"{_fmt(lstm_s, 'brier_skill')} |"
+        ),
         "",
-        "If aggregate ≈ MLP, order counts were enough and sequence is not the choke.",
-        "If MLP beats aggregate, the missing signal was add/cancel order inside the bar.",
+        "If LSTM ≈ aggregate, 1s add/cancel order is not the missing signal.",
+        "If LSTM beats aggregate and MLP, the choke was flattened time.",
+        "",
+        "Freeze: do not stack deeper nets on 30s bars, 1s MBO bins, or 40-bar OHLC.",
+        "Path/tick head (y_path_further_beyond) stays the working model; exits stay manual.",
         "",
     ]
     (out / "MBO_SEQUENCE.md").write_text("\n".join(lines), encoding="utf-8")
@@ -553,6 +716,7 @@ __all__ = [
     "build_sequences_for_setups",
     "collapse_sequence",
     "fit_predict_logistic",
+    "fit_predict_lstm",
     "fit_predict_mlp",
     "labels_from_blended",
     "prepare_labels",

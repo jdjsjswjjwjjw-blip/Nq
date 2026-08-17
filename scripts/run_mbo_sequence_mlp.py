@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""تسلسل MBO داخل البرميل → MLP. يوم بيوم، بلا لصق تدفق خام وبلا دفتر.
+"""تسلسل MBO داخل البرميل → MLP وLSTM. يوم بيوم، بلا لصق تدفق خام وبلا دفتر.
 
 التسميات من ``period_*/fold_scores.parquet`` (أو period_blended) حتى ATR لندن
 يرى الأيام السابقة. MBO يُحمَّل من IDrive يوماً واحداً ثم يُسقط.
@@ -142,7 +142,9 @@ def iter_day_pairs(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Intra-bar MBO sequence MLP vs 30s aggregates")
+    parser = argparse.ArgumentParser(
+        description="Intra-bar MBO sequence MLP/LSTM vs 30s aggregates"
+    )
     parser.add_argument("--days-root", type=Path, required=True)
     parser.add_argument(
         "--mbo-root",

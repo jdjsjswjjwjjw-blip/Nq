@@ -22,6 +22,7 @@ from nq.research.mbo_sequence_mlp import (
     build_sequences_for_setups,
     collapse_sequence,
     fit_predict_logistic,
+    fit_predict_lstm,
     fit_predict_mlp,
     prepare_labels,
     resolve_idrive_mbo,
@@ -87,11 +88,15 @@ def test_mlp_reads_cancel_order_that_aggregates_miss() -> None:
     test = np.arange(1, n_each * 2, 2)
     p_agg = fit_predict_logistic(collapse_sequence(x), y, train)[test]
     p_mlp = fit_predict_mlp(x, y, train, rng=rng, epochs=25)[test]
+    p_lstm = fit_predict_lstm(x, y, train, rng=make_generator(4), epochs=25)[test]
     agg_spread = float(np.max(p_agg) - np.min(p_agg))
     pos = p_mlp[y[test] > 0.5]
     neg = p_mlp[y[test] < 0.5]
+    lstm_pos = p_lstm[y[test] > 0.5]
+    lstm_neg = p_lstm[y[test] < 0.5]
     assert agg_spread < 0.05
     assert float(np.min(pos) - np.max(neg)) > 0.05
+    assert float(np.min(lstm_pos) - np.max(lstm_neg)) > 0.05
     assert Y_TARGET == "y_phase_extend"
     assert HOLDOUT_START_DATE == "2025-09-01"
 
@@ -147,13 +152,17 @@ def test_report_writes(tmp_path: Path) -> None:
             "y": [1.0],
             "p_aggregate": [0.4],
             "p_mlp": [0.7],
+            "p_lstm": [0.8],
             "fold": [0],
         }
     )
     diag = {
         "aggregate": {"n": 1.0, "auc": 0.5, "brier_skill": 0.0},
         "mlp": {"n": 1.0, "auc": 0.7, "brier_skill": 0.1},
+        "lstm": {"n": 1.0, "auc": 0.75, "brier_skill": 0.12},
     }
     out = write_mbo_sequence_report(scored, diag, tmp_path)
     text = (out / "MBO_SEQUENCE.md").read_text(encoding="utf-8")
     assert "mlp sequence" in text
+    assert "lstm sequence" in text
+    assert "Freeze: do not stack deeper nets" in text
