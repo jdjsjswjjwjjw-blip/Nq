@@ -35,17 +35,7 @@ from nq.auction_behavior.outcomes import (
 from nq.auction_behavior.science import BehaviorScienceReport, ScienceConfig, run_behavior_science
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.core.session import VP_LIQUIDITY_SESSION, VpLiquiditySession, session_date_from_ns
-from nq.research.expansion_mechanics import (
-    ExpansionMechanicsConfig,
-    run_expansion_mechanics,
-    write_expansion_mechanics_report,
-)
 from nq.research.progress import ProgressLike
-from nq.research.wave_position import (
-    WavePositionConfig,
-    run_wave_position,
-    write_wave_position_report,
-)
 from nq.validation.leakage import (
     assert_availability_not_before_event,
     assert_causal_order,
@@ -551,82 +541,7 @@ def write_behavior_period_report(
     for p in report.diagnostics.get("principles", ()):
         lines.append(f"- {p}")
     (out / "PERIOD.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    _write_expansion_mechanics(report, out)
-    _write_wave_position(report, out)
     return out
-
-
-def _write_expansion_mechanics(report: BehaviorPeriodReport, out: Path) -> None:
-    """بحث الامتداد على labeled التطوير فقط — لا holdout ولا إعادة بناء."""
-    labeled = report.science.labeled
-    if labeled.height == 0:
-        return
-    oof = report.science.conditional_oof_predictions
-    oof_ts: tuple[int, ...] | None = None
-    if oof.height:
-        ts_col = SETUP_AVAILABILITY_TS if SETUP_AVAILABILITY_TS in oof.columns else AVAILABILITY_TS
-        if ts_col in oof.columns:
-            oof_ts = tuple(int(t) for t in oof[ts_col].to_list())
-    cut_raw = report.science.diagnostics.get("holdout_cut_ts")
-    cut_ts = int(cut_raw) if cut_raw is not None and int(cut_raw) >= 0 else None
-    holdout_months = report.science.diagnostics.get("holdout_months")
-    months = int(holdout_months) if holdout_months is not None else None
-    mechanics = run_expansion_mechanics(
-        labeled,
-        config=ExpansionMechanicsConfig(holdout_months=months, n_permutations=63),
-        oof_availability_ts=oof_ts,
-        holdout_cut_ts=cut_ts,
-    )
-    write_expansion_mechanics_report(mechanics, out)
-    period = out / "PERIOD.md"
-    extra = [
-        "",
-        "## Expansion mechanics (develop / OOF only)",
-        "",
-        "Volume vs price lead-lag, balance→imbalance→expansion, and protection of",
-        "already-expanded positions. Holdout never scored. See `EXPANSION.md`.",
-        "",
-    ]
-    period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
-
-
-def _write_wave_position(report: BehaviorPeriodReport, out: Path) -> None:
-    """موقع الإشارة على الموجة المكتملة — ذروة تشخيصية، لا holdout."""
-    labeled = report.science.labeled
-    blended = report.blended
-    if labeled.height == 0 or blended.height == 0:
-        return
-    oof = report.science.conditional_oof_predictions
-    oof_ts: tuple[int, ...] | None = None
-    if oof.height:
-        ts_col = SETUP_AVAILABILITY_TS if SETUP_AVAILABILITY_TS in oof.columns else AVAILABILITY_TS
-        if ts_col in oof.columns:
-            oof_ts = tuple(int(t) for t in oof[ts_col].to_list())
-    cut_raw = report.science.diagnostics.get("holdout_cut_ts")
-    cut_ts = int(cut_raw) if cut_raw is not None and int(cut_raw) >= 0 else None
-    holdout_months = report.science.diagnostics.get("holdout_months")
-    months = int(holdout_months) if holdout_months is not None else None
-    wave = run_wave_position(
-        labeled,
-        blended,
-        config=WavePositionConfig(holdout_months=months),
-        oof_availability_ts=oof_ts,
-        holdout_cut_ts=cut_ts,
-        predictions=oof if oof.height else None,
-    )
-    write_wave_position_report(wave, out)
-    period = out / "PERIOD.md"
-    extra = [
-        "",
-        "## Wave position (develop / OOF only)",
-        "",
-        "Where the first labeled setup sits on the expansion run after the",
-        "expansion is visible (0–20 second leg / 20–40 / 40–60 / 60+).",
-        "Short waves are dropped. Peak is diagnostic look-ahead, not a feature.",
-        "Holdout never scored. See `WAVE.md`.",
-        "",
-    ]
-    period.write_text(period.read_text(encoding="utf-8") + "\n".join(extra), encoding="utf-8")
 
 
 __all__ = [

@@ -514,19 +514,19 @@ result = run_auction_behavior_analysis(
     mbo_frame,
     config=BehaviorConfig(
         include_deceptive_scores=True,  # درجات فقط، بلا حذف
-        include_level_flow=True,  # شدة/بقاء قرب VAH·VAL·POC·HVN
+        include_level_flow=True,        # شدة/بقاء قرب VAH·VAL·POC·HVN
         include_reliability_evidence=True,  # credibility evidence، بلا حذف
-        include_science=True,  # طبقة العلم
+        include_science=True,           # طبقة العلم
         holdout_frac=0.2,
         evaluate_holdout=True,
-        quiet=False,  # نبض حي على stderr
+        quiet=False,                   # نبض حي على stderr
         # progress_log_path="out/progress.log",
     ),
 )
 print(result.probabilities)
 print(behavior_probability_summary(result))  # ملخص؛ confidence ≠ calibrated p
-states = behavior_state_frame(result)  # «ما الذي أعرفه الآن؟»
-preds = behavior_prediction_frame(result)  # «ماذا أتوقع؟» p_y_* شرطية
+states = behavior_state_frame(result)        # «ما الذي أعرفه الآن؟»
+preds = behavior_prediction_frame(result)    # «ماذا أتوقع؟» p_y_* شرطية
 projection = result.projection
 science = result.science
 assert result.validation.ok
@@ -576,8 +576,8 @@ if science is not None and science.holdout_eval is not None:
 ```python
 from nq.auction_behavior import run_behavior_ablation
 
-report = run_behavior_ablation(result.blended)  # develop فقط؛ الـholdout لا يُمس
-print(report.frame)  # ستاك × هدف: Brier/log loss/AUC/ECE/BSS خارج العينة
+report = run_behavior_ablation(result.blended)   # develop فقط؛ الـholdout لا يُمس
+print(report.frame)            # ستاك × هدف: Brier/log loss/AUC/ECE/BSS خارج العينة
 print(report.competing_frame)  # نفس المقارنة لرأس المخاطر المتنافسة
 assert report.diagnostics["holdout_untouched"]
 ```
@@ -633,32 +633,6 @@ assert report.diagnostics["holdout_untouched"]
 إعداد صالح — غياب الريتست معلومة لا فشل سيناريو. قالب السيناريو يبقى متاحًا
 بـ `ScienceConfig(competing_family="assumed_scripts")` للتشخيص فقط.
 
-**ميكانيكا الامتداد (مرحلة 2b، بلا إعادة بناء):** بعد `science_labeled.parquet`
-يحسب `nq.research.expansion_mechanics` على التطوير/OOF فقط: هل
-`proj_outside_volume_share` و`path_depth_follow` سبقا الحركة عند القرار أم
-السعر خرج والحجم/العمق لحق؛ تسلسل توازن→اختلال→امتداد من lags سببية؛ وحماية
-مركز الامتداد (متابعة العمق مقابل الدفاع) بين الحالات الممتدة أصلًا.
-الـholdout لا يُقاس. التشغيل:
-
-```text
-scripts/run_expansion_mechanics.py \
-  --period-dir data/runs/auction_behavior_year/period_realized_path \
-  --output data/runs/auction_behavior_year/period_realized_path
-```
-
-**موقع الإشارة على الموجة (مرحلة 2c):** الهدف موجات **كبيرة** والدخول بعد أن
-يبدأ الامتداد — أول 20% من مسار الامتداد (الموجة الثانية)، لا أول كسر ولا
-الحركة القصيرة. `nq.research.wave_position` يقيس
-`(extent_at_t - expansion_start) / (peak - expansion_start)`. الافتراضي:
-ذروة ≥ 80 تكة، بداية امتداد عند 16 تكة. `pre_expansion` = الدفعة الأولى.
-الذروة وبداية الامتداد نظرة أمامية للتشخيص فقط. الـholdout لا يُقاس. التشغيل:
-
-```text
-scripts/run_wave_position.py \
-  --period-dir data/runs/auction_behavior_year/period_realized_path \
-  --output data/runs/auction_behavior_year/period_realized_path
-```
-
 سبتمبر–ديسمبر 2025 لُمِس كـholdout للنسخة السابقة (`holdout_touched=true`)
 فلا يُعاد استخدامه حكمًا للنسخة الجديدة؛ التطوير على يناير–أغسطس، والحكم
 النهائي على holdout مستقل لاحقًا.
@@ -691,7 +665,7 @@ from nq.strategies.vp_auction import run_vp_auction_research
 cfg = PipelineConfig.from_toml("configs/research.toml")
 result = run_research_pipeline(
     "data/raw/nq.parquet",
-    "data/raw/nq.parquet",  # أو mnq؛ مع nq_only يُكرَّر NQ
+    "data/raw/nq.parquet",          # أو mnq؛ مع nq_only يُكرَّر NQ
     config=cfg,
     output_dir=Path("data/runs/api"),
 )
@@ -843,8 +817,6 @@ Nq/
 │   ├── run_vp_auction_days.py # VP يوم-بيوم متوازٍ (شهر)
 │   ├── run_auction_behavior_days.py    # سلوك المزاد يوم-بيوم (مرحلة 1)
 │   ├── run_auction_behavior_period.py  # علم الفترة على الحالات المجمّعة (مرحلة 2)
-│   ├── run_expansion_mechanics.py      # سبق حجم/سعر + تسلسل المزاد + حماية الامتداد
-│   ├── run_wave_position.py            # موقع أول إشارة على الموجة المكتملة
 │   └── run_liquidity_edge.py  # غلاف توافق → نفس vp_auction
 ├── docs/
 │   ├── architecture.md
