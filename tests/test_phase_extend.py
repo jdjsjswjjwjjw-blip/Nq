@@ -72,6 +72,7 @@ def test_science_keeps_numeric_horizon_and_adds_phase() -> None:
     assert "y_path_further_beyond" in names
     assert "y_extend_5pts_25min" in names
     assert Y_PHASE_EXTEND in names
+    assert "y_clean" in names
     assert PHASE_HORIZON_BARS == 15
     assert PHASE_EXPAND_ATR_FRAC == 0.2
     assert PHASE_GIVEBACK_ATR_FRAC == 0.1

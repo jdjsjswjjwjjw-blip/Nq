@@ -29,6 +29,7 @@ import numpy as np
 import polars as pl
 
 from nq.auction_behavior.ablation import AblationReport, run_behavior_ablation
+from nq.auction_behavior.clean_trade import simulate_clean_exits, summarize_clean_oof
 from nq.auction_behavior.momentum import attach_momentum_features
 from nq.auction_behavior.outcomes import (
     OUTCOME_AVAILABLE_TS,
@@ -429,6 +430,7 @@ def run_behavior_period_science(
             "momentum ROC/CVD/VWAP/range attach from blended bars only (no MBO reload)",
             "y_extend_5pts_25min sits beside path binaries; it does not replace them",
             "y_phase_extend is structural continuity vs London ATR, not a fixed point target",
+            "y_clean is MFE≥0.15×London ATR and MAE<0.08×ATR over 50 bars; not a live overlay",
             (
                 f"protocol: {cfg.min_train_months} train / "
                 f"{cfg.walk_forward_months} walk-forward / "
@@ -453,6 +455,7 @@ def _write_parquet(frame: pl.DataFrame, path: Path) -> None:
 
 
 _SKILL_OUTCOMES = (
+    "y_clean",
     "y_phase_extend",
     "y_extend_5pts_25min",
     "y_path_further_beyond",
@@ -474,6 +477,42 @@ def _fmt_metric(value: object) -> str:
     if isnan(number):
         return "nan"
     return f"{number:.2f}"
+
+
+def _clean_trade_oof_bundle(report: BehaviorPeriodReport) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """تشخيص أول لمس على OOF فقط — ليس طبقة تنفيذ ولا ضبط عتبات."""
+    science = report.science
+    group_col = "_behavior_story_run" if "_behavior_story_run" in report.blended.columns else None
+    exits = simulate_clean_exits(report.blended, group_col=group_col)
+    oof = science.fold_scores if science.fold_scores.height else science.conditional_oof_predictions
+    return exits, summarize_clean_oof(exits, oof)
+
+
+def _clean_trade_oof_lines(diag: dict[str, Any]) -> list[str]:
+    if not diag:
+        return []
+    return [
+        "",
+        "## Clean-trade OOF diagnostic (p≥0.5; not a live overlay)",
+        "",
+        "First touch of `0.15 × London_ATR` target vs `0.08 × London_ATR` stop "
+        "within 50 bars. Round-trip cost 0.75 pts. Thresholds not tuned on OOF. "
+        "Holdout untouched. Live predictions are not used.",
+        "",
+        "| n OOF | n fires | win rate | mean MAE (pts) | mean MFE (pts) | "
+        "mean net (pts) | sum net (pts) | target / stop / time |",
+        "|---:|---:|---:|---:|---:|---:|---:|---|",
+        (
+            f"| {int(diag.get('n_oof', 0))} | {int(diag.get('n_fires', 0))} | "
+            f"{_fmt_metric(diag.get('win_rate'))} | "
+            f"{_fmt_metric(diag.get('mean_path_mae_pts'))} | "
+            f"{_fmt_metric(diag.get('mean_path_mfe_pts'))} | "
+            f"{_fmt_metric(diag.get('mean_net_pts'))} | "
+            f"{_fmt_metric(diag.get('sum_net_pts'))} | "
+            f"{int(diag.get('n_target', 0))} / {int(diag.get('n_stop', 0))} / "
+            f"{int(diag.get('n_time', 0))} |"
+        ),
+    ]
 
 
 def _oof_skill_lines(cal: pl.DataFrame) -> list[str]:
@@ -528,6 +567,9 @@ def write_behavior_period_report(
         _write_parquet(report.ablation.frame, out / "ablation.parquet")
         _write_parquet(report.ablation.competing_frame, out / "ablation_competing.parquet")
 
+    clean_exits, clean_diag = _clean_trade_oof_bundle(report)
+    _write_parquet(clean_exits, out / "clean_trade_exits.parquet")
+
     summary = {
         "day_ids": list(report.day_ids),
         "n_days": len(report.day_ids),
@@ -551,6 +593,7 @@ def write_behavior_period_report(
         "pooled_not_averaged_daily_probabilities": True,
         "oof_predictions_eligible_for_backtest": True,
         "live_predictions_eligible_for_backtest": False,
+        "clean_trade_oof": _jsonable(clean_diag),
         "diagnostics": _jsonable(report.diagnostics),
     }
     (out / "summary.json").write_text(
@@ -597,6 +640,7 @@ def write_behavior_period_report(
         f"path={science.diagnostics.get('n_path_features')} "
         f"momentum={science.diagnostics.get('n_momentum_features')}",
         *_oof_skill_lines(science.calibration_by_outcome),
+        *_clean_trade_oof_lines(clean_diag),
         "",
         "## Isolation",
         "",

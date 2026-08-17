@@ -188,3 +188,6 @@ def test_day_science_defaults_are_unchanged() -> None:
     assert cfg.phase_horizon_bars == 15
     assert cfg.phase_expand_atr_frac == 0.2
     assert cfg.phase_giveback_atr_frac == 0.1
+    assert cfg.clean_horizon_bars == 50
+    assert cfg.clean_target_atr_frac == 0.15
+    assert cfg.clean_mae_atr_frac == 0.08

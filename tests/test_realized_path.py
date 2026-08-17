@@ -57,6 +57,7 @@ def test_science_default_does_not_fit_assumed_scripts() -> None:
     assert "y_extend_5pts_25min" in names
     assert "y_path_further_beyond" in names
     assert "y_phase_extend" in names
+    assert "y_clean" in names
     family, classes = competing_family_spec(cfg.competing_family)
     assert family == "realized_path"
     assert classes == REALIZED_NEXT_PATH_CLASSES
