@@ -633,19 +633,6 @@ assert report.diagnostics["holdout_untouched"]
 إعداد صالح — غياب الريتست معلومة لا فشل سيناريو. قالب السيناريو يبقى متاحًا
 بـ `ScienceConfig(competing_family="assumed_scripts")` للتشخيص فقط.
 
-**ميكانيكا الامتداد (مرحلة 2b، بلا إعادة بناء):** بعد `science_labeled.parquet`
-يحسب `nq.research.expansion_mechanics` على التطوير/OOF فقط: هل
-`proj_outside_volume_share` و`path_depth_follow` سبقا الحركة عند القرار أم
-السعر خرج والحجم/العمق لحق؛ تسلسل توازن→اختلال→امتداد من lags سببية؛ وحماية
-مركز الامتداد (متابعة العمق مقابل الدفاع) بين الحالات الممتدة أصلًا.
-الـholdout لا يُقاس. التشغيل:
-
-```text
-scripts/run_expansion_mechanics.py \
-  --period-dir data/runs/auction_behavior_year/period_realized_path \
-  --output data/runs/auction_behavior_year/period_realized_path
-```
-
 سبتمبر–ديسمبر 2025 لُمِس كـholdout للنسخة السابقة (`holdout_touched=true`)
 فلا يُعاد استخدامه حكمًا للنسخة الجديدة؛ التطوير على يناير–أغسطس، والحكم
 النهائي على holdout مستقل لاحقًا.
@@ -830,7 +817,6 @@ Nq/
 │   ├── run_vp_auction_days.py # VP يوم-بيوم متوازٍ (شهر)
 │   ├── run_auction_behavior_days.py    # سلوك المزاد يوم-بيوم (مرحلة 1)
 │   ├── run_auction_behavior_period.py  # علم الفترة على الحالات المجمّعة (مرحلة 2)
-│   ├── run_expansion_mechanics.py      # سبق حجم/سعر + تسلسل المزاد + حماية الامتداد
 │   └── run_liquidity_edge.py  # غلاف توافق → نفس vp_auction
 ├── docs/
 │   ├── architecture.md
