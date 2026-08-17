@@ -254,3 +254,5 @@ def test_oof_summary_uses_declared_operating_point() -> None:
         }
     )
     assert summarize_clean_oof(exits, quiet)["n_fires"] == 0
+    wide = pl.DataFrame({"availability_ts": [setup], "p_y_clean": [0.9]})
+    assert summarize_clean_oof(exits, wide)["n_fires"] == 0

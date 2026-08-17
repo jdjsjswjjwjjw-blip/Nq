@@ -406,6 +406,8 @@ def summarize_clean_oof(
     }
     if exits.height == 0 or oof.height == 0:
         return empty
+    if "outcome_name" not in oof.columns:
+        return empty
     oof_clean = oof.filter(pl.col("outcome_name") == Y_CLEAN)
     if oof_clean.height == 0:
         return empty

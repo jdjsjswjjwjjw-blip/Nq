@@ -484,7 +484,8 @@ def _clean_trade_oof_bundle(report: BehaviorPeriodReport) -> tuple[pl.DataFrame,
     science = report.science
     group_col = "_behavior_story_run" if "_behavior_story_run" in report.blended.columns else None
     exits = simulate_clean_exits(report.blended, group_col=group_col)
-    return exits, summarize_clean_oof(exits, science.conditional_oof_predictions)
+    oof = science.fold_scores if science.fold_scores.height else science.conditional_oof_predictions
+    return exits, summarize_clean_oof(exits, oof)
 
 
 def _clean_trade_oof_lines(diag: dict[str, Any]) -> list[str]:
