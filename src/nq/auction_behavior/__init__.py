@@ -14,6 +14,11 @@ from nq.auction_behavior.ablation import (
     AblationReport,
     run_behavior_ablation,
 )
+from nq.auction_behavior.clean_trade import (
+    CLEAN_TRADE_TARGETS,
+    Y_CLEAN,
+    build_clean_trade_outcomes,
+)
 from nq.auction_behavior.competing import CompetingRiskModel
 from nq.auction_behavior.momentum import (
     MOMENTUM_FEATURE_COLUMNS,
@@ -57,12 +62,14 @@ from nq.auction_behavior.validate import BehaviorValidationReport
 
 __all__ = [
     "ABLATION_STACKS",
+    "CLEAN_TRADE_TARGETS",
     "FIRST_TRANSITION_CLASSES",
     "MOMENTUM_FEATURE_COLUMNS",
     "PATH_CONFIRM_COLUMNS",
     "PHASE_EXTEND_TARGETS",
     "PROJECTION_NUMERIC_COLUMNS",
     "REALIZED_NEXT_PATH_CLASSES",
+    "Y_CLEAN",
     "Y_PHASE_EXTEND",
     "AblationReport",
     "AsiaLondonProjectionConfig",
@@ -84,6 +91,7 @@ __all__ = [
     "behavior_probability_summary",
     "behavior_state_frame",
     "build_asia_london_projection",
+    "build_clean_trade_outcomes",
     "build_phase_extend_outcomes",
     "build_realized_next_path_outcomes",
     "latest_state_snapshot",

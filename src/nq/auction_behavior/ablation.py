@@ -340,6 +340,9 @@ def run_behavior_ablation(  # noqa: PLR0912, PLR0915
         phase_window=int(cfg.phase_horizon_bars),
         phase_expand_atr_frac=float(cfg.phase_expand_atr_frac),
         phase_giveback_atr_frac=float(cfg.phase_giveback_atr_frac),
+        clean_window=int(cfg.clean_horizon_bars),
+        clean_target_atr_frac=float(cfg.clean_target_atr_frac),
+        clean_mae_atr_frac=float(cfg.clean_mae_atr_frac),
         group_col=group_col,
         progress=progress,
     )

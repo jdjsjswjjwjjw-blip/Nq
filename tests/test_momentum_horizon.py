@@ -267,6 +267,7 @@ def test_science_targets_add_horizon_beside_path() -> None:
     names = science_outcome_targets(include_assumed_scripts=False)
     assert Y_EXTEND_5PTS_25MIN in names
     assert "y_path_further_beyond" in names
+    assert "y_clean" in names
     assert names.count(Y_EXTEND_5PTS_25MIN) == 1
     assert EXTEND_HORIZON_BARS == 50
     assert EXTEND_HORIZON_POINTS == 5.0

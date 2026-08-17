@@ -16,6 +16,11 @@ from nq.auction_behavior.calibration import (
     evaluate_calibration_by_outcome,
     fit_platt_calibrators_by_outcome,
 )
+from nq.auction_behavior.clean_trade import (
+    CLEAN_HORIZON_BARS,
+    CLEAN_MAE_ATR_FRAC,
+    CLEAN_TARGET_ATR_FRAC,
+)
 from nq.auction_behavior.competing import (
     CompetingRiskModel,
     calibrate_competing_temperature,
@@ -113,6 +118,10 @@ class ScienceConfig:
     phase_horizon_bars: int = PHASE_HORIZON_BARS
     phase_expand_atr_frac: float = PHASE_EXPAND_ATR_FRAC
     phase_giveback_atr_frac: float = PHASE_GIVEBACK_ATR_FRAC
+    #: صفقة نظيفة: 50 برميلًا، هدف 0.15×ATR، MAE < 0.08×ATR. لا يستبدل الرؤوس الأخرى.
+    clean_horizon_bars: int = CLEAN_HORIZON_BARS
+    clean_target_atr_frac: float = CLEAN_TARGET_ATR_FRAC
+    clean_mae_atr_frac: float = CLEAN_MAE_ATR_FRAC
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +231,9 @@ def run_behavior_science(  # noqa: PLR0912, PLR0915
         phase_window=int(cfg.phase_horizon_bars),
         phase_expand_atr_frac=float(cfg.phase_expand_atr_frac),
         phase_giveback_atr_frac=float(cfg.phase_giveback_atr_frac),
+        clean_window=int(cfg.clean_horizon_bars),
+        clean_target_atr_frac=float(cfg.clean_target_atr_frac),
+        clean_mae_atr_frac=float(cfg.clean_mae_atr_frac),
         group_col=group_col,
         progress=progress,
     )
