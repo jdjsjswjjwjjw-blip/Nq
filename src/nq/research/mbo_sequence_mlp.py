@@ -62,11 +62,17 @@ def _relu(z: np.ndarray) -> np.ndarray:
 
 
 def assert_single_day_mbo(mbo: pl.DataFrame) -> None:
-    """يرفض لصق تدفق MBO عبر الأيام. ملف جلسة CME (~24س) مسموح حتى مع لفّ 18:00 ET."""
-    if mbo.height == 0 or EVENT_TS not in mbo.columns:
+    """يرفض لصق تدفق MBO عبر الأيام. يقاس على ``ingest_ts`` (نافذة الاستلام).
+
+    ``event_ts`` في ملف جلسة Databento قد يحمل طوابع أوامر أقدم؛ ذلك لا يعني لصق أيام.
+    """
+    if mbo.height == 0:
         return
-    lo = int(mbo.select(pl.col(EVENT_TS).min()).item())
-    hi = int(mbo.select(pl.col(EVENT_TS).max()).item())
+    col = INGEST_TS if INGEST_TS in mbo.columns else EVENT_TS
+    if col not in mbo.columns:
+        return
+    lo = int(mbo.select(pl.col(col).min()).item())
+    hi = int(mbo.select(pl.col(col).max()).item())
     if hi - lo > _MAX_SESSION_SPAN_NS:
         raise ValueError(
             "refuse concatenated multi-day MBO; extract sequences one session day at a time"
