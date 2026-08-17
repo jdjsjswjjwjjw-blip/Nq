@@ -272,6 +272,9 @@ def test_period_science_is_pooled_walk_forward_not_daily_average(tmp_path: Path)
     text = (out / "PERIOD.md").read_text(encoding="utf-8")
     assert "Not a mean of per-day probabilities" in text
     assert "No book reconstruction" in text
+    assert (out / "EXPANSION.md").is_file()
+    expansion = (out / "EXPANSION.md").read_text(encoding="utf-8")
+    assert "Holdout never scored" in expansion
 
 
 def test_period_helpers_not_reexported_from_package_init() -> None:
