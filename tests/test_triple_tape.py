@@ -192,6 +192,8 @@ def test_scan_joint_pattern_then_drop_vs_control() -> None:
     assert diag["nq_fill_ratio"] == "unavailable_without_mbo_F_C"
     assert "fill_only" in diag["summary"]
     assert "nq_buy_only" in diag["summary"]
+    assert "busy_control" in diag["summary"]
+    assert "nq_fwd_imbalance" in scored.columns
     assert scored.filter(scored["nq_t_imbalance"] > 0.20).height >= 1
 
 
