@@ -11,6 +11,7 @@ import pytest
 import nq.research
 from nq.research.clock_flow import (
     AFTER_S,
+    clock_to_ns,
     clock_windows,
     compare_clock_range,
     write_clock_report,
@@ -33,8 +34,8 @@ def _ns(clock: str) -> int:
 
 
 def test_not_exported_from_research_init() -> None:
-    assert "compare_clock_range" not in nq.research.__all__
-    assert not hasattr(nq.research, "compare_clock_range")
+    assert "clock_to_ns" not in nq.research.__all__
+    assert not hasattr(nq.research, "clock_to_ns")
 
 
 def test_ny_1130_windows_start_at_eleven_and_cover_after() -> None:
@@ -144,3 +145,69 @@ def test_clock_report(tmp_path: Path) -> None:
     assert "nq_trades" in text
     assert "No pattern lock" in text
     assert (written / "clock_sources.parquet").exists()
+
+
+def test_london_clock_is_twenty_nine_minutes() -> None:
+    origin, wins = clock_windows(
+        "2026-08-17",
+        "03:12:00",
+        "03:41:00",
+        bin_s=60,
+        tz_name="Europe/London",
+    )
+    start = clock_to_ns("2026-08-17", "03:12:00", "Europe/London")
+    end = clock_to_ns("2026-08-17", "03:41:00", "Europe/London")
+    assert origin == start
+    assert wins[0].end_ts == end
+    assert end - start == 29 * 60 * _NS
+
+
+def test_price_lo_adds_low_and_level_windows() -> None:
+    t_low = _ns("11:05:00")
+    t_level = _ns("11:20:00")
+    t_after = _ns("11:31:00")
+    mnq = make_stream(
+        [
+            ("C", "A", _PX_LOW, 5, 2),
+            ("F", "A", _PX_LOW, 1, 2),
+            ("T", "A", _PX_LOW, 3, 1),
+            ("T", "B", _PX, 4, 3),
+            ("T", "A", _PX, 1, 4),
+        ],
+        event_ts=[t_low - 2, t_low - 1, t_low, t_level, t_after],
+        sequence=[1, 2, 3, 4, 5],
+    )
+    tape = make_stream(
+        [("T", "A", _PX_LOW, 3, 0), ("T", "B", _PX, 4, 0), ("T", "A", _PX, 1, 0)],
+        event_ts=[t_low, t_level, t_after],
+        sequence=[1, 4, 5],
+    ).drop("order_id")
+    nq = make_stream(
+        [("T", "A", _PX_LOW, 2, 0), ("T", "B", _PX, 6, 0), ("T", "A", _PX, 1, 0)],
+        event_ts=[t_low, t_level, t_after],
+        sequence=[10, 11, 12],
+    ).drop("order_id")
+    table, diag = compare_clock_range(
+        mnq,
+        tape,
+        nq,
+        day=_DAY,
+        start_clock="11:00:00",
+        end_clock="11:30:00",
+        price_lo=_PX,
+    )
+    names = {r["name"] for r in table.iter_rows(named=True)}
+    assert diag["tz"] == "America/New_York"
+    assert diag["low_ts"] == t_low
+    assert diag["low_px"] == _PX_LOW
+    assert diag["level_ts"] == t_level
+    assert "low" in names
+    assert "level" in names
+    assert "low+0-300s" in names
+    assert "level+0-30s" in names
+    sources = diag["sources"]
+    assert len(sources) == 36
+    level_nq = next(s for s in sources if s["name"] == "level" and s["source"] == "nq_trades")
+    assert level_nq["ask_hit_share"] != level_nq["ask_hit_share"]
+    low_mbo = next(s for s in sources if s["name"] == "low" and s["source"] == "mnq_mbo")
+    assert low_mbo["c_ask_size"] == 5
