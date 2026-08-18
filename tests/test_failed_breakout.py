@@ -13,12 +13,14 @@ import pytest
 import nq.research
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.failed_breakout import (
+    _tape_prices_to_fixed,
     scan_failed_breakout,
     simulate_from_bars,
     write_failed_breakout_report,
 )
+from nq.research.mbo_trade_overlap import prepare_trades_tape
 from nq.simulation.common import BUCKET_END, BUCKET_START
-from nq.simulation.fvg import NS_30M
+from nq.simulation.fvg import NS_30M, build_ohlcv_bars
 from tests.mbo_factory import make_stream
 
 _ET = ZoneInfo("America/New_York")
@@ -197,6 +199,40 @@ def test_long_failed_low_fill_is_next_open() -> None:
     assert row["entry"] == pytest.approx(99.5)
     assert row["entry"] != pytest.approx(row["range_low"])
     assert row["sl"] < row["signal_l"]
+
+
+def test_dollar_tape_stays_in_index_points() -> None:
+    stamps = [_ns("10:00:01"), _ns("10:00:02"), _ns("10:00:03")]
+    raw = pl.DataFrame(
+        {
+            "event_ts": stamps,
+            "ingest_ts": stamps,
+            "sequence": [1, 2, 3],
+            "action": ["T", "T", "T"],
+            "side": ["B", "A", "B"],
+            "price": [30215.5, 30216.0, 30215.75],
+            "size": [1, 1, 1],
+        }
+    )
+    tape, unit = _tape_prices_to_fixed(prepare_trades_tape(raw))
+    assert unit == "dollar"
+    bars = build_ohlcv_bars(tape, interval_ns=NS_30M)
+    assert bars.height == 1
+    assert bars["o"][0] == pytest.approx(30215.5)
+    assert bars["h"][0] == pytest.approx(30216.0)
+
+
+def test_nano_tape_still_scales_like_mbo() -> None:
+    stamps = [_ns("10:00:01"), _ns("10:00:02")]
+    raw = make_stream(
+        [("T", "B", _PX, 1, 1), ("T", "A", _PX + 1_000_000_000, 1, 2)],
+        event_ts=stamps,
+        sequence=[1, 2],
+    ).drop("order_id")
+    tape, unit = _tape_prices_to_fixed(prepare_trades_tape(raw))
+    assert unit == "fixed_point"
+    bars = build_ohlcv_bars(tape, interval_ns=NS_30M)
+    assert bars["o"][0] == pytest.approx(20.0)
 
 
 def test_scan_refuses_concatenated_days() -> None:

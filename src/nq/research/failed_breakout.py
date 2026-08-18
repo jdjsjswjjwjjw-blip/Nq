@@ -26,6 +26,7 @@ import numpy as np
 import polars as pl
 from numpy.typing import NDArray
 
+from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.clock_flow import TZ_NAME
 from nq.research.cross_nq_mnq import MNQ_MULT
@@ -49,6 +50,7 @@ SKIP_OPEN_MINUTE: Final = 30
 Side = Literal["short", "long"]
 _ET: Final = ZoneInfo(TZ_NAME)
 _EPS: Final = 1e-12
+_FIXED_POINT_PRICE: Final = 1_000_000.0
 
 _TRADE_SCHEMA: Final[dict[str, pl.DataType]] = {
     "signal_ts": pl.Int64(),
@@ -133,9 +135,26 @@ def _empty_diag(**overrides: Any) -> dict[str, Any]:
         "median_pnl_pts": float("nan"),
         "median_leak_pts": float("nan"),
         "sma_filter": "sma50_hourly_min_periods",
+        "tape_price_unit": "fixed_point",
     }
     base.update(overrides)
     return base
+
+
+def _tape_prices_to_fixed(tape: pl.DataFrame) -> tuple[pl.DataFrame, str]:
+    """شريط Databento قد يكون بالدولار؛ ``build_ohlcv_bars`` يتوقع نقطة ثابتة."""
+
+    if tape.height == 0 or "price" not in tape.columns:
+        return tape, "empty"
+    med = tape.select(pl.col("price").abs().median()).item()
+    if med is None:
+        return tape, "empty"
+    if float(med) >= _FIXED_POINT_PRICE:
+        return tape.with_columns(pl.col("price").cast(pl.Int64).alias("price")), "fixed_point"
+    scaled = tape.with_columns(
+        (pl.col("price").cast(pl.Float64) / PRICE_SCALE).round(0).cast(pl.Int64).alias("price")
+    )
+    return scaled, "dollar"
 
 
 def _with_past_baselines(
@@ -456,6 +475,7 @@ def scan_failed_breakout(
     """من شريط ``T`` ليوم واحد: شموع 30د/1س ثم المسح السببي. بلا دفتر MBO."""
 
     tape = prepare_trades_tape(trades)
+    tape, price_unit = _tape_prices_to_fixed(tape)
     m30 = build_ohlcv_bars(tape, interval_ns=NS_30M)
     h1 = build_ohlcv_bars(tape, interval_ns=NS_1H)
     table, diag = simulate_from_bars(
@@ -475,6 +495,7 @@ def scan_failed_breakout(
         point_value=point_value,
     )
     diag["n_tape"] = int(tape.height)
+    diag["tape_price_unit"] = price_unit
     return table, diag
 
 
