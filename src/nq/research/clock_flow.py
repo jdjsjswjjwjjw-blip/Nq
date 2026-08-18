@@ -5,6 +5,7 @@ CVD تراكمي من أول ``T`` في ملف اليوم: ``Σ(حجم شراء 
 بعد تعاكس قوي: أول شريحة ΔCVD متوافق ثم مدى السعر — وصف لا إشارة.
 مسار 60ث قبل التوافق: CVD والاختلال وT/s وA/C — يختبر هضبة التجهيز، ليس نمطًا.
 شرائح 30ث/5ث حول دقائق عنيفة: تجمّع الطباعات وقاعدة اليوم، بلا عتبة مقفلة.
+بعد الشريحة: حركة الإغلاق إلى 5د و15د. ليست إشارة.
 مقارنة يوم آخر بنفس التعريفات الأوليّة؛ لا تُنسخ ساعات 10:24/11:51.
 بلا عتبة نمط وبلا إشارة. NQ بلا MBO فـ Fill لا يُختلق.
 ``price_lo`` اختياري: قاع الشريحة + أول لمسة للمستوى بعد بداية الشريحة.
@@ -55,6 +56,7 @@ BURST_INNER_S: Final = 5
 HYP_BURST_CVD: Final = 1000
 HYP_BURST_IMB: Final = 0.20
 HYP_BURST_RANGE: Final = 10.0
+NEXT_15M_S: Final = 900
 _TRADE = MboAction.TRADE.value
 _ADD = MboAction.ADD.value
 _CANCEL = MboAction.CANCEL.value
@@ -1439,6 +1441,12 @@ def _attach_next_horizon(
         else:
             row["next_move_5m"] = float(last_h - last)
         row["next_move_h"] = move_h
+        _, last_15, _, span_15 = _price_path(cvd_mbo, end_ts, end_ts + NEXT_15M_S * SECOND_NS)
+        row["next_range_15m"] = span_15
+        if math.isnan(last) or math.isnan(last_15):
+            row["next_move_15m"] = float("nan")
+        else:
+            row["next_move_15m"] = float(last_15 - last)
 
 
 def scan_tape_bins(
@@ -1561,9 +1569,9 @@ def write_tape_bins_report(
             continue
         lines.append(
             "| clock | end | MNQΔ | NQΔ | imb | T/s | rng | move | "
-            "gap_ms | busy5_n | busy5_share | next5m_move | next5m_rng |"
+            "gap_ms | busy5_n | busy5_share | next5m_move | next15m_move | next5m_rng |"
         )
-        lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for row in table.iter_rows(named=True):
             imb = float(row["mnq_imb"])
             imb_s = "nan" if math.isnan(imb) else f"{imb:.3f}"
@@ -1573,6 +1581,8 @@ def write_tape_bins_report(
             gap_s = "nan" if math.isnan(gap) else f"{gap:.0f}"
             nxt = float(row["next_move_5m"])
             nxt_s = "nan" if math.isnan(nxt) else f"{nxt:.2f}"
+            nxt15 = float(row.get("next_move_15m", float("nan")))
+            nxt15_s = "nan" if math.isnan(nxt15) else f"{nxt15:.2f}"
             nr = float(row["next_range_5m"])
             nr_s = "nan" if math.isnan(nr) else f"{nr:.2f}"
             lines.append(
@@ -1580,7 +1590,7 @@ def write_tape_bins_report(
                 f"{row['mnq_cvd_delta']} | {row['nq_cvd_delta']} | {imb_s} | "
                 f"{float(row['mnq_t_per_s']):.1f} | {float(row['range']):.2f} | "
                 f"{float(row['move']):.2f} | {gap_s} | {row['busiest_inner_n']} | "
-                f"{share_s} | {nxt_s} | {nr_s} |"
+                f"{share_s} | {nxt_s} | {nxt15_s} | {nr_s} |"
             )
         lines.append("")
     (out / "CVD_BURST.md").write_text("\n".join(lines), encoding="utf-8")
@@ -1597,6 +1607,7 @@ __all__ = [
     "HYP_BURST_IMB",
     "HYP_BURST_RANGE",
     "LAYER_ID",
+    "NEXT_15M_S",
     "PREALIGN_AFTER_S",
     "PREALIGN_BEFORE_S",
     "PREALIGN_BIN_S",

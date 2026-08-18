@@ -65,6 +65,8 @@ COMPARE_KEYS: Final[tuple[str, ...]] = (
     "n_rth_mnq_joins_nq_wide",
     "rth_mnq_joins_wide_rate",
     "median_bin_range",
+    "median_rth_join_move_5",
+    "median_rth_join_move_15",
     "n_bins_60s",
     "n_hyp_cvd",
     "n_hyp_all_three",
@@ -72,6 +74,8 @@ COMPARE_KEYS: Final[tuple[str, ...]] = (
     "hyp_all_three_rate",
     "median_next5m_hyp_cvd",
     "median_next5m_all_three",
+    "median_next15m_hyp_cvd",
+    "median_next15m_all_three",
 )
 
 
@@ -201,8 +205,8 @@ def _rth_join_lines(table: pl.DataFrame) -> list[str]:
     lines = [
         "## RTH MNQ→NQ (descriptive)",
         "",
-        "| opp | align | wide | move5 | rng5 | MNQΔ opp | NQΔ opp | MNQΔ al |",
-        "|---|---|---|---:|---:|---:|---:|---:|",
+        "| opp | align | wide | move5 | move15 | rng5 | MNQΔ opp | NQΔ opp | MNQΔ al |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     n = 0
     if table.height:
@@ -214,12 +218,14 @@ def _rth_join_lines(table: pl.DataFrame) -> list[str]:
                 continue
             n += 1
             move = float(row["move_5"])
+            move15 = float(row["move_h"])
             span = float(row["range_5"])
             move_s = "nan" if math.isnan(move) else f"{move:.2f}"
+            move15_s = "nan" if math.isnan(move15) else f"{move15:.2f}"
             span_s = "nan" if math.isnan(span) else f"{span:.2f}"
             lines.append(
                 f"| {_hm(row['opp_clock'])} | {_hm(row['align_clock'])} | "
-                f"{row['wide_vs_median']} | {move_s} | {span_s} | "
+                f"{row['wide_vs_median']} | {move_s} | {move15_s} | {span_s} | "
                 f"{row['mnq_cvd_delta']} | {row['nq_cvd_delta']} | {row['align_mnq_delta']} |"
             )
     if n == 0:
@@ -269,6 +275,8 @@ def summarize_align_day(
     n_joins = 0
     n_rth_joins = 0
     n_rth_joins_wide = 0
+    rth_move5: list[float] = []
+    rth_move15: list[float] = []
     if table.height:
         for row in table.iter_rows(named=True):
             if not _mnq_joins_nq(row):
@@ -276,6 +284,8 @@ def summarize_align_day(
             n_joins += 1
             if in_rth(str(row["opp_clock"]) if row.get("opp_clock") is not None else None):
                 n_rth_joins += 1
+                rth_move5.append(float(row["move_5"]))
+                rth_move15.append(float(row["move_h"]))
                 if bool(row.get("wide_vs_median")):
                     n_rth_joins_wide += 1
     median_range = diagnostics.get("median_bin_range")
@@ -294,6 +304,8 @@ def summarize_align_day(
         "n_rth_mnq_joins_nq": n_rth_joins,
         "n_rth_mnq_joins_nq_wide": n_rth_joins_wide,
         "rth_mnq_joins_wide_rate": _rate(n_rth_joins_wide, n_rth_joins),
+        "median_rth_join_move_5": _median(rth_move5),
+        "median_rth_join_move_15": _median(rth_move15),
         "median_bin_range": (
             float(median_range) if isinstance(median_range, int | float) else float("nan")
         ),
@@ -312,6 +324,8 @@ def summarize_tape_hyp(table: pl.DataFrame, diagnostics: Mapping[str, Any]) -> d
     n_all = int(diagnostics.get("n_hyp_all_three") or 0)
     next_cvd: list[float] = []
     next_all: list[float] = []
+    next15_cvd: list[float] = []
+    next15_all: list[float] = []
     if table.height:
         cvd_f = table["mnq_cvd_delta"].abs() >= HYP_BURST_CVD
         imb_f = table["mnq_imb"].abs() >= HYP_BURST_IMB
@@ -322,10 +336,13 @@ def summarize_tape_hyp(table: pl.DataFrame, diagnostics: Mapping[str, Any]) -> d
         )
         for row in flagged.iter_rows(named=True):
             nxt = float(row["next_move_5m"])
+            nxt15 = float(row.get("next_move_15m", float("nan")))
             if bool(row["_cvd"]):
                 next_cvd.append(nxt)
+                next15_cvd.append(nxt15)
             if bool(row["_all"]):
                 next_all.append(nxt)
+                next15_all.append(nxt15)
     return {
         "n_bins_60s": n_bins,
         "n_hyp_cvd": n_cvd,
@@ -334,6 +351,8 @@ def summarize_tape_hyp(table: pl.DataFrame, diagnostics: Mapping[str, Any]) -> d
         "hyp_all_three_rate": _rate(n_all, n_bins),
         "median_next5m_hyp_cvd": _median(next_cvd),
         "median_next5m_all_three": _median(next_all),
+        "median_next15m_hyp_cvd": _median(next15_cvd),
+        "median_next15m_all_three": _median(next15_all),
         "hyp_cvd": HYP_BURST_CVD,
         "hyp_imb": HYP_BURST_IMB,
         "hyp_range": HYP_BURST_RANGE,
@@ -507,7 +526,10 @@ def write_day_scan_report(scan: DayScan, output_dir: Path | str) -> Path:
         f"60s bins={scan.summary.get('n_bins_60s')} "
         f"|Δ|>=1000={scan.summary.get('n_hyp_cvd')} "
         f"all_three={scan.summary.get('n_hyp_all_three')} "
-        f"median next5m all_three={scan.summary.get('median_next5m_all_three')}.",
+        f"median next5m all_three={scan.summary.get('median_next5m_all_three')} "
+        f"median next15m all_three={scan.summary.get('median_next15m_all_three')}.",
+        f"RTH MNQ→NQ median move5={scan.summary.get('median_rth_join_move_5')} "
+        f"move15={scan.summary.get('median_rth_join_move_15')}.",
         "",
         "Burst cuts are OOS of 2026-08-17 11:51, not a lock.",
         "",
