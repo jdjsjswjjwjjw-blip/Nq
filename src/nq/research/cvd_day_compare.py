@@ -142,12 +142,22 @@ def describe_tape_coverage(
     *,
     tz_name: str = TZ_NAME,
     label: str = "day",
+    start_ts: int | None = None,
+    end_ts: int | None = None,
 ) -> dict[str, Any]:
     """مدى ``T`` وعدد الصفوف. يفضح ملفًا ناقصًا قبل مقارنة RTH."""
 
     book = prepare_mbo_events(mnq_mbo)
     tape = prepare_trades_tape(mnq_trades)
     nq = prepare_trades_tape(nq_trades)
+    if start_ts is not None:
+        book = book.filter(pl.col(EVENT_TS) >= int(start_ts))
+        tape = tape.filter(pl.col(EVENT_TS) >= int(start_ts))
+        nq = nq.filter(pl.col(EVENT_TS) >= int(start_ts))
+    if end_ts is not None:
+        book = book.filter(pl.col(EVENT_TS) < int(end_ts))
+        tape = tape.filter(pl.col(EVENT_TS) < int(end_ts))
+        nq = nq.filter(pl.col(EVENT_TS) < int(end_ts))
     mbo_t = _t_span(book, tz_name)
     tape_t = _t_span(tape, tz_name)
     nq_t = _t_span(nq, tz_name)
@@ -328,7 +338,15 @@ def scan_cvd_day(
 ) -> DayScan:
     """تعاكس 5د + توافق/توسّع + شرائح 60ث. بلا ساعات منسوخة."""
 
-    coverage = describe_tape_coverage(mnq_mbo, mnq_trades, nq_trades, tz_name=tz_name, label=label)
+    coverage = describe_tape_coverage(
+        mnq_mbo,
+        mnq_trades,
+        nq_trades,
+        tz_name=tz_name,
+        label=label,
+        start_ts=start_ts,
+        end_ts=end_ts,
+    )
     opposite, opp_diag = scan_cvd_opposite(
         mnq_mbo,
         mnq_trades,

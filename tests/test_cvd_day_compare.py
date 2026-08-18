@@ -62,6 +62,35 @@ def test_sunday_open_is_short_session_without_rth() -> None:
     assert in_rth(str(coverage["mnq_tmin"])) is False
 
 
+def test_coverage_window_ignores_rth_prints_outside() -> None:
+    rth = _ns("11:01:00")
+    eve = _ns("18:01:00")
+    eve2 = _ns("18:20:00")
+    mnq = make_stream(
+        [("T", "B", _PX, 4, 1), ("T", "B", _PX, 2, 2), ("T", "B", _PX, 2, 3)],
+        event_ts=[rth, eve, eve2],
+        sequence=[1, 2, 3],
+    )
+    nq = make_stream(
+        [("T", "B", _PX, 3, 0), ("T", "B", _PX, 1, 0), ("T", "B", _PX, 1, 0)],
+        event_ts=[rth, eve, eve2],
+        sequence=[10, 11, 12],
+    ).drop("order_id")
+    full = describe_tape_coverage(mnq, _tape(mnq), nq, label="full")
+    night = describe_tape_coverage(
+        mnq,
+        _tape(mnq),
+        nq,
+        label="night",
+        start_ts=_ns("18:00:00"),
+        end_ts=_ns("19:00:00"),
+    )
+    assert full["has_rth"] is True
+    assert night["has_rth"] is False
+    assert night["coverage_class"] == "short_session"
+    assert night["n_mnq_t"] == 2
+
+
 def test_rth_clock_bounds() -> None:
     assert in_rth("2025-06-03T09:30:00-04:00") is True
     assert in_rth("2025-06-03T15:59:00-04:00") is True
