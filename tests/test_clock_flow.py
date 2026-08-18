@@ -6,6 +6,7 @@ import datetime as dt
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import polars as pl
 import pytest
 
 import nq.research
@@ -14,7 +15,9 @@ from nq.research.clock_flow import (
     clock_to_ns,
     clock_windows,
     compare_clock_range,
+    scan_cvd_opposite,
     write_clock_report,
+    write_cvd_opposite_report,
 )
 from nq.research.mbo_sequence_mlp import assert_single_day_mbo
 from nq.research.opposite_phantom import SECOND_NS
@@ -34,8 +37,8 @@ def _ns(clock: str) -> int:
 
 
 def test_not_exported_from_research_init() -> None:
-    assert "clock_to_ns" not in nq.research.__all__
-    assert not hasattr(nq.research, "clock_to_ns")
+    assert "scan_cvd_opposite" not in nq.research.__all__
+    assert not hasattr(nq.research, "scan_cvd_opposite")
 
 
 def test_ny_1130_windows_start_at_eleven_and_cover_after() -> None:
@@ -331,3 +334,59 @@ def test_price_lo_adds_low_and_level_windows() -> None:
     assert level_nq["ask_hit_share"] != level_nq["ask_hit_share"]
     low_mbo = next(s for s in sources if s["name"] == "low" and s["source"] == "mnq_mbo")
     assert low_mbo["c_ask_size"] == 5
+
+
+def test_cvd_opposite_flags_delta_not_zero() -> None:
+    t_buy = _ns("11:01:00")
+    t_both = _ns("11:06:00")
+    mnq = make_stream(
+        [("T", "B", _PX, 5, 1), ("T", "B", _PX, 2, 2)],
+        event_ts=[t_buy, t_both],
+        sequence=[1, 2],
+    )
+    tape = make_stream(
+        [("T", "B", _PX, 5, 0), ("T", "B", _PX, 2, 0)],
+        event_ts=[t_buy, t_both],
+        sequence=[1, 2],
+    ).drop("order_id")
+    nq = make_stream(
+        [("T", "A", _PX, 3, 0), ("T", "B", _PX, 4, 0)],
+        event_ts=[t_buy, t_both],
+        sequence=[10, 11],
+    ).drop("order_id")
+    table, diag = scan_cvd_opposite(mnq, tape, nq, bin_s=300)
+    assert diag["not_pattern"] is True
+    opp = table.filter(pl.col("delta_opposite"))
+    same = table.filter(~pl.col("delta_opposite"))
+    assert opp.height == 1
+    assert same.height >= 1
+    row = opp.row(0, named=True)
+    assert row["mnq_cvd_delta"] > 0
+    assert row["nq_cvd_delta"] < 0
+    aligned = same.filter(pl.col("mnq_cvd_delta") > 0)
+    assert aligned.height == 1
+    assert aligned["nq_cvd_delta"][0] > 0
+
+
+def test_cvd_opposite_report(tmp_path: Path) -> None:
+    t_buy = _ns("11:01:00")
+    mnq = make_stream(
+        [("T", "B", _PX, 4, 1)],
+        event_ts=[t_buy],
+        sequence=[1],
+    )
+    tape = make_stream(
+        [("T", "B", _PX, 4, 0)],
+        event_ts=[t_buy],
+        sequence=[1],
+    ).drop("order_id")
+    nq = make_stream(
+        [("T", "A", _PX, 1, 0)],
+        event_ts=[t_buy],
+        sequence=[9],
+    ).drop("order_id")
+    table, diag = scan_cvd_opposite(mnq, tape, nq, bin_s=300)
+    written = write_cvd_opposite_report(table, diag, tmp_path)
+    text = (written / "CVD_OPPOSITE.md").read_text(encoding="utf-8")
+    assert "ΔCVD opposite" in text
+    assert (written / "cvd_delta_opposite.parquet").exists()
