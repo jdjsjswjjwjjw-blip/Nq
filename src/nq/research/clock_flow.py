@@ -4,6 +4,7 @@
 CVD تراكمي من أول ``T`` في ملف اليوم: ``Σ(حجم شراء − حجم بيع)``. ليس عتبة.
 بعد تعاكس قوي: أول شريحة ΔCVD متوافق ثم مدى السعر — وصف لا إشارة.
 مسار 60ث قبل التوافق: CVD والاختلال وT/s وA/C — يختبر هضبة التجهيز، ليس نمطًا.
+شرائح 30ث/5ث حول دقائق عنيفة: تجمّع الطباعات وقاعدة اليوم، بلا عتبة مقفلة.
 بلا عتبة نمط وبلا إشارة. NQ بلا MBO فـ Fill لا يُختلق.
 ``price_lo`` اختياري: قاع الشريحة + أول لمسة للمستوى بعد بداية الشريحة.
 احذف الملف + السكربت + الاختبار للإزالة.
@@ -49,6 +50,10 @@ PREALIGN_LAST_S: Final = 60
 IMB_NEAR_ZERO: Final = 0.05
 IMB_STRONG: Final = 0.10
 CVD_JUMP_ABS: Final = 500
+BURST_INNER_S: Final = 5
+HYP_BURST_CVD: Final = 1000
+HYP_BURST_IMB: Final = 0.20
+HYP_BURST_RANGE: Final = 10.0
 _TRADE = MboAction.TRADE.value
 _ADD = MboAction.ADD.value
 _CANCEL = MboAction.CANCEL.value
@@ -1321,11 +1326,257 @@ def write_cvd_prealign_report(
     return out
 
 
+def _cluster_stats(
+    index: _CvdIndex,
+    start_ts: int,
+    end_ts: int,
+    inner_s: int,
+) -> dict[str, Any]:
+    lo, hi = _span(index, start_ts, end_ts)
+    n = max(0, hi - lo)
+    out: dict[str, Any] = {
+        "n_t_cluster": n,
+        "median_gap_ms": float("nan"),
+        "p90_gap_ms": float("nan"),
+        "busiest_inner_n": 0,
+        "busiest_inner_share": float("nan"),
+        "inner_s": inner_s,
+    }
+    if n <= 1:
+        return out
+    ts = index.ts[lo:hi]
+    gaps = np.diff(ts.astype(np.float64)) / 1_000_000.0
+    out["median_gap_ms"] = float(np.median(gaps))
+    out["p90_gap_ms"] = float(np.quantile(gaps, 0.9))
+    inner_ns = int(inner_s) * SECOND_NS
+    if inner_ns <= 0:
+        return out
+    buckets = (ts - int(start_ts)) // inner_ns
+    counts = np.unique(buckets, return_counts=True)[1]
+    busiest = int(counts.max())
+    out["busiest_inner_n"] = busiest
+    out["busiest_inner_share"] = float(busiest) / float(n)
+    return out
+
+
+def _tape_bin_row(
+    *,
+    cvd_mbo: _CvdIndex,
+    cvd_nq: _CvdIndex,
+    cvd_tape: _CvdIndex,
+    start_ts: int,
+    end_ts: int,
+    tz_name: str,
+    bin_s: int,
+    inner_s: int,
+    label: str,
+) -> dict[str, Any]:
+    mbo_delta = _cvd_before(cvd_mbo, end_ts) - _cvd_before(cvd_mbo, start_ts)
+    nq_delta = _cvd_before(cvd_nq, end_ts) - _cvd_before(cvd_nq, start_ts)
+    tape_delta = _cvd_before(cvd_tape, end_ts) - _cvd_before(cvd_tape, start_ts)
+    mbo_n = _window_n(cvd_mbo, start_ts, end_ts)
+    nq_n = _window_n(cvd_nq, start_ts, end_ts)
+    mbo_size = _window_size(cvd_mbo, start_ts, end_ts)
+    nq_size = _window_size(cvd_nq, start_ts, end_ts)
+    first, last, move, span = _price_path(cvd_mbo, start_ts, end_ts)
+    width = max(1.0, float(end_ts - start_ts) / float(SECOND_NS))
+    cluster = _cluster_stats(cvd_mbo, start_ts, end_ts, inner_s)
+    return {
+        "label": label,
+        "clock": _fmt_ts(start_ts, tz_name),
+        "end_clock": _fmt_ts(end_ts, tz_name),
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+        "bin_s": bin_s,
+        "mnq_cvd_delta": mbo_delta,
+        "mnq_tape_cvd_delta": tape_delta,
+        "nq_cvd_delta": nq_delta,
+        "mnq_imb": _imb(mbo_delta, mbo_size),
+        "nq_imb": _imb(nq_delta, nq_size),
+        "mnq_n_t": mbo_n,
+        "nq_n_t": nq_n,
+        "mnq_t_per_s": float(mbo_n) / width,
+        "move": move,
+        "range": span,
+        "first_px": first,
+        "last_px": last,
+        **cluster,
+    }
+
+
+def _attach_next_horizon(
+    rows: list[dict[str, Any]],
+    cvd_mbo: _CvdIndex,
+    horizon_s: int,
+) -> None:
+    horizon_ns = int(horizon_s) * SECOND_NS
+    for row in rows:
+        end_ts = int(row["end_ts"])
+        last = float(row["last_px"])
+        _, last_h, move_h, span_h = _price_path(cvd_mbo, end_ts, end_ts + horizon_ns)
+        row["next_range_5m"] = span_h
+        if math.isnan(last) or math.isnan(last_h):
+            row["next_move_5m"] = float("nan")
+        else:
+            row["next_move_5m"] = float(last_h - last)
+        row["next_move_h"] = move_h
+
+
+def scan_tape_bins(
+    mnq_mbo: pl.DataFrame,
+    mnq_trades: pl.DataFrame,
+    nq_trades: pl.DataFrame,
+    *,
+    bin_s: int = 60,
+    tz_name: str = TZ_NAME,
+    start_ts: int | None = None,
+    end_ts: int | None = None,
+    inner_s: int = BURST_INNER_S,
+    label: str = "day",
+    horizon_s: int = 300,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """شرائح شريط T مع تجمّع داخلي. عتبات 1000/0.20 فرضية من 11:51 وليست قفلًا."""
+
+    if bin_s <= 0:
+        raise ValueError("bin_s must be positive")
+    book = prepare_mbo_events(mnq_mbo)
+    tape = prepare_trades_tape(mnq_trades)
+    nq = prepare_trades_tape(nq_trades)
+    cvd_mbo = _cvd_index(book)
+    cvd_tape = _cvd_index(tape)
+    cvd_nq = _cvd_index(nq)
+    empty = {
+        "layer": LAYER_ID,
+        "bin_s": bin_s,
+        "inner_s": inner_s,
+        "label": label,
+        "n_bins": 0,
+        "n_hyp_cvd": 0,
+        "n_hyp_imb": 0,
+        "n_hyp_range": 0,
+        "n_hyp_all_three": 0,
+        "not_pattern": True,
+        "not_burst_lock": True,
+        "hyp_cvd": HYP_BURST_CVD,
+        "hyp_imb": HYP_BURST_IMB,
+        "hyp_range": HYP_BURST_RANGE,
+        "not_lstm": True,
+        "not_live_overlay": True,
+    }
+    if cvd_mbo.ts.size == 0:
+        return pl.DataFrame(), empty
+    first = int(cvd_mbo.ts[0]) if start_ts is None else int(start_ts)
+    last = int(cvd_mbo.ts[-1]) if end_ts is None else int(end_ts)
+    stamp = _floor_ns(first, bin_s, tz_name) if start_ts is None else int(start_ts)
+    step = int(bin_s) * SECOND_NS
+    rows: list[dict[str, Any]] = []
+    while stamp < last:
+        nxt = stamp + step
+        if _window_n(cvd_mbo, stamp, nxt) or _window_n(cvd_nq, stamp, nxt):
+            rows.append(
+                _tape_bin_row(
+                    cvd_mbo=cvd_mbo,
+                    cvd_nq=cvd_nq,
+                    cvd_tape=cvd_tape,
+                    start_ts=stamp,
+                    end_ts=nxt,
+                    tz_name=tz_name,
+                    bin_s=bin_s,
+                    inner_s=inner_s,
+                    label=label,
+                )
+            )
+        stamp = nxt
+    _attach_next_horizon(rows, cvd_mbo, horizon_s)
+    table = pl.DataFrame(rows)
+    if table.height:
+        cvd_f = table["mnq_cvd_delta"].abs() >= HYP_BURST_CVD
+        imb_f = table["mnq_imb"].abs() >= HYP_BURST_IMB
+        rng_f = table["range"] >= HYP_BURST_RANGE
+        empty.update(
+            {
+                "n_bins": table.height,
+                "n_hyp_cvd": int(cvd_f.sum()),
+                "n_hyp_imb": int(imb_f.sum()),
+                "n_hyp_range": int(rng_f.sum()),
+                "n_hyp_all_three": int((cvd_f & imb_f & rng_f).sum()),
+            }
+        )
+    return table, empty
+
+
+def write_tape_bins_report(
+    tables: Mapping[str, pl.DataFrame],
+    diagnostics: Mapping[str, Any],
+    output_dir: Path | str,
+) -> Path:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for name, table in tables.items():
+        if table.height:
+            table.write_parquet(out / f"tape_bins_{name}.parquet")
+    (out / "summary.json").write_text(
+        json.dumps(dict(diagnostics), indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    lines = [
+        "# Tape bins: clustering and hypothesized burst cuts",
+        "",
+        "Cuts |ΔCVD|>=1000, |imb|>=0.20, range>=10 come from 11:51 on this day. "
+        "Not a lock. Failed alignments are included so the cut is not success-only.",
+        "",
+    ]
+    day = diagnostics.get("day60", {})
+    if isinstance(day, Mapping):
+        lines.append(
+            f"day 60s bins={day.get('n_bins')} hyp_cvd={day.get('n_hyp_cvd')} "
+            f"hyp_imb={day.get('n_hyp_imb')} hyp_range={day.get('n_hyp_range')} "
+            f"all_three={day.get('n_hyp_all_three')}."
+        )
+        lines.append("")
+    for name, table in tables.items():
+        lines.extend([f"## {name}", ""])
+        if table.height == 0:
+            lines.append("(empty)")
+            lines.append("")
+            continue
+        lines.append(
+            "| clock | end | MNQΔ | NQΔ | imb | T/s | rng | move | "
+            "gap_ms | busy5_n | busy5_share | next5m_move | next5m_rng |"
+        )
+        lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        for row in table.iter_rows(named=True):
+            imb = float(row["mnq_imb"])
+            imb_s = "nan" if math.isnan(imb) else f"{imb:.3f}"
+            share = float(row["busiest_inner_share"])
+            share_s = "nan" if math.isnan(share) else f"{share:.2f}"
+            gap = float(row["median_gap_ms"])
+            gap_s = "nan" if math.isnan(gap) else f"{gap:.0f}"
+            nxt = float(row["next_move_5m"])
+            nxt_s = "nan" if math.isnan(nxt) else f"{nxt:.2f}"
+            nr = float(row["next_range_5m"])
+            nr_s = "nan" if math.isnan(nr) else f"{nr:.2f}"
+            lines.append(
+                f"| {str(row['clock'])[11:16]} | {str(row['end_clock'])[11:16]} | "
+                f"{row['mnq_cvd_delta']} | {row['nq_cvd_delta']} | {imb_s} | "
+                f"{float(row['mnq_t_per_s']):.1f} | {float(row['range']):.2f} | "
+                f"{float(row['move']):.2f} | {gap_s} | {row['busiest_inner_n']} | "
+                f"{share_s} | {nxt_s} | {nr_s} |"
+            )
+        lines.append("")
+    (out / "CVD_BURST.md").write_text("\n".join(lines), encoding="utf-8")
+    return out
+
+
 __all__ = [
     "AFTER_S",
     "ALIGN_HORIZON_BINS",
     "BIN_S",
+    "BURST_INNER_S",
     "EXPAND_MULT",
+    "HYP_BURST_CVD",
+    "HYP_BURST_IMB",
+    "HYP_BURST_RANGE",
     "LAYER_ID",
     "PREALIGN_AFTER_S",
     "PREALIGN_BEFORE_S",
@@ -1339,8 +1590,10 @@ __all__ = [
     "scan_cvd_align_expansion",
     "scan_cvd_opposite",
     "scan_cvd_prealign",
+    "scan_tape_bins",
     "write_clock_report",
     "write_cvd_align_expansion_report",
     "write_cvd_opposite_report",
     "write_cvd_prealign_report",
+    "write_tape_bins_report",
 ]
