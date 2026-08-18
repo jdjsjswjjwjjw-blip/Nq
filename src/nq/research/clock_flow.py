@@ -5,6 +5,7 @@ CVD تراكمي من أول ``T`` في ملف اليوم: ``Σ(حجم شراء 
 بعد تعاكس قوي: أول شريحة ΔCVD متوافق ثم مدى السعر — وصف لا إشارة.
 مسار 60ث قبل التوافق: CVD والاختلال وT/s وA/C — يختبر هضبة التجهيز، ليس نمطًا.
 شرائح 30ث/5ث حول دقائق عنيفة: تجمّع الطباعات وقاعدة اليوم، بلا عتبة مقفلة.
+مقارنة يوم آخر بنفس التعريفات الأوليّة؛ لا تُنسخ ساعات 10:24/11:51.
 بلا عتبة نمط وبلا إشارة. NQ بلا MBO فـ Fill لا يُختلق.
 ``price_lo`` اختياري: قاع الشريحة + أول لمسة للمستوى بعد بداية الشريحة.
 احذف الملف + السكربت + الاختبار للإزالة.
@@ -581,6 +582,8 @@ def scan_cvd_opposite(
     *,
     bin_s: int = 300,
     tz_name: str = TZ_NAME,
+    start_ts: int | None = None,
+    end_ts: int | None = None,
 ) -> tuple[pl.DataFrame, dict[str, Any]]:
     """شرائح ``bin_s`` حيث ΔCVD أو CVD التراكمي متعاكس بين MNQ MBO وNQ."""
 
@@ -592,20 +595,28 @@ def scan_cvd_opposite(
     cvd_mbo = _cvd_index(book)
     cvd_tape = _cvd_index(tape)
     cvd_nq = _cvd_index(nq)
+    empty_diag = {
+        "layer": LAYER_ID,
+        "bin_s": bin_s,
+        "tz": tz_name,
+        "n_bins": 0,
+        "n_delta_opposite": 0,
+        "n_end_opposite": 0,
+        "not_pattern": True,
+        "not_cvd_threshold": True,
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+    }
     if cvd_mbo.ts.size == 0 or cvd_nq.ts.size == 0:
-        empty = pl.DataFrame()
-        return empty, {
-            "layer": LAYER_ID,
-            "bin_s": bin_s,
-            "tz": tz_name,
-            "n_bins": 0,
-            "n_delta_opposite": 0,
-            "n_end_opposite": 0,
-            "not_pattern": True,
-            "not_cvd_threshold": True,
-        }
+        return pl.DataFrame(), empty_diag
     first = int(min(int(cvd_mbo.ts[0]), int(cvd_nq.ts[0])))
     last = int(max(int(cvd_mbo.ts[-1]), int(cvd_nq.ts[-1])))
+    if start_ts is not None:
+        first = int(start_ts)
+    if end_ts is not None:
+        last = int(end_ts) - 1
+    if last < first:
+        return pl.DataFrame(), empty_diag
     start = _floor_ns(first, bin_s, tz_name)
     step = int(bin_s) * SECOND_NS
     rows: list[dict[str, Any]] = []
@@ -677,6 +688,8 @@ def scan_cvd_opposite(
         "not_lstm": True,
         "not_live_overlay": True,
         "not_backtest": True,
+        "start_ts": start_ts,
+        "end_ts": end_ts,
     }
     return table, diagnostics
 
@@ -933,6 +946,8 @@ def scan_cvd_align_expansion(
     strong_nq: int = STRONG_NQ_ABS,
     expand_mult: float = EXPAND_MULT,
     horizon_bins: int = ALIGN_HORIZON_BINS,
+    start_ts: int | None = None,
+    end_ts: int | None = None,
 ) -> tuple[pl.DataFrame, dict[str, Any]]:
     """بعد حلقة ΔCVD متعاكسة قوية: أول توافق ثم مدى السعر. ليس نمطًا."""
 
@@ -942,6 +957,8 @@ def scan_cvd_align_expansion(
         nq_trades,
         bin_s=bin_s,
         tz_name=tz_name,
+        start_ts=start_ts,
+        end_ts=end_ts,
     )
     book = prepare_mbo_events(mnq_mbo)
     cvd_mbo = _cvd_index(book)
@@ -956,6 +973,8 @@ def scan_cvd_align_expansion(
         median_range=median_range,
         opp_diag=opp_diag,
     )
+    diagnostics["start_ts"] = start_ts
+    diagnostics["end_ts"] = end_ts
     if bins.height == 0 or cvd_mbo.ts.size == 0:
         return pl.DataFrame(), diagnostics
     rows = list(bins.sort("start_ts").iter_rows(named=True))
