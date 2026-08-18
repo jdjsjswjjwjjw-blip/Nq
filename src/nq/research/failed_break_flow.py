@@ -764,7 +764,9 @@ def iter_idrive_session_files(mbo_root: Path | str) -> list[tuple[str, Path]]:
     return [(day, by_day[day]) for day in sorted(by_day)]
 
 
-def _load_idrive_day(path: Path, *, with_mbo: bool) -> tuple[pl.DataFrame, pl.DataFrame | None]:
+def load_idrive_day(
+    path: Path, *, with_mbo: bool = False
+) -> tuple[pl.DataFrame, pl.DataFrame | None]:
     lf = pl.scan_parquet(path)
     names = lf.collect_schema().names()
     if "action" not in names:
@@ -814,7 +816,7 @@ def scan_year_idrive_tick(
         if log is not None:
             log(f"day {day_id} {path.name}")
         try:
-            trades, mbo = _load_idrive_day(path, with_mbo=with_mbo)
+            trades, mbo = load_idrive_day(path, with_mbo=with_mbo)
             table, day_diag = scan_tick_early_fail(
                 trades,
                 mbo,
@@ -902,6 +904,7 @@ __all__ = [
     "HOLDOUT_START_DATE",
     "LAYER_ID",
     "iter_idrive_session_files",
+    "load_idrive_day",
     "scan_blended_early_fail",
     "scan_tick_early_fail",
     "scan_year_blended",
