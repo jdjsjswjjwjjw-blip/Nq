@@ -126,6 +126,36 @@ def test_blended_entry_is_close_not_high() -> None:
     assert row["p_path"] == pytest.approx(0.2)
 
 
+def test_blended_nano_prices_scale_to_points() -> None:
+    start = _ns("04:00:00")
+    rows: list[dict[str, float | int]] = []
+    px = 21_000_000_000_000.0
+    for i in range(250):
+        ts = start + i * 30 * _NS
+        h = px + 1_000_000_000.0
+        close = px
+        if i == 200:
+            h = px + 20_000_000_000.0
+            close = px - 500_000_000.0
+        rows.append(
+            {
+                AVAILABILITY_TS: ts,
+                "high": h,
+                "low": px - 1_000_000_000.0,
+                "close": close,
+                "vp_of_delta": -5.0,
+                "lf_liquidity_withdrawal": 1.0,
+                "path_change_fail": 1.0,
+            }
+        )
+    blended = pl.DataFrame(rows)
+    table, _ = scan_blended_early_fail(blended, lookback=3, atr_window=3, min_votes=2)
+    assert table.height >= 1
+    row = table.row(0, named=True)
+    assert row["entry"] == pytest.approx(20999.5)
+    assert row["entry"] < 1_000_000
+
+
 def test_year_skips_holdout(tmp_path: Path) -> None:
     assert HOLDOUT_START_DATE == "2025-09-01"
     for name, close in (("2025-08-29", 100.0), ("2025-09-02", 100.0)):

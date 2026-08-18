@@ -62,6 +62,7 @@ _CANCEL = MboAction.CANCEL.value
 _BID = MboSide.BID.value
 _ASK = MboSide.ASK.value
 _EPS: Final = 1e-12
+_FIXED_POINT_PRICE: Final = 1_000_000.0
 
 _TRADE_SCHEMA: Final[dict[str, pl.DataType]] = {
     "signal_ts": pl.Int64(),
@@ -86,6 +87,16 @@ _TRADE_SCHEMA: Final[dict[str, pl.DataType]] = {
     "source": pl.Utf8(),
     "day_id": pl.Utf8(),
 }
+
+
+def _to_points(arr: NDArray[np.float64]) -> NDArray[np.float64]:
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return arr
+    med = float(np.median(np.abs(finite)))
+    if med >= _FIXED_POINT_PRICE:
+        return np.asarray(arr * PRICE_SCALE, dtype=np.float64)
+    return arr
 
 
 def _ratio(num: float, den: float) -> float:
@@ -529,9 +540,9 @@ def scan_blended_early_fail(  # noqa: PLR0912, PLR0915
     elif "p_y_path_further_beyond" not in work.columns:
         work = work.with_columns(pl.lit(None, dtype=pl.Float64).alias("p_y_path_further_beyond"))
     ts = np.asarray(work[AVAILABILITY_TS].to_numpy(), dtype=np.int64)
-    high = np.asarray(work["high"].to_numpy(), dtype=np.float64)
-    low = np.asarray(work["low"].to_numpy(), dtype=np.float64)
-    close = np.asarray(work["close"].to_numpy(), dtype=np.float64)
+    high = _to_points(np.asarray(work["high"].to_numpy(), dtype=np.float64))
+    low = _to_points(np.asarray(work["low"].to_numpy(), dtype=np.float64))
+    close = _to_points(np.asarray(work["close"].to_numpy(), dtype=np.float64))
     delta = (
         np.asarray(work["vp_of_delta"].to_numpy(), dtype=np.float64)
         if "vp_of_delta" in work.columns
@@ -689,6 +700,8 @@ def scan_year_blended(
     n_days = 0
     n_skip = 0
     n_hold = 0
+    n_breaks = 0
+    n_early = 0
     for day in days:
         if day.name >= holdout_start:
             n_hold += 1
@@ -700,10 +713,12 @@ def scan_year_blended(
         blended = pl.read_parquet(blended_path)
         oof_path = day / "oof_predictions.parquet"
         oof = pl.read_parquet(oof_path) if oof_path.is_file() else None
-        table, _ = scan_blended_early_fail(
+        table, day_diag = scan_blended_early_fail(
             blended, oof, point_value=point_value, min_votes=min_votes, day_id=day.name
         )
         n_days += 1
+        n_breaks += int(day_diag.get("n_breaks") or 0)
+        n_early += int(day_diag.get("n_early_fail") or 0)
         if table.height:
             tables.append(table)
     stacked = pl.concat(tables, how="vertical") if tables else pl.DataFrame(schema=_TRADE_SCHEMA)
@@ -711,6 +726,8 @@ def scan_year_blended(
     diag["n_skipped_missing"] = n_skip
     diag["n_skipped_holdout"] = n_hold
     diag["holdout_start"] = holdout_start
+    diag["n_breaks"] = n_breaks
+    diag["n_early_fail"] = n_early
     return stacked, _pack_trades(stacked, diag)
 
 
