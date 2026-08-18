@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final, NamedTuple
@@ -45,6 +46,8 @@ class _CvdIndex(NamedTuple):
 
     ts: NDArray[np.int64]
     cvd: NDArray[np.int64]
+    price: NDArray[np.float64]
+    size: NDArray[np.int64]
 
 
 def _cvd_index(book: pl.DataFrame) -> _CvdIndex:
@@ -58,14 +61,17 @@ def _cvd_index(book: pl.DataFrame) -> _CvdIndex:
     frame = (
         book.filter(pl.col("action") == _TRADE)
         .sort([EVENT_TS, SEQUENCE])
-        .select(EVENT_TS, signed.cum_sum().alias("cvd"))
+        .select(EVENT_TS, signed.cum_sum().alias("cvd"), "price", "size")
     )
-    empty: NDArray[np.int64] = np.empty(0, dtype=np.int64)
+    empty_i: NDArray[np.int64] = np.empty(0, dtype=np.int64)
+    empty_f: NDArray[np.float64] = np.empty(0, dtype=np.float64)
     if frame.height == 0:
-        return _CvdIndex(empty, empty)
+        return _CvdIndex(empty_i, empty_i, empty_f, empty_i)
     return _CvdIndex(
         np.asarray(frame[EVENT_TS].to_numpy(), dtype=np.int64),
         np.asarray(frame["cvd"].to_numpy(), dtype=np.int64),
+        np.asarray(frame["price"].to_numpy(), dtype=np.float64),
+        np.asarray(frame["size"].to_numpy(), dtype=np.int64),
     )
 
 
@@ -78,6 +84,51 @@ def _cvd_before(index: _CvdIndex, ts: int) -> int:
     if pos < 0:
         return 0
     return int(index.cvd[pos])
+
+
+def _signs_opposite(left: int, right: int) -> bool:
+    return (left > 0 and right < 0) or (left < 0 and right > 0)
+
+
+def _span(index: _CvdIndex, start_ts: int, end_ts: int) -> tuple[int, int]:
+    lo = int(np.searchsorted(index.ts, start_ts, side="left"))
+    hi = int(np.searchsorted(index.ts, end_ts, side="left"))
+    return lo, hi
+
+
+def _window_n(index: _CvdIndex, start_ts: int, end_ts: int) -> int:
+    lo, hi = _span(index, start_ts, end_ts)
+    return max(0, hi - lo)
+
+
+def _window_size(index: _CvdIndex, start_ts: int, end_ts: int) -> int:
+    lo, hi = _span(index, start_ts, end_ts)
+    if hi <= lo:
+        return 0
+    return int(index.size[lo:hi].sum())
+
+
+def _window_extrema(index: _CvdIndex, start_ts: int, end_ts: int) -> tuple[float, float]:
+    lo, hi = _span(index, start_ts, end_ts)
+    if hi <= lo:
+        return float("nan"), float("nan")
+    chunk = index.price[lo:hi]
+    return float(chunk.min()), float(chunk.max())
+
+
+def _imb(delta: int, t_size: int) -> float:
+    if t_size <= 0:
+        return float("nan")
+    return float(delta) / float(t_size)
+
+
+def _floor_ns(ts: int, bin_s: int, tz_name: str) -> int:
+    stamp = dt.datetime.fromtimestamp(ts / 1_000_000_000, tz=ZoneInfo(tz_name))
+    midnight = stamp.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed = int((stamp - midnight).total_seconds())
+    floored = elapsed - (elapsed % int(bin_s))
+    out = midnight + dt.timedelta(seconds=floored)
+    return int(out.timestamp() * 1_000_000_000)
 
 
 def _with_cvd(
@@ -449,6 +500,175 @@ def write_clock_report(
     return out
 
 
+def scan_cvd_opposite(
+    mnq_mbo: pl.DataFrame,
+    mnq_trades: pl.DataFrame,
+    nq_trades: pl.DataFrame,
+    *,
+    bin_s: int = 300,
+    tz_name: str = TZ_NAME,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """شرائح ``bin_s`` حيث ΔCVD أو CVD التراكمي متعاكس بين MNQ MBO وNQ."""
+
+    if bin_s <= 0:
+        raise ValueError("bin_s must be positive")
+    book = prepare_mbo_events(mnq_mbo)
+    tape = prepare_trades_tape(mnq_trades)
+    nq = prepare_trades_tape(nq_trades)
+    cvd_mbo = _cvd_index(book)
+    cvd_tape = _cvd_index(tape)
+    cvd_nq = _cvd_index(nq)
+    if cvd_mbo.ts.size == 0 or cvd_nq.ts.size == 0:
+        empty = pl.DataFrame()
+        return empty, {
+            "layer": LAYER_ID,
+            "bin_s": bin_s,
+            "tz": tz_name,
+            "n_bins": 0,
+            "n_delta_opposite": 0,
+            "n_end_opposite": 0,
+            "not_pattern": True,
+            "not_cvd_threshold": True,
+        }
+    first = int(min(int(cvd_mbo.ts[0]), int(cvd_nq.ts[0])))
+    last = int(max(int(cvd_mbo.ts[-1]), int(cvd_nq.ts[-1])))
+    start = _floor_ns(first, bin_s, tz_name)
+    step = int(bin_s) * SECOND_NS
+    rows: list[dict[str, Any]] = []
+    stamp = start
+    while stamp <= last:
+        nxt = stamp + step
+        mbo_before = _cvd_before(cvd_mbo, stamp)
+        mbo_end = _cvd_before(cvd_mbo, nxt)
+        nq_before = _cvd_before(cvd_nq, stamp)
+        nq_end = _cvd_before(cvd_nq, nxt)
+        tape_before = _cvd_before(cvd_tape, stamp)
+        tape_end = _cvd_before(cvd_tape, nxt)
+        mbo_delta = mbo_end - mbo_before
+        nq_delta = nq_end - nq_before
+        tape_delta = tape_end - tape_before
+        mbo_n = _window_n(cvd_mbo, stamp, nxt)
+        nq_n = _window_n(cvd_nq, stamp, nxt)
+        if mbo_n == 0 and nq_n == 0:
+            stamp = nxt
+            continue
+        mbo_size = _window_size(cvd_mbo, stamp, nxt)
+        nq_size = _window_size(cvd_nq, stamp, nxt)
+        min_px, max_px = _window_extrema(cvd_mbo, stamp, nxt)
+        delta_opp = _signs_opposite(mbo_delta, nq_delta)
+        end_opp = _signs_opposite(mbo_end, nq_end)
+        tape_delta_opp = _signs_opposite(tape_delta, nq_delta)
+        rows.append(
+            {
+                "start_ts": stamp,
+                "end_ts": nxt,
+                "clock": _fmt_ts(stamp, tz_name),
+                "end_clock": _fmt_ts(nxt, tz_name),
+                "mnq_n_t": mbo_n,
+                "nq_n_t": nq_n,
+                "mnq_cvd_delta": mbo_delta,
+                "nq_cvd_delta": nq_delta,
+                "mnq_tape_cvd_delta": tape_delta,
+                "mnq_cvd_end": mbo_end,
+                "nq_cvd_end": nq_end,
+                "mnq_cvd_notional_delta": mbo_delta * MNQ_MULT,
+                "nq_cvd_notional_delta": nq_delta * NQ_MULT,
+                "mnq_cvd_notional_end": mbo_end * MNQ_MULT,
+                "nq_cvd_notional_end": nq_end * NQ_MULT,
+                "mnq_imb": _imb(mbo_delta, mbo_size),
+                "nq_imb": _imb(nq_delta, nq_size),
+                "min_px": min_px,
+                "max_px": max_px,
+                "delta_opposite": delta_opp,
+                "end_opposite": end_opp,
+                "tape_delta_opposite": tape_delta_opp,
+            }
+        )
+        stamp = nxt
+    table = pl.DataFrame(rows)
+    n_delta = int(table.filter(pl.col("delta_opposite")).height) if table.height else 0
+    n_end = int(table.filter(pl.col("end_opposite")).height) if table.height else 0
+    diagnostics = {
+        "layer": LAYER_ID,
+        "bin_s": bin_s,
+        "tz": tz_name,
+        "n_bins": table.height,
+        "n_delta_opposite": n_delta,
+        "n_end_opposite": n_end,
+        "cvd_origin": "first_T_in_day_file",
+        "mnq_source": "mbo_T",
+        "nq_source": "trades_tape_T_only",
+        "not_pattern": True,
+        "not_cvd_threshold": True,
+        "not_lstm": True,
+        "not_live_overlay": True,
+        "not_backtest": True,
+    }
+    return table, diagnostics
+
+
+def write_cvd_opposite_report(
+    table: pl.DataFrame,
+    diagnostics: Mapping[str, Any],
+    output_dir: Path | str,
+) -> Path:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    if table.height:
+        table.write_parquet(out / "cvd_bins.parquet")
+        table.filter(pl.col("delta_opposite")).write_parquet(out / "cvd_delta_opposite.parquet")
+        table.filter(pl.col("end_opposite")).write_parquet(out / "cvd_end_opposite.parquet")
+    (out / "summary.json").write_text(
+        json.dumps(dict(diagnostics), indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+
+    def _rows(flag: str) -> list[str]:
+        lines = [
+            "| clock | end | MNQ ΔCVD | NQ ΔCVD | MNQ CVDend | NQ CVDend | "
+            "MNQ imb | NQ imb | min | max |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+        if table.height == 0:
+            return lines
+        for row in table.filter(pl.col(flag)).iter_rows(named=True):
+            mnq_imb = float(row["mnq_imb"])
+            nq_imb = float(row["nq_imb"])
+            mnq_s = "nan" if math.isnan(mnq_imb) else f"{mnq_imb:.3f}"
+            nq_s = "nan" if math.isnan(nq_imb) else f"{nq_imb:.3f}"
+            lo = float(row["min_px"])
+            hi = float(row["max_px"])
+            lo_s = "nan" if math.isnan(lo) else f"{lo:.2f}"
+            hi_s = "nan" if math.isnan(hi) else f"{hi:.2f}"
+            lines.append(
+                f"| {row['clock']} | {row['end_clock']} | {row['mnq_cvd_delta']} | "
+                f"{row['nq_cvd_delta']} | {row['mnq_cvd_end']} | {row['nq_cvd_end']} | "
+                f"{mnq_s} | {nq_s} | {lo_s} | {hi_s} |"
+            )
+        return lines
+
+    lines = [
+        "# CVD opposite: MNQ MBO vs NQ trades",
+        "",
+        f"bin_s={diagnostics.get('bin_s')} tz={diagnostics.get('tz')} "
+        f"n_bins={diagnostics.get('n_bins')} "
+        f"delta_opposite={diagnostics.get('n_delta_opposite')} "
+        f"end_opposite={diagnostics.get('n_end_opposite')}.",
+        "Opposite = different sign. Zero is not opposite. Not a pattern lock.",
+        "",
+        "## ΔCVD opposite (buy in one tape, sell in the other)",
+        "",
+        *_rows("delta_opposite"),
+        "",
+        "## CVD_end opposite (cumulative sign differs at bin end)",
+        "",
+        *_rows("end_opposite"),
+        "",
+    ]
+    (out / "CVD_OPPOSITE.md").write_text("\n".join(lines), encoding="utf-8")
+    return out
+
+
 __all__ = [
     "AFTER_S",
     "BIN_S",
@@ -457,5 +677,7 @@ __all__ = [
     "clock_windows",
     "compare_clock_range",
     "et_clock_to_ns",
+    "scan_cvd_opposite",
     "write_clock_report",
+    "write_cvd_opposite_report",
 ]
