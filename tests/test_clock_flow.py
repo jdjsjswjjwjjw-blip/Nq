@@ -17,9 +17,11 @@ from nq.research.clock_flow import (
     compare_clock_range,
     scan_cvd_align_expansion,
     scan_cvd_opposite,
+    scan_cvd_prealign,
     write_clock_report,
     write_cvd_align_expansion_report,
     write_cvd_opposite_report,
+    write_cvd_prealign_report,
 )
 from nq.research.mbo_sequence_mlp import assert_single_day_mbo
 from nq.research.opposite_phantom import SECOND_NS
@@ -41,8 +43,10 @@ def _ns(clock: str) -> int:
 def test_not_exported_from_research_init() -> None:
     assert "scan_cvd_opposite" not in nq.research.__all__
     assert "scan_cvd_align_expansion" not in nq.research.__all__
+    assert "scan_cvd_prealign" not in nq.research.__all__
     assert not hasattr(nq.research, "scan_cvd_opposite")
     assert not hasattr(nq.research, "scan_cvd_align_expansion")
+    assert not hasattr(nq.research, "scan_cvd_prealign")
 
 
 def test_ny_1130_windows_start_at_eleven_and_cover_after() -> None:
@@ -532,3 +536,47 @@ def test_zero_delta_is_not_alignment(tmp_path: Path) -> None:
     text = (written / "CVD_ALIGN_EXPANSION.md").read_text(encoding="utf-8")
     assert "Not a pattern lock" in text
     assert (written / "cvd_align_expansion.parquet").exists()
+
+
+def test_prealign_minutes_cover_flip_and_are_not_a_pattern(tmp_path: Path) -> None:
+    opp = _ns("11:01:00")
+    confirm = _ns("11:05:10")
+    mnq = make_stream(
+        [
+            ("A", "B", _PX, 9, 99),
+            ("T", "A", _PX, 500, 1),
+            ("A", "B", _PX, 3, 100),
+            ("T", "B", _PX, 40, 2),
+        ],
+        event_ts=[opp - _NS, opp, confirm - _NS, confirm],
+        sequence=[1, 2, 3, 4],
+    )
+    nq = make_stream(
+        [
+            ("T", "B", _PX, 10, 0),
+            ("T", "B", _PX, 8, 0),
+        ],
+        event_ts=[opp, confirm],
+        sequence=[10, 11],
+    ).drop("order_id")
+    minutes, summaries, diag = scan_cvd_prealign(
+        mnq,
+        _tape_like(mnq),
+        nq,
+        strong_mnq=500,
+        strong_nq=80,
+    )
+    assert diag["not_pattern"] is True
+    assert diag["not_book_hidden"] is True
+    assert summaries.height == 1
+    rel = set(minutes["rel_s"].to_list())
+    assert -300 in rel
+    assert 0 in rel
+    confirm_row = minutes.filter(pl.col("rel_s") == 0).row(0, named=True)
+    assert confirm_row["mnq_cvd_delta"] > 0
+    pre_sell = minutes.filter(pl.col("rel_s") == -240).row(0, named=True)
+    assert pre_sell["mnq_cvd_delta"] < 0
+    written = write_cvd_prealign_report(minutes, summaries, diag, tmp_path)
+    text = (written / "CVD_PREALIGN.md").read_text(encoding="utf-8")
+    assert "not a lock" in text
+    assert (written / "cvd_prealign_minutes.parquet").exists()

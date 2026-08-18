@@ -3,6 +3,7 @@
 مثل أول قياس للقمة: اختلال ``T`` وملء ``F`` على MNQ، وشريط ``T`` لكل عقد.
 CVD تراكمي من أول ``T`` في ملف اليوم: ``Σ(حجم شراء − حجم بيع)``. ليس عتبة.
 بعد تعاكس قوي: أول شريحة ΔCVD متوافق ثم مدى السعر — وصف لا إشارة.
+مسار 60ث قبل التوافق: CVD والاختلال وT/s وA/C — يختبر هضبة التجهيز، ليس نمطًا.
 بلا عتبة نمط وبلا إشارة. NQ بلا MBO فـ Fill لا يُختلق.
 ``price_lo`` اختياري: قاع الشريحة + أول لمسة للمستوى بعد بداية الشريحة.
 احذف الملف + السكربت + الاختبار للإزالة.
@@ -40,7 +41,17 @@ STRONG_MNQ_ABS: Final = 500
 STRONG_NQ_ABS: Final = 80
 EXPAND_MULT: Final = 1.5
 ALIGN_HORIZON_BINS: Final = 3
+PREALIGN_BIN_S: Final = 60
+PREALIGN_BEFORE_S: Final = 300
+PREALIGN_AFTER_S: Final = 120
+PREALIGN_LATE_S: Final = 120
+PREALIGN_LAST_S: Final = 60
+IMB_NEAR_ZERO: Final = 0.05
+IMB_STRONG: Final = 0.10
+CVD_JUMP_ABS: Final = 500
 _TRADE = MboAction.TRADE.value
+_ADD = MboAction.ADD.value
+_CANCEL = MboAction.CANCEL.value
 _BID = MboSide.BID.value
 _ASK = MboSide.ASK.value
 _ET: Final = ZoneInfo(TZ_NAME)
@@ -52,6 +63,13 @@ class _CvdIndex(NamedTuple):
     ts: NDArray[np.int64]
     cvd: NDArray[np.int64]
     price: NDArray[np.float64]
+    size: NDArray[np.int64]
+
+
+class _SizeIndex(NamedTuple):
+    """حجم أحداث MBO لنوع واحد مرتّب على ``event_ts``."""
+
+    ts: NDArray[np.int64]
     size: NDArray[np.int64]
 
 
@@ -78,6 +96,27 @@ def _cvd_index(book: pl.DataFrame) -> _CvdIndex:
         np.asarray(frame["price"].to_numpy(), dtype=np.float64),
         np.asarray(frame["size"].to_numpy(), dtype=np.int64),
     )
+
+
+def _size_index(book: pl.DataFrame, action: str) -> _SizeIndex:
+    frame = book.filter(pl.col("action") == action).sort(EVENT_TS).select(EVENT_TS, "size")
+    empty_i: NDArray[np.int64] = np.empty(0, dtype=np.int64)
+    if frame.height == 0:
+        return _SizeIndex(empty_i, empty_i)
+    return _SizeIndex(
+        np.asarray(frame[EVENT_TS].to_numpy(), dtype=np.int64),
+        np.asarray(frame["size"].to_numpy(), dtype=np.int64),
+    )
+
+
+def _sum_size(index: _SizeIndex, start_ts: int, end_ts: int) -> int:
+    if index.ts.size == 0:
+        return 0
+    lo = int(np.searchsorted(index.ts, start_ts, side="left"))
+    hi = int(np.searchsorted(index.ts, end_ts, side="left"))
+    if hi <= lo:
+        return 0
+    return int(index.size[lo:hi].sum())
 
 
 def _cvd_before(index: _CvdIndex, ts: int) -> int:
@@ -1022,12 +1061,275 @@ def write_cvd_align_expansion_report(
     return out
 
 
+def _prealign_bin(
+    *,
+    cvd_mbo: _CvdIndex,
+    cvd_nq: _CvdIndex,
+    adds: _SizeIndex,
+    cancels: _SizeIndex,
+    start_ts: int,
+    end_ts: int,
+    rel_s: int,
+    tz_name: str,
+    episode: Mapping[str, Any],
+    bin_s: int,
+) -> dict[str, Any]:
+    mbo_delta = _cvd_before(cvd_mbo, end_ts) - _cvd_before(cvd_mbo, start_ts)
+    nq_delta = _cvd_before(cvd_nq, end_ts) - _cvd_before(cvd_nq, start_ts)
+    mbo_n = _window_n(cvd_mbo, start_ts, end_ts)
+    nq_n = _window_n(cvd_nq, start_ts, end_ts)
+    mbo_size = _window_size(cvd_mbo, start_ts, end_ts)
+    nq_size = _window_size(cvd_nq, start_ts, end_ts)
+    first, last, move, span = _price_path(cvd_mbo, start_ts, end_ts)
+    width = max(1.0, float(end_ts - start_ts) / float(SECOND_NS))
+    return {
+        "opp_clock": episode["opp_clock"],
+        "align_clock": episode["align_clock"],
+        "mnq_joins_nq": int(episode["align_sign"]) == int(episode["nq_opp_sign"]),
+        "clock": _fmt_ts(start_ts, tz_name),
+        "end_clock": _fmt_ts(end_ts, tz_name),
+        "rel_s": rel_s,
+        "phase": "pre" if rel_s < 0 else "confirm",
+        "mnq_cvd_delta": mbo_delta,
+        "nq_cvd_delta": nq_delta,
+        "mnq_imb": _imb(mbo_delta, mbo_size),
+        "nq_imb": _imb(nq_delta, nq_size),
+        "mnq_n_t": mbo_n,
+        "nq_n_t": nq_n,
+        "mnq_t_per_s": float(mbo_n) / width,
+        "nq_t_per_s": float(nq_n) / width,
+        "a_size": _sum_size(adds, start_ts, end_ts),
+        "c_size": _sum_size(cancels, start_ts, end_ts),
+        "move": move,
+        "range": span,
+        "first_px": first,
+        "last_px": last,
+        "bin_s": bin_s,
+    }
+
+
+def _episode_prealign_flags(minute_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    pre = [row for row in minute_rows if int(row["rel_s"]) < 0]
+    confirm = [row for row in minute_rows if int(row["rel_s"]) == 0]
+    early = [row for row in pre if int(row["rel_s"]) < -PREALIGN_LATE_S]
+    late = [row for row in pre if int(row["rel_s"]) >= -PREALIGN_LATE_S]
+    last_pre = [row for row in pre if int(row["rel_s"]) == -PREALIGN_LAST_S]
+
+    def _sum_abs_cvd(rows: list[dict[str, Any]]) -> int:
+        return sum(abs(int(row["mnq_cvd_delta"])) for row in rows)
+
+    def _mean_t(rows: list[dict[str, Any]]) -> float:
+        if not rows:
+            return float("nan")
+        return float(sum(float(row["mnq_t_per_s"]) for row in rows) / len(rows))
+
+    early_abs = _sum_abs_cvd(early)
+    late_abs = _sum_abs_cvd(late)
+    last_imb = float(last_pre[0]["mnq_imb"]) if last_pre else float("nan")
+    last_t = float(last_pre[0]["mnq_t_per_s"]) if last_pre else float("nan")
+    first = confirm[0] if confirm else None
+    first_delta = int(first["mnq_cvd_delta"]) if first is not None else 0
+    first_t = float(first["mnq_t_per_s"]) if first is not None else float("nan")
+    first_imb = float(first["mnq_imb"]) if first is not None else float("nan")
+    early_t = _mean_t(early)
+    late_t = _mean_t(late)
+    pre_a = sum(int(row["a_size"]) for row in pre)
+    pre_c = sum(int(row["c_size"]) for row in pre)
+    conf_a = int(first["a_size"]) if first is not None else 0
+    return {
+        "early_abs_mnq": early_abs,
+        "late_abs_mnq": late_abs,
+        "cvd_slowing": late_abs < early_abs,
+        "last_pre_imb": last_imb,
+        "imb_near_zero": (not math.isnan(last_imb)) and abs(last_imb) <= IMB_NEAR_ZERO,
+        "early_t_per_s": early_t,
+        "late_t_per_s": late_t,
+        "last_pre_t_per_s": last_t,
+        "confirm_t_per_s": first_t,
+        "t_drop": (not math.isnan(late_t)) and (not math.isnan(early_t)) and late_t < early_t,
+        "t_jump": (not math.isnan(first_t)) and (not math.isnan(last_t)) and first_t > last_t,
+        "confirm_mnq_delta": first_delta,
+        "confirm_imb": first_imb,
+        "cvd_jump_500": abs(first_delta) >= CVD_JUMP_ABS,
+        "imb_strong": (not math.isnan(first_imb)) and abs(first_imb) >= IMB_STRONG,
+        "pre_a_size": pre_a,
+        "pre_c_size": pre_c,
+        "confirm_a_size": conf_a,
+        "a_rise": conf_a > (pre_a / max(1, len(pre))),
+    }
+
+
+def scan_cvd_prealign(
+    mnq_mbo: pl.DataFrame,
+    mnq_trades: pl.DataFrame,
+    nq_trades: pl.DataFrame,
+    *,
+    bin_s: int = PREALIGN_BIN_S,
+    before_s: int = PREALIGN_BEFORE_S,
+    after_s: int = PREALIGN_AFTER_S,
+    tz_name: str = TZ_NAME,
+    strong_mnq: int = STRONG_MNQ_ABS,
+    strong_nq: int = STRONG_NQ_ABS,
+) -> tuple[pl.DataFrame, pl.DataFrame, dict[str, Any]]:
+    """60ث حول توافق MNQ/NQ بعد تعاكس قوي. يختبر الهضبة، ليس نمطًا."""
+
+    episodes, align_diag = scan_cvd_align_expansion(
+        mnq_mbo,
+        mnq_trades,
+        nq_trades,
+        bin_s=300,
+        tz_name=tz_name,
+        strong_mnq=strong_mnq,
+        strong_nq=strong_nq,
+    )
+    diagnostics: dict[str, Any] = {
+        "layer": LAYER_ID,
+        "prealign_bin_s": bin_s,
+        "before_s": before_s,
+        "after_s": after_s,
+        "n_episodes": 0,
+        "n_mnq_joins_nq": 0,
+        "n_cvd_slowing": 0,
+        "n_imb_near_zero": 0,
+        "n_t_drop": 0,
+        "n_t_jump": 0,
+        "n_cvd_jump_500": 0,
+        "n_imb_strong": 0,
+        "n_a_rise": 0,
+        "not_pattern": True,
+        "not_cvd_threshold": True,
+        "not_lstm": True,
+        "not_live_overlay": True,
+        "not_book_hidden": True,
+        "n_strong_episodes": align_diag.get("n_strong_episodes", 0),
+        "n_aligned": align_diag.get("n_aligned", 0),
+    }
+    aligned = episodes.filter(pl.col("aligned")) if episodes.height else episodes
+    if aligned.height == 0:
+        return pl.DataFrame(), pl.DataFrame(), diagnostics
+    book = prepare_mbo_events(mnq_mbo)
+    nq = prepare_trades_tape(nq_trades)
+    cvd_mbo = _cvd_index(book)
+    cvd_nq = _cvd_index(nq)
+    adds = _size_index(book, _ADD)
+    cancels = _size_index(book, _CANCEL)
+    minute_rows: list[dict[str, Any]] = []
+    summaries: list[dict[str, Any]] = []
+    step = int(bin_s) * SECOND_NS
+    for episode in aligned.iter_rows(named=True):
+        align_start = int(episode["align_start_ts"])
+        stamp = align_start - int(before_s) * SECOND_NS
+        end = align_start + int(after_s) * SECOND_NS
+        path: list[dict[str, Any]] = []
+        while stamp < end:
+            nxt = stamp + step
+            row = _prealign_bin(
+                cvd_mbo=cvd_mbo,
+                cvd_nq=cvd_nq,
+                adds=adds,
+                cancels=cancels,
+                start_ts=stamp,
+                end_ts=nxt,
+                rel_s=(stamp - align_start) // SECOND_NS,
+                tz_name=tz_name,
+                episode=episode,
+                bin_s=bin_s,
+            )
+            path.append(row)
+            minute_rows.append(row)
+            stamp = nxt
+        flags = _episode_prealign_flags(path)
+        summary = {
+            "opp_clock": episode["opp_clock"],
+            "align_clock": episode["align_clock"],
+            "mnq_joins_nq": int(episode["align_sign"]) == int(episode["nq_opp_sign"]),
+            "mnq_cvd_delta": episode["mnq_cvd_delta"],
+            "nq_cvd_delta": episode["nq_cvd_delta"],
+            "align_mnq_delta": episode["align_mnq_delta"],
+            "align_nq_delta": episode["align_nq_delta"],
+            "wide_vs_median": bool(episode["wide_vs_median"]),
+            "move_5": episode["move_5"],
+            **flags,
+        }
+        summaries.append(summary)
+    minutes = pl.DataFrame(minute_rows)
+    summary_table = pl.DataFrame(summaries)
+    joins = summary_table.filter(pl.col("mnq_joins_nq")) if summary_table.height else summary_table
+    focus = joins if joins.height else summary_table
+    diagnostics.update(
+        {
+            "n_episodes": summary_table.height,
+            "n_mnq_joins_nq": joins.height if summary_table.height else 0,
+            "n_cvd_slowing": int(focus.filter(pl.col("cvd_slowing")).height),
+            "n_imb_near_zero": int(focus.filter(pl.col("imb_near_zero")).height),
+            "n_t_drop": int(focus.filter(pl.col("t_drop")).height),
+            "n_t_jump": int(focus.filter(pl.col("t_jump")).height),
+            "n_cvd_jump_500": int(focus.filter(pl.col("cvd_jump_500")).height),
+            "n_imb_strong": int(focus.filter(pl.col("imb_strong")).height),
+            "n_a_rise": int(focus.filter(pl.col("a_rise")).height),
+        }
+    )
+    return minutes, summary_table, diagnostics
+
+
+def write_cvd_prealign_report(
+    minutes: pl.DataFrame,
+    summaries: pl.DataFrame,
+    diagnostics: Mapping[str, Any],
+    output_dir: Path | str,
+) -> Path:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    if minutes.height:
+        minutes.write_parquet(out / "cvd_prealign_minutes.parquet")
+    if summaries.height:
+        summaries.write_parquet(out / "cvd_prealign_summary.parquet")
+    (out / "summary.json").write_text(
+        json.dumps(dict(diagnostics), indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    lines = [
+        "# Pre-align 60s path (CVD / imb / T/s / A-C)",
+        "",
+        f"bin={diagnostics.get('prealign_bin_s')}s before={diagnostics.get('before_s')} "
+        f"after={diagnostics.get('after_s')} episodes={diagnostics.get('n_episodes')} "
+        f"mnq_joins_nq={diagnostics.get('n_mnq_joins_nq')}.",
+        "Flags are descriptive on MNQ→NQ episodes (or all if none). "
+        "CVD plateau / imb~0 / T drop are hypotheses, not a lock. "
+        "A/C is resting book activity on MNQ MBO, not hidden institutional intent.",
+        f"cvd_slowing={diagnostics.get('n_cvd_slowing')} "
+        f"imb_near_zero={diagnostics.get('n_imb_near_zero')} "
+        f"t_drop={diagnostics.get('n_t_drop')} t_jump={diagnostics.get('n_t_jump')} "
+        f"cvd_jump_500={diagnostics.get('n_cvd_jump_500')} "
+        f"imb_strong={diagnostics.get('n_imb_strong')} a_rise={diagnostics.get('n_a_rise')}.",
+        "",
+        "| opp | align | MNQ→NQ | slow | imb~0 | T drop | T jump "
+        "| Δ≥500 | imb≥0.10 | A rise | wide |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    if summaries.height:
+        for row in summaries.iter_rows(named=True):
+            opp = str(row["opp_clock"])[11:16]
+            align = str(row["align_clock"])[11:16]
+            lines.append(
+                f"| {opp} | {align} | {row['mnq_joins_nq']} | {row['cvd_slowing']} | "
+                f"{row['imb_near_zero']} | {row['t_drop']} | {row['t_jump']} | "
+                f"{row['cvd_jump_500']} | {row['imb_strong']} | {row['a_rise']} | "
+                f"{row['wide_vs_median']} |"
+            )
+    (out / "CVD_PREALIGN.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
 __all__ = [
     "AFTER_S",
     "ALIGN_HORIZON_BINS",
     "BIN_S",
     "EXPAND_MULT",
     "LAYER_ID",
+    "PREALIGN_AFTER_S",
+    "PREALIGN_BEFORE_S",
+    "PREALIGN_BIN_S",
     "STRONG_MNQ_ABS",
     "STRONG_NQ_ABS",
     "clock_to_ns",
@@ -1036,7 +1338,9 @@ __all__ = [
     "et_clock_to_ns",
     "scan_cvd_align_expansion",
     "scan_cvd_opposite",
+    "scan_cvd_prealign",
     "write_clock_report",
     "write_cvd_align_expansion_report",
     "write_cvd_opposite_report",
+    "write_cvd_prealign_report",
 ]
