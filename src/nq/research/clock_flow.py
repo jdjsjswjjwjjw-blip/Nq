@@ -1,6 +1,7 @@
 """استكشاف ثلاثة أشرطة على ساعة مسمّاة: MNQ MBO وMNQ Trades وNQ Trades.
 
 مثل أول قياس للقمة: اختلال ``T`` وملء ``F`` على MNQ، وشريط ``T`` لكل عقد.
+CVD تراكمي من أول ``T`` في ملف اليوم: ``Σ(حجم شراء − حجم بيع)``. ليس عتبة.
 بلا عتبة نمط وبلا إشارة. NQ بلا MBO فـ Fill لا يُختلق.
 ``price_lo`` اختياري: قاع الشريحة + أول لمسة للمستوى بعد بداية الشريحة.
 احذف الملف + السكربت + الاختبار للإزالة.
@@ -12,12 +13,14 @@ import datetime as dt
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import polars as pl
+from numpy.typing import NDArray
 
-from nq.contracts.mbo import MboAction
+from nq.contracts.mbo import MboAction, MboSide
 from nq.contracts.temporal import EVENT_TS, SEQUENCE
 from nq.research.cross_nq_mnq import MNQ_MULT, NQ_MULT, _with_notional
 from nq.research.horizon_flow import _bin_row
@@ -32,7 +35,66 @@ BIN_S: Final = 60
 AFTER_S: Final = HORIZON_S
 TZ_NAME: Final = "America/New_York"
 _TRADE = MboAction.TRADE.value
+_BID = MboSide.BID.value
+_ASK = MboSide.ASK.value
 _ET: Final = ZoneInfo(TZ_NAME)
+
+
+class _CvdIndex(NamedTuple):
+    """cumsum موقّع لطباعات ``T`` مرتّبة على ``event_ts``."""
+
+    ts: NDArray[np.int64]
+    cvd: NDArray[np.int64]
+
+
+def _cvd_index(book: pl.DataFrame) -> _CvdIndex:
+    signed = (
+        pl.when(pl.col("side") == _BID)
+        .then(pl.col("size"))
+        .when(pl.col("side") == _ASK)
+        .then(-pl.col("size"))
+        .otherwise(0)
+    )
+    frame = (
+        book.filter(pl.col("action") == _TRADE)
+        .sort([EVENT_TS, SEQUENCE])
+        .select(EVENT_TS, signed.cum_sum().alias("cvd"))
+    )
+    empty: NDArray[np.int64] = np.empty(0, dtype=np.int64)
+    if frame.height == 0:
+        return _CvdIndex(empty, empty)
+    return _CvdIndex(
+        np.asarray(frame[EVENT_TS].to_numpy(), dtype=np.int64),
+        np.asarray(frame["cvd"].to_numpy(), dtype=np.int64),
+    )
+
+
+def _cvd_before(index: _CvdIndex, ts: int) -> int:
+    """CVD من بداية الملف حتى آخر ``T`` بـ ``event_ts < ts``."""
+
+    if index.ts.size == 0:
+        return 0
+    pos = int(np.searchsorted(index.ts, ts, side="left")) - 1
+    if pos < 0:
+        return 0
+    return int(index.cvd[pos])
+
+
+def _with_cvd(
+    row: dict[str, Any],
+    index: _CvdIndex,
+    window: NamedWindow,
+    multiplier: float,
+) -> dict[str, Any]:
+    before = _cvd_before(index, window.start_ts)
+    end = _cvd_before(index, window.end_ts)
+    row["cvd_before"] = before
+    row["cvd_end"] = end
+    row["cvd_delta"] = end - before
+    row["cvd_notional_before"] = before * multiplier
+    row["cvd_notional_end"] = end * multiplier
+    row["cvd_notional_delta"] = (end - before) * multiplier
+    return row
 
 
 def clock_to_ns(day: str, clock: str, tz_name: str) -> int:
@@ -151,6 +213,7 @@ def _source_row(
     contract: str,
     multiplier: float,
     fill_ok: bool,
+    cvd: _CvdIndex,
 ) -> dict[str, Any]:
     row = _with_notional(
         score_flow_window(book, window),
@@ -167,7 +230,7 @@ def _source_row(
         row["c_ask_size"] = 0
         row["c_bid_size"] = 0
         row["f_imbalance"] = float("nan")
-    return row
+    return _with_cvd(row, cvd, window, multiplier)
 
 
 def _stack_window(
@@ -175,6 +238,10 @@ def _stack_window(
     mnq_tape: pl.DataFrame,
     nq_tape: pl.DataFrame,
     window: NamedWindow,
+    *,
+    cvd_mbo: _CvdIndex,
+    cvd_tape: _CvdIndex,
+    cvd_nq: _CvdIndex,
 ) -> list[dict[str, Any]]:
     return [
         _source_row(
@@ -184,6 +251,7 @@ def _stack_window(
             contract="MNQ",
             multiplier=MNQ_MULT,
             fill_ok=True,
+            cvd=cvd_mbo,
         ),
         _source_row(
             mnq_tape,
@@ -192,6 +260,7 @@ def _stack_window(
             contract="MNQ",
             multiplier=MNQ_MULT,
             fill_ok=False,
+            cvd=cvd_tape,
         ),
         _source_row(
             nq_tape,
@@ -200,6 +269,7 @@ def _stack_window(
             contract="NQ",
             multiplier=NQ_MULT,
             fill_ok=False,
+            cvd=cvd_nq,
         ),
     ]
 
@@ -217,12 +287,16 @@ def compare_clock_range(
     tz_name: str = TZ_NAME,
     price_lo: float | None = None,
     window_s: int = WINDOW_S,
+    stack_bins: bool = False,
 ) -> tuple[pl.DataFrame, dict[str, Any]]:
-    """MNQ MBO + شريط MNQ + شريط NQ على الساعة المسمّاة."""
+    """MNQ MBO + شريط MNQ + شريط NQ على الساعة المسمّاة. CVD من أول ``T`` في الملف."""
 
     book = prepare_mbo_events(mnq_mbo)
     mnq_tape = prepare_trades_tape(mnq_trades)
     nq_tape = prepare_trades_tape(nq_trades)
+    cvd_mbo = _cvd_index(book)
+    cvd_tape = _cvd_index(mnq_tape)
+    cvd_nq = _cvd_index(nq_tape)
     origin, windows = clock_windows(
         day, start_clock, end_clock, bin_s=bin_s, after_s=after_s, tz_name=tz_name
     )
@@ -237,10 +311,32 @@ def compare_clock_range(
             extra.extend(_around(level_ts, "level", window_s=window_s, horizon_s=after_s))
     slim_windows = (*windows, *extra)
     rows = [_bin_row(book, mnq_tape, nq_tape, w, origin) for w in slim_windows]
+    for row, window in zip(rows, slim_windows, strict=True):
+        mbo_end = _cvd_before(cvd_mbo, window.end_ts)
+        mbo_before = _cvd_before(cvd_mbo, window.start_ts)
+        nq_end = _cvd_before(cvd_nq, window.end_ts)
+        nq_before = _cvd_before(cvd_nq, window.start_ts)
+        row["mnq_mbo_cvd_end"] = mbo_end
+        row["mnq_mbo_cvd_delta"] = mbo_end - mbo_before
+        row["mnq_mbo_cvd_notional_end"] = mbo_end * MNQ_MULT
+        row["nq_cvd_end"] = nq_end
+        row["nq_cvd_delta"] = nq_end - nq_before
+        row["nq_cvd_notional_end"] = nq_end * NQ_MULT
     table = pl.DataFrame(rows)
-    focus = [windows[0], windows[-1], *extra]
+    bins = windows[1:-1]
+    focus = (
+        [windows[0], *bins, windows[-1], *extra]
+        if stack_bins
+        else [windows[0], windows[-1], *extra]
+    )
     sources = pl.DataFrame(
-        [row for w in focus for row in _stack_window(book, mnq_tape, nq_tape, w)]
+        [
+            row
+            for w in focus
+            for row in _stack_window(
+                book, mnq_tape, nq_tape, w, cvd_mbo=cvd_mbo, cvd_tape=cvd_tape, cvd_nq=cvd_nq
+            )
+        ]
     )
     by = {r["name"]: r for r in rows}
     rng = by.get("range", {})
@@ -270,10 +366,17 @@ def compare_clock_range(
         "range_max_px": rng.get("max_px"),
         "after_nq_imbalance": after.get("nq_t_imbalance"),
         "after_min_px": after.get("min_px"),
+        "range_nq_cvd_end": rng.get("nq_cvd_end"),
+        "range_nq_cvd_notional_end": rng.get("nq_cvd_notional_end"),
+        "range_mnq_cvd_end": rng.get("mnq_mbo_cvd_end"),
+        "range_mnq_cvd_notional_end": rng.get("mnq_mbo_cvd_notional_end"),
+        "cvd_origin": "first_T_in_day_file",
+        "cvd_unit": "signed_T_size_then_notional_via_multiplier",
         "sources": sources.to_dicts() if sources.height else [],
         "nq_source": "trades_tape_T_only",
         "nq_fill_ratio": "unavailable_without_mbo_F_C",
         "not_pattern": True,
+        "not_cvd_threshold": True,
         "not_spoofing": True,
         "not_lstm": True,
         "not_live_overlay": True,
@@ -304,13 +407,14 @@ def write_clock_report(
         f"{diagnostics.get('day')} {diagnostics.get('start_clock')}–"
         f"{diagnostics.get('end_clock')} {diagnostics.get('tz')}.",
         "Explore MNQ MBO vs MNQ trades vs NQ trades. No pattern lock. NQ has no Fill.",
+        "CVD is cumulative signed T size from the first T in the day file, not a threshold.",
         f"Range min={diagnostics.get('range_min_px')} max={diagnostics.get('range_max_px')} "
         f"low={diagnostics.get('low_clock')} px={diagnostics.get('low_px')} "
         f"level={diagnostics.get('price_lo')} at {diagnostics.get('level_clock')}.",
         "",
         "| window | source | n_T | buy T | sell T | T imb | early | late | F ask | C ask | "
-        "ask hit | T/s | $ |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "ask hit | T/s | $ | CVD0 | CVDend | ΔCVD | $CVD |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     if isinstance(sources, list):
         for row in sources:
@@ -319,22 +423,26 @@ def write_clock_report(
                 f"{row['t_sell_size']} | {float(row['t_imbalance']):.3f} | "
                 f"{float(row['t_imbalance_early']):.3f} | {float(row['t_imbalance_late']):.3f} | "
                 f"{row['f_ask_size']} | {row['c_ask_size']} | {float(row['ask_hit_share']):.3f} | "
-                f"{float(row['t_per_s']):.3f} | {float(row['t_notional']):.0f} |"
+                f"{float(row['t_per_s']):.3f} | {float(row['t_notional']):.0f} | "
+                f"{row['cvd_before']} | {row['cvd_end']} | {row['cvd_delta']} | "
+                f"{float(row['cvd_notional_end']):.0f} |"
             )
     lines += [
         "",
         "Minute path (same three tapes, slim):",
         "",
-        "| name | off_s | MNQ T/s | NQ T/s | MNQ imb | NQ imb | MNQ fill | min_px | max_px |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| name | off_s | MNQ T/s | NQ T/s | MNQ imb | NQ imb | MNQ fill | "
+        "MNQ CVD | NQ CVD | $NQ CVD | min_px | max_px |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in table.iter_rows(named=True):
         lines.append(
             f"| {row['name']} | {float(row['offset_s']):.0f} | "
             f"{float(row['mnq_mbo_t_per_s']):.3f} | {float(row['nq_t_per_s']):.3f} | "
             f"{float(row['mnq_mbo_t_imbalance']):.3f} | {float(row['nq_t_imbalance']):.3f} | "
-            f"{float(row['mnq_fill_ratio']):.3f} | {float(row['min_px']):.2f} | "
-            f"{float(row['max_px']):.2f} |"
+            f"{float(row['mnq_fill_ratio']):.3f} | {int(row['mnq_mbo_cvd_end'])} | "
+            f"{int(row['nq_cvd_end'])} | {float(row['nq_cvd_notional_end']):.0f} | "
+            f"{float(row['min_px']):.2f} | {float(row['max_px']):.2f} |"
         )
     lines.append("")
     (out / "CLOCK_FLOW.md").write_text("\n".join(lines), encoding="utf-8")

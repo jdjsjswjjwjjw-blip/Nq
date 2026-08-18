@@ -2,8 +2,8 @@
 """تدفق MNQ/NQ على شريحة ساعة مسمّاة.
 
     .venv/bin/python scripts/run_clock_flow.py \\
-      --day 2026-08-17 --start 03:12:00 --end 03:41:00 \\
-      --tz Europe/London --price-lo 30259 \\
+      --day 2026-08-17 --start 09:25:00 --end 09:40:00 \\
+      --tz America/New_York --bin-s 300 --stack-bins \\
       --mnq-mbo path/to/mnq.mbo.clean.parquet \\
       --mnq-trades path/to/mnq.trades.clean.parquet \\
       --nq-trades path/to/nq.trades.clean.parquet \\
@@ -37,6 +37,11 @@ def main() -> None:
     parser.add_argument("--nq-trades", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--bin-s", type=int, default=60)
+    parser.add_argument(
+        "--stack-bins",
+        action="store_true",
+        help="include inner bins in the three-tape table (use with --bin-s 300)",
+    )
     args = parser.parse_args()
     joined = f"{args.mnq_mbo} {args.mnq_trades} {args.nq_trades} {args.output}".lower()
     if "live" in joined:
@@ -64,6 +69,7 @@ def main() -> None:
         bin_s=args.bin_s,
         tz_name=args.tz,
         price_lo=args.price_lo,
+        stack_bins=args.stack_bins,
     )
     diagnostics["mnq_mbo_path"] = str(args.mnq_mbo)
     diagnostics["mnq_trades_path"] = str(args.mnq_trades)
@@ -86,6 +92,10 @@ def main() -> None:
                 "ask_hit_share",
                 "t_per_s",
                 "t_notional",
+                "cvd_before",
+                "cvd_end",
+                "cvd_delta",
+                "cvd_notional_end",
             ),
             flush=True,
         )
@@ -93,6 +103,10 @@ def main() -> None:
     print(
         "range NQ imb",
         diagnostics.get("range_nq_imbalance"),
+        "NQ CVD",
+        diagnostics.get("range_nq_cvd_end"),
+        "$NQ CVD",
+        diagnostics.get("range_nq_cvd_notional_end"),
         "MNQ fill",
         diagnostics.get("range_mnq_fill_ratio"),
         "low",
