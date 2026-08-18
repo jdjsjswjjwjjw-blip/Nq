@@ -47,10 +47,12 @@ def test_not_exported_from_research_init() -> None:
     assert "scan_cvd_align_expansion" not in nq.research.__all__
     assert "scan_cvd_prealign" not in nq.research.__all__
     assert "scan_tape_bins" not in nq.research.__all__
+    assert "scan_cvd_day" not in nq.research.__all__
     assert not hasattr(nq.research, "scan_cvd_opposite")
     assert not hasattr(nq.research, "scan_cvd_align_expansion")
     assert not hasattr(nq.research, "scan_cvd_prealign")
     assert not hasattr(nq.research, "scan_tape_bins")
+    assert not hasattr(nq.research, "scan_cvd_day")
 
 
 def test_ny_1130_windows_start_at_eleven_and_cover_after() -> None:
@@ -378,6 +380,37 @@ def test_cvd_opposite_flags_delta_not_zero() -> None:
     aligned = same.filter(pl.col("mnq_cvd_delta") > 0)
     assert aligned.height == 1
     assert aligned["nq_cvd_delta"][0] > 0
+
+
+def test_cvd_opposite_window_drops_later_bin() -> None:
+    t_buy = _ns("11:01:00")
+    t_both = _ns("11:06:00")
+    mnq = make_stream(
+        [("T", "B", _PX, 5, 1), ("T", "B", _PX, 2, 2)],
+        event_ts=[t_buy, t_both],
+        sequence=[1, 2],
+    )
+    tape = make_stream(
+        [("T", "B", _PX, 5, 0), ("T", "B", _PX, 2, 0)],
+        event_ts=[t_buy, t_both],
+        sequence=[1, 2],
+    ).drop("order_id")
+    nq = make_stream(
+        [("T", "A", _PX, 3, 0), ("T", "B", _PX, 4, 0)],
+        event_ts=[t_buy, t_both],
+        sequence=[10, 11],
+    ).drop("order_id")
+    table, diag = scan_cvd_opposite(
+        mnq,
+        tape,
+        nq,
+        bin_s=300,
+        start_ts=_ns("11:00:00"),
+        end_ts=_ns("11:05:00"),
+    )
+    assert table.height == 1
+    assert bool(table["delta_opposite"][0]) is True
+    assert diag["end_ts"] == _ns("11:05:00")
 
 
 def test_cvd_opposite_report(tmp_path: Path) -> None:
