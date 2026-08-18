@@ -1,8 +1,7 @@
-"""شريحة ساعة نيويورك يسمّيها المراقب: تدفق MNQ/NQ داخلها وبعدها.
+"""استكشاف ثلاثة أشرطة على ساعة نيويورك: MNQ MBO وMNQ Trades وNQ Trades.
 
-``11:00–11:30`` America/New_York على يوم الجلسة. النافذة الكاملة + شرائح
-داخلها + 5 دقائق بعد النهاية (حتى لا نكرر خطأ أول 30ث). NQ بلا MBO:
-Fill لا يُختلق. ليست overlay ولا LSTM.
+مثل أول قياس للقمة: اختلال ``T`` وملء ``F`` على MNQ، وشريط ``T`` لكل عقد.
+بلا عتبة نمط وبلا إشارة. NQ بلا MBO فـ Fill لا يُختلق.
 احذف الملف + السكربت + الاختبار للإزالة.
 """
 
@@ -17,10 +16,12 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 
+from nq.research.cross_nq_mnq import MNQ_MULT, NQ_MULT, _with_notional
 from nq.research.horizon_flow import _bin_row
 from nq.research.mbo_trade_overlap import prepare_mbo_events, prepare_trades_tape
 from nq.research.opposite_phantom import SECOND_NS
 from nq.research.peak_control import NamedWindow
+from nq.research.peak_flow import score_flow_window
 from nq.research.peak_pattern import HORIZON_S
 
 LAYER_ID = "clock_flow"
@@ -75,6 +76,67 @@ def clock_windows(
     return start_ts, (whole, *bins, after)
 
 
+def _source_row(
+    book: pl.DataFrame,
+    window: NamedWindow,
+    *,
+    source: str,
+    contract: str,
+    multiplier: float,
+    fill_ok: bool,
+) -> dict[str, Any]:
+    row = _with_notional(
+        score_flow_window(book, window),
+        contract=contract,
+        multiplier=multiplier,
+        window=window,
+    )
+    row["source"] = source
+    if not fill_ok:
+        row["ask_hit_share"] = float("nan")
+        row["bid_hit_share"] = float("nan")
+        row["f_ask_size"] = 0
+        row["f_bid_size"] = 0
+        row["c_ask_size"] = 0
+        row["c_bid_size"] = 0
+        row["f_imbalance"] = float("nan")
+    return row
+
+
+def _stack_window(
+    mnq_mbo: pl.DataFrame,
+    mnq_tape: pl.DataFrame,
+    nq_tape: pl.DataFrame,
+    window: NamedWindow,
+) -> list[dict[str, Any]]:
+    return [
+        _source_row(
+            mnq_mbo,
+            window,
+            source="mnq_mbo",
+            contract="MNQ",
+            multiplier=MNQ_MULT,
+            fill_ok=True,
+        ),
+        _source_row(
+            mnq_tape,
+            window,
+            source="mnq_trades",
+            contract="MNQ",
+            multiplier=MNQ_MULT,
+            fill_ok=False,
+        ),
+        _source_row(
+            nq_tape,
+            window,
+            source="nq_trades",
+            contract="NQ",
+            multiplier=NQ_MULT,
+            fill_ok=False,
+        ),
+    ]
+
+
 def compare_clock_range(
     mnq_mbo: pl.DataFrame,
     mnq_trades: pl.DataFrame,
@@ -94,6 +156,10 @@ def compare_clock_range(
     origin, windows = clock_windows(day, start_clock, end_clock, bin_s=bin_s, after_s=after_s)
     rows = [_bin_row(book, mnq_tape, nq_tape, w, origin) for w in windows]
     table = pl.DataFrame(rows)
+    focus = [windows[0], windows[-1]]
+    sources = pl.DataFrame(
+        [row for w in focus for row in _stack_window(book, mnq_tape, nq_tape, w)]
+    )
     by = {r["name"]: r for r in rows}
     rng = by.get("range", {})
     after = by.get(f"after-0-{after_s}s", {})
@@ -115,8 +181,10 @@ def compare_clock_range(
         "range_max_px": rng.get("max_px"),
         "after_nq_imbalance": after.get("nq_t_imbalance"),
         "after_min_px": after.get("min_px"),
+        "sources": sources.to_dicts() if sources.height else [],
         "nq_source": "trades_tape_T_only",
         "nq_fill_ratio": "unavailable_without_mbo_F_C",
+        "not_pattern": True,
         "not_spoofing": True,
         "not_lstm": True,
         "not_live_overlay": True,
@@ -134,16 +202,36 @@ def write_clock_report(
     out.mkdir(parents=True, exist_ok=True)
     if table.height:
         table.write_parquet(out / "clock_bins.parquet")
+    sources = diagnostics.get("sources", [])
+    if isinstance(sources, list) and sources:
+        pl.DataFrame(sources).write_parquet(out / "clock_sources.parquet")
     (out / "summary.json").write_text(
         json.dumps(dict(diagnostics), indent=2, ensure_ascii=False, default=str),
         encoding="utf-8",
     )
     lines = [
-        "# New York clock window: MNQ MBO + MNQ/NQ trades",
+        "# Three tapes on a New York clock window",
         "",
         f"{diagnostics.get('day')} {diagnostics.get('start_clock')}–"
         f"{diagnostics.get('end_clock')} {diagnostics.get('tz')}.",
-        "After-window is 5 minutes past end. NQ Fill_Ratio unavailable. Not a model.",
+        "Explore MNQ MBO vs MNQ trades vs NQ trades. No pattern lock. NQ has no Fill.",
+        "",
+        "| window | source | n_T | buy T | sell T | T imb | early | late | F ask | C ask | "
+        "ask hit | T/s | $ |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    if isinstance(sources, list):
+        for row in sources:
+            lines.append(
+                f"| {row['name']} | {row['source']} | {row['n_t']} | {row['t_buy_size']} | "
+                f"{row['t_sell_size']} | {float(row['t_imbalance']):.3f} | "
+                f"{float(row['t_imbalance_early']):.3f} | {float(row['t_imbalance_late']):.3f} | "
+                f"{row['f_ask_size']} | {row['c_ask_size']} | {float(row['ask_hit_share']):.3f} | "
+                f"{float(row['t_per_s']):.3f} | {float(row['t_notional']):.0f} |"
+            )
+    lines += [
+        "",
+        "Minute path (same three tapes, slim):",
         "",
         "| name | off_s | MNQ T/s | NQ T/s | MNQ imb | NQ imb | MNQ fill | min_px | max_px |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",

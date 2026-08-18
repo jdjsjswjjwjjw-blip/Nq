@@ -64,6 +64,26 @@ def main() -> None:
     diagnostics["mnq_trades_path"] = str(args.mnq_trades)
     diagnostics["nq_trades_path"] = str(args.nq_trades)
     written = write_clock_report(table, diagnostics, args.output)
+    sources = diagnostics.get("sources") or []
+    if sources:
+        print(
+            pl.DataFrame(sources).select(
+                "name",
+                "source",
+                "n_t",
+                "t_buy_size",
+                "t_sell_size",
+                "t_imbalance",
+                "t_imbalance_early",
+                "t_imbalance_late",
+                "f_ask_size",
+                "c_ask_size",
+                "ask_hit_share",
+                "t_per_s",
+                "t_notional",
+            ),
+            flush=True,
+        )
     print(table.filter(pl.col("name").is_in(["range", "after-0-300s"])), flush=True)
     print(
         "range NQ imb",

@@ -106,6 +106,14 @@ def test_range_vs_after_are_separate_and_nq_fill_is_nan() -> None:
     assert by["after-0-300s"]["nq_t_imbalance"] < 0
     assert by["after-0-300s"]["min_px"] == _PX_LOW
     assert by["range"]["min_px"] == _PX
+    sources = diag["sources"]
+    assert diag["not_pattern"] is True
+    assert len(sources) == 6
+    nq_range = next(s for s in sources if s["name"] == "range" and s["source"] == "nq_trades")
+    mnq_mbo = next(s for s in sources if s["name"] == "range" and s["source"] == "mnq_mbo")
+    assert nq_range["ask_hit_share"] != nq_range["ask_hit_share"]
+    assert mnq_mbo["f_ask_size"] == 1
+    assert mnq_mbo["c_ask_size"] == 8
 
 
 def test_clock_report(tmp_path: Path) -> None:
@@ -132,4 +140,7 @@ def test_clock_report(tmp_path: Path) -> None:
     text = (written / "CLOCK_FLOW.md").read_text(encoding="utf-8")
     assert "11:00:00–11:30:00" in text
     assert "America/New_York" in text
-    assert "NQ Fill_Ratio unavailable" in text
+    assert "mnq_mbo" in text
+    assert "nq_trades" in text
+    assert "No pattern lock" in text
+    assert (written / "clock_sources.parquet").exists()
