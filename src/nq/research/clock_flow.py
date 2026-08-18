@@ -8,15 +8,16 @@ Fill لا يُختلق. ليست overlay ولا LSTM.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
 from nq.research.horizon_flow import _bin_row
-from nq.research.manual_zone_depth import et_clock_to_ns
 from nq.research.mbo_trade_overlap import prepare_mbo_events, prepare_trades_tape
 from nq.research.opposite_phantom import SECOND_NS
 from nq.research.peak_control import NamedWindow
@@ -26,6 +27,17 @@ LAYER_ID = "clock_flow"
 BIN_S: Final = 60
 AFTER_S: Final = HORIZON_S
 TZ_NAME: Final = "America/New_York"
+_ET: Final = ZoneInfo(TZ_NAME)
+
+
+def et_clock_to_ns(day: str, clock: str) -> int:
+    """``2026-08-17`` + ``11:00:00`` (America/New_York) → نانوثانية."""
+
+    hour, minute, *rest = clock.split(":")
+    second = int(rest[0]) if rest else 0
+    yyyy, mm, dd = (int(p) for p in day.split("-"))
+    stamp = dt.datetime(yyyy, mm, dd, int(hour), int(minute), second, tzinfo=_ET)
+    return int(stamp.timestamp() * 1_000_000_000)
 
 
 def clock_windows(
