@@ -153,5 +153,8 @@ def test_compare_days_counts_and_report(tmp_path: Path) -> None:
         b_label="day_b",
     )
     text = (written / "CVD_DAY_COMPARE.md").read_text(encoding="utf-8")
-    assert "not an RTH match" in text or "Not a lock" in text
+    assert "Not a lock" in text
     assert "n_delta_opposite" in text
+    day_text = (written_a / "CVD_DAY.md").read_text(encoding="utf-8")
+    assert "RTH MNQ→NQ" in day_text
+    assert "11:00" in day_text
