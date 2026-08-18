@@ -190,6 +190,50 @@ def describe_tape_coverage(
     }
 
 
+def _hm(clock: object) -> str:
+    text = str(clock) if clock is not None else ""
+    if "T" in text:
+        return text.split("T", 1)[1][:5]
+    return text
+
+
+def _rth_join_lines(table: pl.DataFrame) -> list[str]:
+    lines = [
+        "## RTH MNQ→NQ (descriptive)",
+        "",
+        "| opp | align | wide | move5 | rng5 | MNQΔ opp | NQΔ opp | MNQΔ al |",
+        "|---|---|---|---:|---:|---:|---:|---:|",
+    ]
+    n = 0
+    if table.height:
+        for row in table.iter_rows(named=True):
+            if not _mnq_joins_nq(row):
+                continue
+            clock = str(row["opp_clock"]) if row.get("opp_clock") is not None else None
+            if not in_rth(clock):
+                continue
+            n += 1
+            move = float(row["move_5"])
+            span = float(row["range_5"])
+            move_s = "nan" if math.isnan(move) else f"{move:.2f}"
+            span_s = "nan" if math.isnan(span) else f"{span:.2f}"
+            lines.append(
+                f"| {_hm(row['opp_clock'])} | {_hm(row['align_clock'])} | "
+                f"{row['wide_vs_median']} | {move_s} | {span_s} | "
+                f"{row['mnq_cvd_delta']} | {row['nq_cvd_delta']} | {row['align_mnq_delta']} |"
+            )
+    if n == 0:
+        lines.append("(none)")
+    lines.extend(
+        [
+            "",
+            "Not a lock. Clocks are this day's events, not copied from another day.",
+            "",
+        ]
+    )
+    return lines
+
+
 def _mnq_joins_nq(row: Mapping[str, Any]) -> bool:
     if not bool(row.get("aligned")):
         return False
@@ -467,6 +511,7 @@ def write_day_scan_report(scan: DayScan, output_dir: Path | str) -> Path:
         "",
         "Burst cuts are OOS of 2026-08-17 11:51, not a lock.",
         "",
+        *_rth_join_lines(scan.align),
     ]
     (out / "CVD_DAY.md").write_text("\n".join(lines), encoding="utf-8")
     return out
@@ -507,7 +552,14 @@ def write_cvd_day_compare_report(
         f"t_hours={a_summary.get('t_hours')} has_rth={a_summary.get('has_rth')}.",
         f"{b_label} coverage={b_summary.get('coverage_class')} "
         f"t_hours={b_summary.get('t_hours')} has_rth={b_summary.get('has_rth')}.",
-        "Same a priori defs. Short Sunday open is not an RTH match. Not a lock.",
+        (
+            "Both include RTH. Same a priori defs. Not a lock."
+            if bool(a_summary.get("has_rth"))
+            and bool(b_summary.get("has_rth"))
+            and a_summary.get("coverage_class") == "includes_rth"
+            and b_summary.get("coverage_class") == "includes_rth"
+            else "Same a priori defs. A short Sunday open is not an RTH match. Not a lock."
+        ),
         "",
         f"| metric | {a_label} | {b_label} | Δ |",
         "|---|---:|---:|---:|",
