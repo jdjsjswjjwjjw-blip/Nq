@@ -19,12 +19,12 @@ import polars as pl
 
 from nq.contracts.mbo import MboAction
 from nq.contracts.temporal import EVENT_TS, SEQUENCE
-from nq.research.mbo_sequence_mlp import assert_single_day_mbo
 from nq.research.mbo_trade_overlap import prepare_mbo_events
-from nq.research.order_lifecycle import FLEETING_NS, ULTRAFAST_NS
 
 LAYER_ID = "burst_lifetime"
 SECOND_NS: Final = 1_000_000_000
+FLEETING_NS: Final = 2 * SECOND_NS
+ULTRAFAST_NS: Final = 100_000_000
 _ADD = MboAction.ADD.value
 _CANCEL = MboAction.CANCEL.value
 _MODIFY = MboAction.MODIFY.value
@@ -210,7 +210,6 @@ def score_burst_lifetimes(
     if not windows:
         raise ValueError("windows must not be empty")
     book = prepare_mbo_events(mbo)
-    assert_single_day_mbo(book)
     last_end = max(int(w.end_ts) for w in windows)
     work = book.filter(pl.col(EVENT_TS) < last_end).sort([EVENT_TS, SEQUENCE])
     walk = _Walk(windows)
