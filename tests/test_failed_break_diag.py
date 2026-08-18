@@ -123,6 +123,29 @@ def test_stop_rules_are_predeclared(tmp_path: Path) -> None:
     assert "NQ tape is not in IDrive" in text
 
 
+def test_stop_behind_strongest_ask_wall() -> None:
+    clocks, prices, sides = _range_tape(after=[("07:05:02", int(101.25 * 1_000_000_000))])
+    trades = _t_stream(clocks, prices, sides)
+    mbo = make_stream(
+        [
+            ("A", "A", int(102.0 * 1_000_000_000), 20, 10),
+            ("A", "A", int(103.0 * 1_000_000_000), 200, 11),
+        ],
+        event_ts=[_ns("04:00:00"), _ns("04:00:01")],
+        sequence=[10, 11],
+    )
+    _, stops, _ = scan_tick_diagnostics(
+        trades, mbo, lookback=3, atr_window=3, path_ticks=3, min_votes=1, skip_open=False
+    )
+    wall = stops.filter(pl.col("rule") == "behind_strongest_wall")
+    assert wall.height == 1
+    row = wall.row(0, named=True)
+    assert row["wall_px"] == pytest.approx(103.0)
+    assert row["wall_sz"] == 200
+    assert row["sl"] == pytest.approx(103.25)
+    assert row["sl"] > row["entry"]
+
+
 def test_idrive_diag_skips_holdout(tmp_path: Path) -> None:
     clocks, prices, sides = _range_tape(after=[("07:05:02", _BASE)])
     tape = _t_stream(clocks, prices, sides)

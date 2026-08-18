@@ -765,13 +765,20 @@ def iter_idrive_session_files(mbo_root: Path | str) -> list[tuple[str, Path]]:
 
 
 def load_idrive_day(
-    path: Path, *, with_mbo: bool = False
+    path: Path,
+    *,
+    with_mbo: bool = False,
+    full_mbo: bool = False,
 ) -> tuple[pl.DataFrame, pl.DataFrame | None]:
     lf = pl.scan_parquet(path)
     names = lf.collect_schema().names()
     if "action" not in names:
         return lf.collect(), None
     action = pl.col("action").cast(pl.Utf8).str.to_uppercase()
+    if full_mbo:
+        frame = lf.collect()
+        trades = frame.filter(pl.col("action").cast(pl.Utf8).str.to_uppercase() == _TRADE)
+        return trades, frame
     keep = [_TRADE, _FILL, _CANCEL] if with_mbo else [_TRADE]
     frame = lf.filter(action.is_in(keep)).collect()
     trades = frame.filter(pl.col("action").cast(pl.Utf8).str.to_uppercase() == _TRADE)
