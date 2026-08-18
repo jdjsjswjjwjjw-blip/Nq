@@ -16,6 +16,7 @@ from typing import Any, Final
 
 import numpy as np
 import polars as pl
+from numpy.lib.stride_tricks import sliding_window_view
 
 from nq.contracts.mbo import MboAction, MboSide
 from nq.contracts.temporal import EVENT_TS
@@ -28,6 +29,7 @@ from nq.research.peak_flow import score_flow_window
 from nq.research.peak_pattern import (
     HORIZON_S,
     STRIDE_S,
+    T_RATE_MIN,
     _attach_times,
     _episode_ids,
     _features,
@@ -244,6 +246,41 @@ def _tape_imb_rate(rolled: pl.DataFrame, window_s: int, prefix: str) -> pl.DataF
     )
 
 
+def _forward_sum(x: np.ndarray, horizon: int) -> np.ndarray:
+    n = int(x.shape[0])
+    if n == 0 or horizon < 1:
+        return np.zeros(n, dtype=np.float64)
+    pad = np.concatenate([np.asarray(x, dtype=np.float64), np.zeros(horizon)])
+    view = sliding_window_view(pad[1:], horizon)[:n]
+    return np.sum(view, axis=1)
+
+
+def _fwd_imb(rolled: pl.DataFrame, horizon_slots: int, prefix: str) -> pl.DataFrame:
+    buy = _forward_sum(rolled["t_buy"].to_numpy(), horizon_slots)
+    sell = _forward_sum(rolled["t_sell"].to_numpy(), horizon_slots)
+    n_t = _forward_sum(rolled["n_t"].to_numpy(), horizon_slots)
+    tot = buy + sell
+    with np.errstate(invalid="ignore", divide="ignore"):
+        imb = np.where(tot > 0.0, (buy - sell) / tot, np.nan)
+    return rolled.select("slot").with_columns(
+        pl.Series(f"{prefix}_fwd_imbalance", imb),
+        pl.Series(f"{prefix}_fwd_n_t", n_t),
+    )
+
+
+def _horizon_grid(
+    grid: pl.DataFrame, tape: pl.DataFrame, slot_ns: int, extra: int
+) -> pl.DataFrame:
+    lo = int(grid.select(pl.col("slot").min()).item())
+    hi = int(grid.select(pl.col("slot").max()).item())
+    extra_bars = _tape_bars(tape, slot_ns)
+    if extra_bars.height:
+        lo = min(lo, int(extra_bars.select(pl.col("slot").min()).item()))
+        hi = max(hi, int(extra_bars.select(pl.col("slot").max()).item()))
+    hi += int(extra)
+    return pl.DataFrame({"slot": list(range(lo, hi + 1))})
+
+
 def _joint_mask(fill_max: float, nq_imb_min: float) -> pl.Expr:
     return (pl.col("fill_ratio") < fill_max) & (pl.col("nq_t_imbalance") > nq_imb_min)
 
@@ -255,6 +292,16 @@ def _summarize_joint(frame: pl.DataFrame, label: str) -> dict[str, Any]:
     out["mean_nq_t_rate"] = float(frame.select(pl.col("nq_t_rate").mean()).item() or 0.0)
     out["mean_nq_t_imbalance"] = float(frame.select(pl.col("nq_t_imbalance").mean()).item() or 0.0)
     out["mean_tape_t_rate"] = float(frame.select(pl.col("tape_t_rate").mean()).item() or 0.0)
+    if "nq_fwd_imbalance" in frame.columns:
+        out["mean_nq_fwd_imbalance"] = float(
+            frame.select(pl.col("nq_fwd_imbalance").mean()).item() or 0.0
+        )
+        near = frame.select(
+            (pl.col("nq_fwd_imbalance").abs() < NQ_IMB_NEAR_ZERO).cast(pl.Float64).mean()
+        ).item()
+        nonpos = frame.select((pl.col("nq_fwd_imbalance") <= 0.0).cast(pl.Float64).mean()).item()
+        out["rate_nq_fwd_near_zero"] = float(near or 0.0)
+        out["rate_nq_fwd_nonpos"] = float(nonpos or 0.0)
     return out
 
 
@@ -269,6 +316,8 @@ def _groups(
     ctrl = scored.filter(~mask)
     fill_only = scored.filter((pl.col("fill_ratio") < fill_max) & ~mask)
     nq_buy_only = scored.filter((pl.col("nq_t_imbalance") > nq_min) & ~mask)
+    busy = scored.filter(pl.col("t_rate") > T_RATE_MIN)
+    busy_ctrl = busy.filter(~mask)
     episodes = hits
     n_ep = 0
     if hits.height:
@@ -290,6 +339,7 @@ def _groups(
         "random_control": _summarize_joint(random_ctrl, "random_control"),
         "fill_only": _summarize_joint(fill_only, "fill_only"),
         "nq_buy_only": _summarize_joint(nq_buy_only, "nq_buy_only"),
+        "busy_control": _summarize_joint(busy_ctrl, "busy_control"),
     }
     return (
         hits,
@@ -300,6 +350,8 @@ def _groups(
             "n_control": ctrl.height,
             "n_fill_only": fill_only.height,
             "n_nq_buy_only": nq_buy_only.height,
+            "n_busy": busy.height,
+            "n_busy_control": busy_ctrl.height,
             "summary": summary,
             "pattern_hour_utc": _hour_utc_counts(hits),
         },
@@ -338,11 +390,18 @@ def scan_triple_pattern(
     px0 = float(sample_px["high_w"][0]) if sample_px.height else 0.0
     scored = _reversal_flags(scored, _point_unit(px0)).filter(pl.col("n_t_w") > 0)
     grid = bars.select("slot")
-    nq_feat = _tape_imb_rate(_roll_tape_on_grid(grid, nq_tape, slot_ns, n_slots), window_s, "nq")
+    nq_grid = _horizon_grid(grid, nq_tape, slot_ns, horizon_slots)
+    nq_rolled = _roll_tape_on_grid(nq_grid, nq_tape, slot_ns, n_slots)
+    nq_feat = _tape_imb_rate(nq_rolled, window_s, "nq")
     tape_feat = _tape_imb_rate(
         _roll_tape_on_grid(grid, mnq_tape, slot_ns, n_slots), window_s, "tape"
     )
-    scored = scored.join(nq_feat, on="slot", how="left").join(tape_feat, on="slot", how="left")
+    nq_fwd = _fwd_imb(nq_rolled, horizon_slots, "nq")
+    scored = (
+        scored.join(nq_feat, on="slot", how="left")
+        .join(tape_feat, on="slot", how="left")
+        .join(nq_fwd, on="slot", how="left")
+    )
     mask = _joint_mask(fill_ratio_max, nq_imb_min)
     _hits, _episodes, group = _groups(scored, mask, seed, fill_ratio_max, nq_imb_min)
     diagnostics = {
@@ -429,6 +488,7 @@ def write_triple_report(
             "random_control",
             "fill_only",
             "nq_buy_only",
+            "busy_control",
         ):
             row = summ.get(key, {})
             if not isinstance(row, Mapping) or not row:
