@@ -31,6 +31,7 @@ from nq.auction_behavior.realized_path import (
 )
 from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS
+from nq.core.session import session_date_from_ns
 from nq.orderbook.book import OrderBook
 from nq.research.cross_nq_mnq import MNQ_MULT
 from nq.research.failed_break_diag import (
@@ -114,6 +115,8 @@ def _empty() -> dict[str, Any]:
         "n_no_wall": 0,
         "n_oof_scored": 0,
         "n_oof_ge_half": 0,
+        "not_new_idrive_scan": False,
+        "oof_source": "per_day_if_present",
         "errors": [],
     }
 
@@ -561,6 +564,60 @@ def scan_year_path_wall(
     return stacked, packed
 
 
+def attach_period_path_oof(
+    table: pl.DataFrame,
+    oof: pl.DataFrame,
+    *,
+    holdout_start: str = HOLDOUT_START_DATE,
+    diagnostics: dict[str, Any] | None = None,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """يلحق ``p_y_path_further_beyond`` OOF على صفوف الجدار الموجودة. بلا مسح جديد.
+
+    لا يصفّي الكون بـ ``p`` ولا بـ ``y``. أيلول–كانون يُحذف من OOF فقط.
+    """
+
+    diag = _empty() if diagnostics is None else dict(diagnostics)
+    diag["not_new_idrive_scan"] = True
+    diag["oof_source"] = "period_join"
+    diag["holdout_start"] = holdout_start
+    if table.height == 0:
+        return table, _pack(table, diag)
+    scored = oof
+    if scored.height and "eligible_for_backtest" in scored.columns:
+        scored = scored.filter(pl.col("eligible_for_backtest"))
+    if scored.height and "prediction_is_oof" in scored.columns:
+        scored = scored.filter(pl.col("prediction_is_oof"))
+    ts_col = AVAILABILITY_TS if AVAILABILITY_TS in scored.columns else SETUP_AVAILABILITY_TS
+    if (
+        scored.height == 0
+        or ts_col not in scored.columns
+        or "p_y_path_further_beyond" not in scored.columns
+    ):
+        return table, _pack(table, diag)
+    days = [session_date_from_ns(int(t)) for t in scored[ts_col].to_list()]
+    scored = scored.with_columns(pl.Series("_oof_day", days, dtype=pl.Utf8))
+    scored = scored.filter(pl.col("_oof_day") < holdout_start)
+    pcol = scored.select(
+        pl.col(ts_col).alias("setup_ts"),
+        pl.col("p_y_path_further_beyond").alias("_p_join"),
+    ).unique(subset=["setup_ts"], keep="first")
+    work = table
+    if "p_path" in work.columns:
+        work = work.drop("p_path")
+    if "oof_ge_half" in work.columns:
+        work = work.drop("oof_ge_half")
+    work = work.join(pcol, on="setup_ts", how="left")
+    p_join = pl.col("_p_join")
+    work = work.with_columns(
+        p_join.alias("p_path"),
+        (p_join.is_finite() & (p_join >= P_PATH_MIN)).fill_null(False).alias("oof_ge_half"),
+    ).drop("_p_join")
+    packed = _pack(work, diag)
+    packed["not_new_idrive_scan"] = True
+    packed["oof_source"] = "period_join"
+    return work, packed
+
+
 def write_path_wall_exit_report(
     table: pl.DataFrame,
     diagnostics: Mapping[str, Any],
@@ -588,7 +645,10 @@ def write_path_wall_exit_report(
         f"{diagnostics.get('p_path_min_predeclared')}, not tuned) and does not select the "
         "universe. Exits stay manual. Not an overlay. Not a live tick model. "
         f"Holdout {diagnostics.get('holdout_start')} is not scanned. "
-        "NQ tape is not in IDrive MES_MBO.",
+        "NQ tape is not in IDrive MES_MBO. "
+        "Period OOF may be joined onto an existing wall table "
+        f"(not_new_idrive_scan={diagnostics.get('not_new_idrive_scan')}, "
+        f"oof_source={diagnostics.get('oof_source')}); that is not a new backtest.",
         "",
         (
             f"days={diagnostics.get('n_days')} "
@@ -636,6 +696,7 @@ def write_path_wall_exit_report(
 __all__ = [
     "LAYER_ID",
     "P_PATH_MIN",
+    "attach_period_path_oof",
     "scan_path_wall_day",
     "scan_year_path_wall",
     "write_path_wall_exit_report",

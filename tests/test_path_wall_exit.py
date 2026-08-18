@@ -13,6 +13,7 @@ import nq.research
 from nq.contracts.mbo import PRICE_SCALE
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.path_wall_exit import (
+    attach_period_path_oof,
     scan_path_wall_day,
     scan_year_path_wall,
     write_path_wall_exit_report,
@@ -72,6 +73,7 @@ def _blended(
 def test_not_exported() -> None:
     assert not hasattr(nq.research, "scan_path_wall_day")
     assert not hasattr(nq.research, "scan_year_path_wall")
+    assert not hasattr(nq.research, "attach_period_path_oof")
     assert "scan_path_wall_day" not in nq.research.__all__
 
 
@@ -180,3 +182,31 @@ def test_year_skips_holdout(tmp_path: Path) -> None:
     assert "Exits stay manual" in text
     assert "2025-09-01" in text
     assert "NQ tape is not in IDrive" in text
+
+
+def test_period_oof_join_is_not_a_new_scan() -> None:
+    blended = _blended(direction=1.0, after_low=100.5, after_high=102.0)
+    mbo = make_stream(
+        [("A", "B", int(100.0 / PRICE_SCALE), 80, 10)],
+        event_ts=[_ns("03:59:00")],
+        sequence=[10],
+    )
+    table, _ = scan_path_wall_day(blended, mbo, horizon_bars=5, day_id="2025-06-03")
+    setup_ts = int(table["setup_ts"][0])
+    holdout_ts = _ns("10:00:00") + 90 * 24 * 60 * 60 * _NS
+    oof = pl.DataFrame(
+        {
+            AVAILABILITY_TS: [setup_ts, holdout_ts],
+            "p_y_path_further_beyond": [0.81, 0.99],
+            "eligible_for_backtest": [True, True],
+            "prediction_is_oof": [True, True],
+        }
+    )
+    scored, diag = attach_period_path_oof(table, oof)
+    assert scored.height == table.height
+    assert scored["p_path"][0] == pytest.approx(0.81)
+    assert scored["oof_ge_half"][0] is True
+    assert diag["n_oof_ge_half"] == 1
+    assert diag["not_new_idrive_scan"] is True
+    assert diag["oof_source"] == "period_join"
+    assert diag["oof_ge_half"]["n"] == 1
