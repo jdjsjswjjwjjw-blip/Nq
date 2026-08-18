@@ -48,11 +48,13 @@ def test_not_exported_from_research_init() -> None:
     assert "scan_cvd_prealign" not in nq.research.__all__
     assert "scan_tape_bins" not in nq.research.__all__
     assert "scan_cvd_day" not in nq.research.__all__
+    assert "scan_hammer_wall" not in nq.research.__all__
     assert not hasattr(nq.research, "scan_cvd_opposite")
     assert not hasattr(nq.research, "scan_cvd_align_expansion")
     assert not hasattr(nq.research, "scan_cvd_prealign")
     assert not hasattr(nq.research, "scan_tape_bins")
     assert not hasattr(nq.research, "scan_cvd_day")
+    assert not hasattr(nq.research, "scan_hammer_wall")
 
 
 def test_ny_1130_windows_start_at_eleven_and_cover_after() -> None:
