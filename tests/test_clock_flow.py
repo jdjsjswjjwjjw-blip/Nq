@@ -144,7 +144,127 @@ def test_clock_report(tmp_path: Path) -> None:
     assert "mnq_mbo" in text
     assert "nq_trades" in text
     assert "No pattern lock" in text
+    assert "CVD" in text
     assert (written / "clock_sources.parquet").exists()
+
+
+def test_ny_open_five_minute_bins() -> None:
+    origin, wins = clock_windows(_DAY, "09:25:00", "09:40:00", bin_s=300)
+    assert origin == _ns("09:25:00")
+    names = [w.name for w in wins]
+    assert names[0] == "range"
+    assert names[1] == "+0-300s"
+    assert names[2] == "+300-600s"
+    assert names[3] == "+600-900s"
+    assert wins[1].start_ts == _ns("09:25:00")
+    assert wins[2].start_ts == _ns("09:30:00")
+    assert wins[3].start_ts == _ns("09:35:00")
+    assert wins[3].end_ts == _ns("09:40:00")
+    assert names[-1] == "after-0-300s"
+
+
+def test_cvd_is_cumulative_signed_size_from_session_start() -> None:
+    t0 = _ns("10:00:00")
+    t_open = _ns("11:10:00")
+    t_after = _ns("11:31:00")
+    mnq = make_stream(
+        [
+            ("T", "B", _PX, 10, 1),
+            ("T", "A", _PX, 3, 2),
+            ("T", "B", _PX, 4, 3),
+            ("T", "A", _PX_LOW, 2, 4),
+        ],
+        event_ts=[t0, t0 + 1, t_open, t_after],
+        sequence=[1, 2, 3, 4],
+    )
+    tape = make_stream(
+        [
+            ("T", "B", _PX, 10, 0),
+            ("T", "A", _PX, 3, 0),
+            ("T", "B", _PX, 4, 0),
+            ("T", "A", _PX_LOW, 2, 0),
+        ],
+        event_ts=[t0, t0 + 1, t_open, t_after],
+        sequence=[1, 2, 3, 4],
+    ).drop("order_id")
+    nq = make_stream(
+        [
+            ("T", "B", _PX, 8, 0),
+            ("T", "A", _PX, 1, 0),
+            ("T", "B", _PX, 5, 0),
+            ("T", "A", _PX, 2, 0),
+        ],
+        event_ts=[t0, t0 + 1, t_open, t_after],
+        sequence=[10, 11, 12, 13],
+    ).drop("order_id")
+    table, diag = compare_clock_range(
+        mnq, tape, nq, day=_DAY, start_clock="11:00:00", end_clock="11:30:00"
+    )
+    nq_range = next(
+        s for s in diag["sources"] if s["name"] == "range" and s["source"] == "nq_trades"
+    )
+    nq_after = next(
+        s for s in diag["sources"] if s["name"] == "after-0-300s" and s["source"] == "nq_trades"
+    )
+    mnq_range = next(
+        s for s in diag["sources"] if s["name"] == "range" and s["source"] == "mnq_mbo"
+    )
+    assert nq_range["cvd_before"] == 7
+    assert nq_range["cvd_end"] == 12
+    assert nq_range["cvd_delta"] == 5
+    assert nq_range["cvd_notional_end"] == 12 * 20.0
+    assert nq_after["cvd_before"] == 12
+    assert nq_after["cvd_end"] == 10
+    assert nq_after["cvd_delta"] == -2
+    assert mnq_range["cvd_before"] == 7
+    assert mnq_range["cvd_delta"] == 4
+    by = {r["name"]: r for r in table.iter_rows(named=True)}
+    assert by["range"]["nq_cvd_end"] == 12
+    assert diag["not_cvd_threshold"] is True
+    assert diag["cvd_origin"] == "first_T_in_day_file"
+
+
+def test_stack_bins_includes_five_minute_open_windows() -> None:
+    t_pre = _ns("09:27:00")
+    t_open = _ns("09:32:00")
+    t_late = _ns("09:37:00")
+    mnq = make_stream(
+        [("T", "B", _PX, 1, 1), ("T", "A", _PX, 1, 2), ("T", "B", _PX, 1, 3)],
+        event_ts=[t_pre, t_open, t_late],
+        sequence=[1, 2, 3],
+    )
+    tape = make_stream(
+        [("T", "B", _PX, 1, 0), ("T", "A", _PX, 1, 0), ("T", "B", _PX, 1, 0)],
+        event_ts=[t_pre, t_open, t_late],
+        sequence=[1, 2, 3],
+    ).drop("order_id")
+    nq = make_stream(
+        [("T", "B", _PX, 2, 0), ("T", "A", _PX, 2, 0), ("T", "B", _PX, 3, 0)],
+        event_ts=[t_pre, t_open, t_late],
+        sequence=[10, 11, 12],
+    ).drop("order_id")
+    _table, diag = compare_clock_range(
+        mnq,
+        tape,
+        nq,
+        day=_DAY,
+        start_clock="09:25:00",
+        end_clock="09:40:00",
+        bin_s=300,
+        stack_bins=True,
+    )
+    names = {s["name"] for s in diag["sources"]}
+    assert "+0-300s" in names
+    assert "+300-600s" in names
+    assert "+600-900s" in names
+    assert len(diag["sources"]) == 15
+    pre = next(s for s in diag["sources"] if s["name"] == "+0-300s" and s["source"] == "nq_trades")
+    opn = next(
+        s for s in diag["sources"] if s["name"] == "+300-600s" and s["source"] == "nq_trades"
+    )
+    assert pre["cvd_end"] == 2
+    assert opn["cvd_end"] == 0
+    assert opn["cvd_delta"] == -2
 
 
 def test_london_clock_is_twenty_nine_minutes() -> None:
