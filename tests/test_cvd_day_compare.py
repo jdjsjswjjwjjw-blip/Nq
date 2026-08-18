@@ -158,3 +158,5 @@ def test_compare_days_counts_and_report(tmp_path: Path) -> None:
     day_text = (written_a / "CVD_DAY.md").read_text(encoding="utf-8")
     assert "RTH MNQ→NQ" in day_text
     assert "11:00" in day_text
+    assert "move15" in day_text
+    assert "median_next15m_all_three" in a.summary

@@ -647,6 +647,7 @@ def test_tape_bins_cluster_share_higher_when_prints_bunch(tmp_path: Path) -> Non
     burst = table.filter(pl.col("clock").str.contains("11:00")).row(0, named=True)
     spread = table.filter(pl.col("clock").str.contains("11:02")).row(0, named=True)
     assert burst["busiest_inner_share"] > spread["busiest_inner_share"]
+    assert "next_move_15m" in burst
     written = write_tape_bins_report({"day60": table}, {"day60": diag}, tmp_path)
     text = (written / "CVD_BURST.md").read_text(encoding="utf-8")
     assert "Not a lock" in text
