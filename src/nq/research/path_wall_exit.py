@@ -450,7 +450,12 @@ def _pack(table: pl.DataFrame, diag: dict[str, Any]) -> dict[str, Any]:
     diag["n_directed"] = table.height
     diag["n_with_wall"] = int(table.filter(pl.col("wall_sz") > 0).height) if table.height else 0
     diag["n_no_wall"] = int(table.height - diag["n_with_wall"])
-    p = [float(x) for x in table["p_path"].to_list()] if table.height else []
+    p = []
+    if table.height:
+        for x in table["p_path"].to_list():
+            if x is None:
+                continue
+            p.append(float(x))
     diag["n_oof_scored"] = sum(1 for x in p if math.isfinite(x))
     diag["n_oof_ge_half"] = int(table.filter(pl.col("oof_ge_half")).height) if table.height else 0
     all_stats = _subset_stats(table)
@@ -609,7 +614,7 @@ def attach_period_path_oof(
     work = work.join(pcol, on="setup_ts", how="left")
     p_join = pl.col("_p_join")
     work = work.with_columns(
-        p_join.alias("p_path"),
+        p_join.cast(pl.Float64).fill_null(float("nan")).alias("p_path"),
         (p_join.is_finite() & (p_join >= P_PATH_MIN)).fill_null(False).alias("oof_ge_half"),
     ).drop("_p_join")
     packed = _pack(work, diag)
