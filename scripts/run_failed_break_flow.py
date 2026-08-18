@@ -6,6 +6,9 @@
 
     .venv/bin/python scripts/run_failed_break_flow.py year \\
       --year-dir data/runs/auction_behavior_year --output data/runs/fb_flow_year
+
+    .venv/bin/python scripts/run_failed_break_flow.py idrive \\
+      --mbo-root Restore_Data/2025 --output data/runs/fb_flow_idrive
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ if str(_ROOT) not in sys.path:
 from nq.research.failed_break_flow import (  # noqa: E402
     scan_tick_early_fail,
     scan_year_blended,
+    scan_year_idrive_tick,
     write_failed_break_flow_report,
 )
 
@@ -45,6 +49,11 @@ def main() -> None:
     year.add_argument("--year-dir", type=Path, required=True)
     year.add_argument("--output", type=Path, required=True)
     year.add_argument("--point-value", type=float, default=2.0)
+    idrive = sub.add_parser("idrive")
+    idrive.add_argument("--mbo-root", type=Path, required=True)
+    idrive.add_argument("--output", type=Path, required=True)
+    idrive.add_argument("--point-value", type=float, default=2.0)
+    idrive.add_argument("--with-mbo", action="store_true")
     args = parser.parse_args()
     if args.mode == "tick":
         _refuse_live(args.mnq_trades, args.output, args.mnq_mbo or "")
@@ -59,12 +68,23 @@ def main() -> None:
         print("load trades", flush=True)
         trades = pl.read_parquet(args.mnq_trades)
         table, diag = scan_tick_early_fail(trades, mbo, point_value=float(args.point_value))
-    else:
+    elif args.mode == "year":
         _refuse_live(args.year_dir, args.output)
         if not args.year_dir.is_dir():
             raise SystemExit(f"no year dir {args.year_dir}")
         print("scan year blended (holdout skipped)", flush=True)
         table, diag = scan_year_blended(args.year_dir, point_value=float(args.point_value))
+    else:
+        _refuse_live(args.mbo_root, args.output)
+        if not args.mbo_root.is_dir():
+            raise SystemExit(f"no IDrive root {args.mbo_root}")
+        print("scan IDrive T prints (holdout skipped, no book concat)", flush=True)
+        table, diag = scan_year_idrive_tick(
+            args.mbo_root,
+            point_value=float(args.point_value),
+            with_mbo=bool(args.with_mbo),
+            log=lambda msg: print(msg, flush=True),
+        )
     written = write_failed_break_flow_report(table, diag, args.output)
     print(
         "source",

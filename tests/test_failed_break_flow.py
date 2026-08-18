@@ -13,9 +13,11 @@ import nq.research
 from nq.contracts.temporal import AVAILABILITY_TS
 from nq.research.failed_break_flow import (
     HOLDOUT_START_DATE,
+    iter_idrive_session_files,
     scan_blended_early_fail,
     scan_tick_early_fail,
     scan_year_blended,
+    scan_year_idrive_tick,
     write_failed_break_flow_report,
 )
 from tests.mbo_factory import make_stream
@@ -50,6 +52,7 @@ def test_not_exported() -> None:
     assert "scan_tick_early_fail" not in nq.research.__all__
     assert not hasattr(nq.research, "scan_tick_early_fail")
     assert not hasattr(nq.research, "scan_year_blended")
+    assert not hasattr(nq.research, "scan_year_idrive_tick")
 
 
 def test_tick_entry_is_print_not_range_high() -> None:
@@ -198,3 +201,84 @@ def test_tick_refuses_concat_days() -> None:
     ).drop("order_id")
     with pytest.raises(ValueError, match="concatenated"):
         scan_tick_early_fail(trades)
+
+
+def _range_break_tape() -> pl.DataFrame:
+    origin = dt.datetime(_DAY.year, _DAY.month, _DAY.day, 4, 0, tzinfo=_ET)
+    clocks: list[str] = []
+    prices: list[int] = []
+    sides: list[str] = []
+    base = 100 * 1_000_000_000
+    for i in range(6):
+        stamp = origin + dt.timedelta(minutes=30 * i)
+        clocks.append(stamp.strftime("%H:%M:%S"))
+        prices.append(base)
+        sides.append("B")
+        clocks.append((stamp + dt.timedelta(minutes=1)).strftime("%H:%M:%S"))
+        prices.append(base + 1_000_000_000)
+        sides.append("B")
+    clocks.extend(["07:04:56", "07:04:58", "07:05:00", "07:05:01"])
+    prices.extend(
+        [
+            base,
+            base + 1_000_000_000,
+            int(101.5 * 1_000_000_000),
+            int(101.25 * 1_000_000_000),
+        ]
+    )
+    sides.extend(["A", "A", "A", "A"])
+    return _prints(clocks, prices, sides=sides)
+
+
+def test_idrive_year_skips_holdout_and_scans_one_file_per_day(tmp_path: Path) -> None:
+    tape = _range_break_tape()
+    june = tmp_path / "MES_MBO_2025_06"
+    sept = tmp_path / "MES_MBO_2025_09"
+    june.mkdir()
+    sept.mkdir()
+    tape.write_parquet(june / "glbx-mdp3-20250603.continuous.clean.parquet")
+    tape.write_parquet(sept / "glbx-mdp3-20250902.continuous.clean.parquet")
+    found = iter_idrive_session_files(tmp_path)
+    assert [day for day, _ in found] == ["2025-06-03", "2025-09-02"]
+    table, diag = scan_year_idrive_tick(
+        tmp_path,
+        lookback=3,
+        atr_window=3,
+        path_ticks=3,
+        min_votes=1,
+        skip_open=False,
+    )
+    assert diag["source"] == "idrive_tick"
+    assert diag["n_skipped_holdout"] == 1
+    assert diag["n_days"] == 1
+    assert diag["n_skipped_error"] == 0
+    assert table.height >= 1
+    assert table["day_id"].to_list() == ["2025-06-03"] * table.height
+    row = table.row(0, named=True)
+    assert row["entry"] == pytest.approx(101.5)
+    assert row["entry"] != pytest.approx(row["range_high"])
+
+
+def test_idrive_year_counts_concat_error_without_abort(tmp_path: Path) -> None:
+    day_a = dt.datetime(2025, 6, 3, 11, 0, tzinfo=_ET)
+    day_b = dt.datetime(2025, 6, 5, 11, 0, tzinfo=_ET)
+    bad = make_stream(
+        [("T", "B", _PX, 1, 1), ("T", "B", _PX, 1, 2)],
+        event_ts=[int(day_a.timestamp() * _NS), int(day_b.timestamp() * _NS)],
+        sequence=[1, 2],
+    )
+    month = tmp_path / "MES_MBO_2025_06"
+    month.mkdir()
+    bad.write_parquet(month / "glbx-mdp3-20250603.continuous.clean.parquet")
+    _range_break_tape().write_parquet(month / "glbx-mdp3-20250604.continuous.clean.parquet")
+    _, diag = scan_year_idrive_tick(
+        tmp_path,
+        lookback=3,
+        atr_window=3,
+        path_ticks=3,
+        min_votes=1,
+        skip_open=False,
+    )
+    assert diag["n_skipped_error"] == 1
+    assert diag["n_days"] == 1
+    assert any("concatenated" in err for err in diag["errors"])

@@ -8,6 +8,8 @@
 
 الدخول = سعر الطبعة (أو إغلاق 30ث)، ليس ``range_high``. الوقف = المستوى + ATR
 ماضٍ. ليست overlay وليست إشارة مقفلة. أيلول–كانون 2025 لا تُمس كـ holdout.
+مسار IDrive ``MES_MBO_YYYY_MM`` يُمسح يومًا بيوم من ``T`` فقط (اختياريًا ``F``/``C``
+لنسبة الملء)، بلا دفتر وبلا لصق.
 
 احذف الملف + السكربت + الاختبار للإزالة.
 """
@@ -16,7 +18,8 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+import re
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Final, Literal
 
@@ -63,6 +66,8 @@ _BID = MboSide.BID.value
 _ASK = MboSide.ASK.value
 _EPS: Final = 1e-12
 _FIXED_POINT_PRICE: Final = 1_000_000.0
+_IDRIVE_DAY: Final = re.compile(r"glbx-mdp3-(\d{8})")
+_MAX_IDRIVE_ERRORS: Final = 12
 
 _TRADE_SCHEMA: Final[dict[str, pl.DataType]] = {
     "signal_ts": pl.Int64(),
@@ -731,6 +736,119 @@ def scan_year_blended(
     return stacked, _pack_trades(stacked, diag)
 
 
+def _idrive_rank(path: Path) -> int:
+    name = path.name
+    if name.endswith(".continuous.clean.parquet") and ".mbo." not in name:
+        return 0
+    if ".mbo.continuous.clean.parquet" in name:
+        return 1
+    return 2
+
+
+def iter_idrive_session_files(mbo_root: Path | str) -> list[tuple[str, Path]]:
+    """``MES_MBO_YYYY_MM/glbx-mdp3-YYYYMMDD*.parquet`` يومًا واحدًا لكل تاريخ."""
+
+    root = Path(mbo_root)
+    by_day: dict[str, Path] = {}
+    if not root.is_dir():
+        return []
+    for path in sorted(root.glob("MES_MBO_*/glbx-mdp3-*.parquet")):
+        match = _IDRIVE_DAY.search(path.name)
+        if match is None:
+            continue
+        ymd = match.group(1)
+        day_id = f"{ymd[0:4]}-{ymd[4:6]}-{ymd[6:8]}"
+        prev = by_day.get(day_id)
+        if prev is None or _idrive_rank(path) < _idrive_rank(prev):
+            by_day[day_id] = path
+    return [(day, by_day[day]) for day in sorted(by_day)]
+
+
+def _load_idrive_day(path: Path, *, with_mbo: bool) -> tuple[pl.DataFrame, pl.DataFrame | None]:
+    lf = pl.scan_parquet(path)
+    names = lf.collect_schema().names()
+    if "action" not in names:
+        return lf.collect(), None
+    action = pl.col("action").cast(pl.Utf8).str.to_uppercase()
+    keep = [_TRADE, _FILL, _CANCEL] if with_mbo else [_TRADE]
+    frame = lf.filter(action.is_in(keep)).collect()
+    trades = frame.filter(pl.col("action").cast(pl.Utf8).str.to_uppercase() == _TRADE)
+    if not with_mbo:
+        return trades, None
+    mbo = frame.filter(pl.col("action").cast(pl.Utf8).str.to_uppercase().is_in([_FILL, _CANCEL]))
+    return trades, mbo
+
+
+def scan_year_idrive_tick(
+    mbo_root: Path | str,
+    *,
+    holdout_start: str = HOLDOUT_START_DATE,
+    point_value: float = MNQ_MULT,
+    min_votes: int = MIN_VOTES,
+    with_mbo: bool = False,
+    log: Callable[[str], None] | None = None,
+    **tick_kwargs: Any,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """ملفات IDrive اليومية قبل holdout. ``T`` يومًا بيوم، بلا لصق MBO."""
+
+    diag = _empty_diag(
+        source="idrive_tick",
+        point_value_usd=float(point_value),
+        min_votes=int(min_votes),
+        with_mbo=bool(with_mbo),
+        fill_rule="print_at_signal",
+    )
+    files = iter_idrive_session_files(mbo_root)
+    tables: list[pl.DataFrame] = []
+    n_days = 0
+    n_hold = 0
+    n_err = 0
+    n_breaks = 0
+    n_early = 0
+    errors: list[str] = []
+    units: list[str] = []
+    for day_id, path in files:
+        if day_id >= holdout_start:
+            n_hold += 1
+            continue
+        if log is not None:
+            log(f"day {day_id} {path.name}")
+        try:
+            trades, mbo = _load_idrive_day(path, with_mbo=with_mbo)
+            table, day_diag = scan_tick_early_fail(
+                trades,
+                mbo,
+                point_value=point_value,
+                min_votes=min_votes,
+                day_id=day_id,
+                **tick_kwargs,
+            )
+        except (ValueError, OSError) as exc:
+            n_err += 1
+            if len(errors) < _MAX_IDRIVE_ERRORS:
+                errors.append(f"{day_id}: {exc}")
+            continue
+        n_days += 1
+        n_breaks += int(day_diag.get("n_breaks") or 0)
+        n_early += int(day_diag.get("n_early_fail") or 0)
+        unit = day_diag.get("tape_price_unit")
+        if isinstance(unit, str):
+            units.append(unit)
+        if table.height:
+            tables.append(table)
+    stacked = pl.concat(tables, how="vertical") if tables else pl.DataFrame(schema=_TRADE_SCHEMA)
+    diag["n_days"] = n_days
+    diag["n_files"] = len(files)
+    diag["n_skipped_holdout"] = n_hold
+    diag["n_skipped_error"] = n_err
+    diag["errors"] = errors
+    diag["holdout_start"] = holdout_start
+    diag["n_breaks"] = n_breaks
+    diag["n_early_fail"] = n_early
+    diag["tape_price_units"] = sorted(set(units))
+    return stacked, _pack_trades(stacked, diag)
+
+
 def write_failed_break_flow_report(
     table: pl.DataFrame,
     diagnostics: Mapping[str, Any],
@@ -751,6 +869,7 @@ def write_failed_break_flow_report(
         "Fill is the print (or 30s close) at the signal, not `range_high`. "
         "Tick path uses last-K continuation + CVD + T imbalance + optional Fill_Ratio. "
         "Year blended uses OOF `p_y_path_further_beyond` when present. "
+        "IDrive MES_MBO days are scanned one parquet at a time (T prints; no book). "
         "The 0.94 path head is not a live tick overlay. Not a lock. "
         f"Holdout {diagnostics.get('holdout_start')} is not scanned.",
         f"source={diagnostics.get('source')} trades={diagnostics.get('n_trades')} "
@@ -782,8 +901,10 @@ def write_failed_break_flow_report(
 __all__ = [
     "HOLDOUT_START_DATE",
     "LAYER_ID",
+    "iter_idrive_session_files",
     "scan_blended_early_fail",
     "scan_tick_early_fail",
     "scan_year_blended",
+    "scan_year_idrive_tick",
     "write_failed_break_flow_report",
 ]
