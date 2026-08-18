@@ -15,8 +15,10 @@ from nq.research.clock_flow import (
     clock_to_ns,
     clock_windows,
     compare_clock_range,
+    scan_cvd_align_expansion,
     scan_cvd_opposite,
     write_clock_report,
+    write_cvd_align_expansion_report,
     write_cvd_opposite_report,
 )
 from nq.research.mbo_sequence_mlp import assert_single_day_mbo
@@ -38,7 +40,9 @@ def _ns(clock: str) -> int:
 
 def test_not_exported_from_research_init() -> None:
     assert "scan_cvd_opposite" not in nq.research.__all__
+    assert "scan_cvd_align_expansion" not in nq.research.__all__
     assert not hasattr(nq.research, "scan_cvd_opposite")
+    assert not hasattr(nq.research, "scan_cvd_align_expansion")
 
 
 def test_ny_1130_windows_start_at_eleven_and_cover_after() -> None:
@@ -390,3 +394,141 @@ def test_cvd_opposite_report(tmp_path: Path) -> None:
     text = (written / "CVD_OPPOSITE.md").read_text(encoding="utf-8")
     assert "ΔCVD opposite" in text
     assert (written / "cvd_delta_opposite.parquet").exists()
+
+
+def _tape_like(mnq: pl.DataFrame) -> pl.DataFrame:
+    return mnq.drop("order_id")
+
+
+def test_strong_opposite_then_align_flags_wide_range() -> None:
+    quiet = _ns("10:51:00")
+    opp = _ns("11:01:00")
+    align = _ns("11:06:00")
+    px = _PX
+    px_r = _PX + 1_000_000_000
+    px_w = _PX + 4_000_000_000
+    mnq = make_stream(
+        [
+            ("T", "B", px, 2, 1),
+            ("T", "B", px_r, 2, 2),
+            ("T", "A", px, 500, 3),
+            ("T", "A", px_r, 20, 4),
+            ("T", "B", px, 30, 5),
+            ("T", "B", px_w, 30, 6),
+        ],
+        event_ts=[quiet, quiet + _NS, opp, opp + _NS, align, align + _NS],
+        sequence=[1, 2, 3, 4, 5, 6],
+    )
+    nq = make_stream(
+        [
+            ("T", "B", px, 2, 0),
+            ("T", "B", px, 2, 0),
+            ("T", "B", px, 10, 0),
+            ("T", "B", px, 10, 0),
+            ("T", "B", px, 8, 0),
+            ("T", "B", px, 8, 0),
+        ],
+        event_ts=[quiet, quiet + _NS, opp, opp + _NS, align, align + _NS],
+        sequence=[10, 11, 12, 13, 14, 15],
+    ).drop("order_id")
+    table, diag = scan_cvd_align_expansion(
+        mnq,
+        _tape_like(mnq),
+        nq,
+        bin_s=300,
+        strong_mnq=500,
+        strong_nq=80,
+    )
+    assert diag["not_pattern"] is True
+    assert table.height == 1
+    row = table.row(0, named=True)
+    assert row["aligned"] is True
+    assert row["mnq_cvd_delta"] < 0
+    assert row["nq_cvd_delta"] > 0
+    assert row["align_mnq_delta"] > 0
+    assert row["align_nq_delta"] > 0
+    assert row["wide_vs_median"] is True
+    assert row["moved_with_align"] is True
+    assert row["moved_with_nq_opp"] is True
+
+
+def test_strong_opposite_align_without_wide_range() -> None:
+    quiet = _ns("10:51:00")
+    opp = _ns("11:01:00")
+    align = _ns("11:06:00")
+    px = _PX
+    px_r = _PX + 1_000_000_000
+    mnq = make_stream(
+        [
+            ("T", "B", px, 2, 1),
+            ("T", "B", px_r, 2, 2),
+            ("T", "A", px, 500, 3),
+            ("T", "A", px_r, 20, 4),
+            ("T", "B", px, 30, 5),
+            ("T", "B", px_r, 30, 6),
+        ],
+        event_ts=[quiet, quiet + _NS, opp, opp + _NS, align, align + _NS],
+        sequence=[1, 2, 3, 4, 5, 6],
+    )
+    nq = make_stream(
+        [
+            ("T", "B", px, 2, 0),
+            ("T", "B", px, 2, 0),
+            ("T", "B", px, 10, 0),
+            ("T", "B", px, 10, 0),
+            ("T", "B", px, 8, 0),
+            ("T", "B", px, 8, 0),
+        ],
+        event_ts=[quiet, quiet + _NS, opp, opp + _NS, align, align + _NS],
+        sequence=[10, 11, 12, 13, 14, 15],
+    ).drop("order_id")
+    table, diag = scan_cvd_align_expansion(
+        mnq,
+        _tape_like(mnq),
+        nq,
+        bin_s=300,
+        strong_mnq=500,
+        strong_nq=80,
+    )
+    assert diag["n_aligned"] == 1
+    assert table.row(0, named=True)["wide_vs_median"] is False
+
+
+def test_zero_delta_is_not_alignment(tmp_path: Path) -> None:
+    opp = _ns("11:01:00")
+    zero = _ns("11:06:00")
+    align = _ns("11:11:00")
+    mnq = make_stream(
+        [
+            ("T", "A", _PX, 500, 1),
+            ("T", "B", _PX, 1, 2),
+            ("T", "A", _PX, 1, 3),
+            ("T", "B", _PX, 20, 4),
+        ],
+        event_ts=[opp, zero, zero + _NS, align],
+        sequence=[1, 2, 3, 4],
+    )
+    nq = make_stream(
+        [
+            ("T", "B", _PX, 9, 0),
+            ("T", "B", _PX, 4, 0),
+        ],
+        event_ts=[opp, align],
+        sequence=[10, 11],
+    ).drop("order_id")
+    table, diag = scan_cvd_align_expansion(
+        mnq,
+        _tape_like(mnq),
+        nq,
+        bin_s=300,
+        strong_mnq=500,
+        strong_nq=80,
+    )
+    assert table.height == 1
+    row = table.row(0, named=True)
+    assert row["aligned"] is True
+    assert int(row["time_to_align_s"]) == 300
+    written = write_cvd_align_expansion_report(table, diag, tmp_path)
+    text = (written / "CVD_ALIGN_EXPANSION.md").read_text(encoding="utf-8")
+    assert "Not a pattern lock" in text
+    assert (written / "cvd_align_expansion.parquet").exists()

@@ -2,6 +2,7 @@
 
 مثل أول قياس للقمة: اختلال ``T`` وملء ``F`` على MNQ، وشريط ``T`` لكل عقد.
 CVD تراكمي من أول ``T`` في ملف اليوم: ``Σ(حجم شراء − حجم بيع)``. ليس عتبة.
+بعد تعاكس قوي: أول شريحة ΔCVD متوافق ثم مدى السعر — وصف لا إشارة.
 بلا عتبة نمط وبلا إشارة. NQ بلا MBO فـ Fill لا يُختلق.
 ``price_lo`` اختياري: قاع الشريحة + أول لمسة للمستوى بعد بداية الشريحة.
 احذف الملف + السكربت + الاختبار للإزالة.
@@ -35,6 +36,10 @@ LAYER_ID = "clock_flow"
 BIN_S: Final = 60
 AFTER_S: Final = HORIZON_S
 TZ_NAME: Final = "America/New_York"
+STRONG_MNQ_ABS: Final = 500
+STRONG_NQ_ABS: Final = 80
+EXPAND_MULT: Final = 1.5
+ALIGN_HORIZON_BINS: Final = 3
 _TRADE = MboAction.TRADE.value
 _BID = MboSide.BID.value
 _ASK = MboSide.ASK.value
@@ -88,6 +93,31 @@ def _cvd_before(index: _CvdIndex, ts: int) -> int:
 
 def _signs_opposite(left: int, right: int) -> bool:
     return (left > 0 and right < 0) or (left < 0 and right > 0)
+
+
+def _signs_same(left: int, right: int) -> bool:
+    return (left > 0 and right > 0) or (left < 0 and right < 0)
+
+
+def _sign(value: int | float) -> int:
+    if value > 0:
+        return 1
+    if value < 0:
+        return -1
+    return 0
+
+
+def _window_first_last(index: _CvdIndex, start_ts: int, end_ts: int) -> tuple[float, float]:
+    lo, hi = _span(index, start_ts, end_ts)
+    if hi <= lo:
+        return float("nan"), float("nan")
+    return float(index.price[lo]), float(index.price[hi - 1])
+
+
+def _finite_range(lo: float, hi: float) -> float:
+    if math.isnan(lo) or math.isnan(hi):
+        return float("nan")
+    return float(hi - lo)
 
 
 def _span(index: _CvdIndex, start_ts: int, end_ts: int) -> tuple[int, int]:
@@ -669,15 +699,344 @@ def write_cvd_opposite_report(
     return out
 
 
+def _median_bin_range(table: pl.DataFrame) -> float:
+    if table.height == 0:
+        return float("nan")
+    spans = [
+        _finite_range(float(row["min_px"]), float(row["max_px"]))
+        for row in table.iter_rows(named=True)
+    ]
+    finite = [x for x in spans if not math.isnan(x)]
+    if not finite:
+        return float("nan")
+    return float(np.median(np.asarray(finite, dtype=np.float64)))
+
+
+def _price_path(
+    index: _CvdIndex,
+    start_ts: int,
+    end_ts: int,
+) -> tuple[float, float, float, float]:
+    first, last = _window_first_last(index, start_ts, end_ts)
+    lo, hi = _window_extrema(index, start_ts, end_ts)
+    move = float("nan") if math.isnan(first) or math.isnan(last) else float(last - first)
+    span = _finite_range(lo, hi)
+    return first, last, move, span
+
+
+def _align_diag(
+    *,
+    bin_s: int,
+    tz_name: str,
+    strong_mnq: int,
+    strong_nq: int,
+    expand_mult: float,
+    horizon_bins: int,
+    median_range: float,
+    opp_diag: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "layer": LAYER_ID,
+        "bin_s": bin_s,
+        "tz": tz_name,
+        "strong_mnq": strong_mnq,
+        "strong_nq": strong_nq,
+        "expand_mult": expand_mult,
+        "horizon_bins": horizon_bins,
+        "median_bin_range": median_range,
+        "n_strong_episodes": 0,
+        "n_aligned": 0,
+        "n_wide_vs_median": 0,
+        "n_moved_with_align": 0,
+        "n_moved_with_nq_opp": 0,
+        "not_pattern": True,
+        "not_cvd_threshold": True,
+        "not_lstm": True,
+        "not_live_overlay": True,
+        "not_backtest": True,
+        "n_bins": opp_diag.get("n_bins", 0),
+        "n_delta_opposite": opp_diag.get("n_delta_opposite", 0),
+    }
+
+
+def _next_opposite_chunk(rows: list[dict[str, Any]], start: int) -> tuple[int, int]:
+    row = rows[start]
+    mnq_s = _sign(int(row["mnq_cvd_delta"]))
+    nq_s = _sign(int(row["nq_cvd_delta"]))
+    stop = start
+    while (
+        stop + 1 < len(rows)
+        and bool(rows[stop + 1]["delta_opposite"])
+        and int(rows[stop + 1]["start_ts"]) == int(rows[stop]["end_ts"])
+        and _sign(int(rows[stop + 1]["mnq_cvd_delta"])) == mnq_s
+        and _sign(int(rows[stop + 1]["nq_cvd_delta"])) == nq_s
+    ):
+        stop += 1
+    return start, stop
+
+
+def _first_aligned(rows: list[dict[str, Any]], after: int) -> dict[str, Any] | None:
+    for later in rows[after + 1 :]:
+        if _signs_same(int(later["mnq_cvd_delta"]), int(later["nq_cvd_delta"])):
+            return later
+    return None
+
+
+def _blank_episode(
+    chunk: list[dict[str, Any]],
+    *,
+    cvd_mbo: _CvdIndex,
+    median_range: float,
+    nq_s: int,
+    max_mnq: int,
+    max_nq: int,
+) -> dict[str, Any]:
+    start_ts = int(chunk[0]["start_ts"])
+    end_ts = int(chunk[-1]["end_ts"])
+    opp_first, opp_last, opp_move, opp_span = _price_path(cvd_mbo, start_ts, end_ts)
+    opp_lo = min(float(item["min_px"]) for item in chunk)
+    opp_hi = max(float(item["max_px"]) for item in chunk)
+    return {
+        "opp_clock": chunk[0]["clock"],
+        "opp_end_clock": chunk[-1]["end_clock"],
+        "opp_start_ts": start_ts,
+        "opp_end_ts": end_ts,
+        "n_bins": len(chunk),
+        "mnq_cvd_delta": sum(int(item["mnq_cvd_delta"]) for item in chunk),
+        "nq_cvd_delta": sum(int(item["nq_cvd_delta"]) for item in chunk),
+        "max_abs_mnq": max_mnq,
+        "max_abs_nq": max_nq,
+        "nq_opp_sign": nq_s,
+        "opp_first_px": opp_first,
+        "opp_last_px": opp_last,
+        "opp_move": opp_move,
+        "opp_range": opp_span if not math.isnan(opp_span) else _finite_range(opp_lo, opp_hi),
+        "aligned": False,
+        "align_clock": None,
+        "align_end_clock": None,
+        "align_start_ts": None,
+        "time_to_align_s": None,
+        "align_mnq_delta": None,
+        "align_nq_delta": None,
+        "align_sign": None,
+        "align_first_px": float("nan"),
+        "align_last_px": float("nan"),
+        "move_5": float("nan"),
+        "range_5": float("nan"),
+        "move_h": float("nan"),
+        "range_h": float("nan"),
+        "wide_vs_median": False,
+        "moved_with_align": False,
+        "moved_with_nq_opp": False,
+        "median_bin_range": median_range,
+    }
+
+
+def _fill_align(
+    record: dict[str, Any],
+    aligned: Mapping[str, Any],
+    *,
+    cvd_mbo: _CvdIndex,
+    bin_s: int,
+    expand_mult: float,
+    horizon_bins: int,
+    median_range: float,
+    nq_s: int,
+) -> None:
+    align_start = int(aligned["start_ts"])
+    align_end = int(aligned["end_ts"])
+    horizon_end = align_start + int(horizon_bins) * int(bin_s) * SECOND_NS
+    a_first, a_last, move_5, range_5 = _price_path(cvd_mbo, align_start, align_end)
+    horizon = _price_path(cvd_mbo, align_start, horizon_end)
+    align_sign = _sign(int(aligned["mnq_cvd_delta"]))
+    wide = (
+        not math.isnan(range_5)
+        and not math.isnan(median_range)
+        and median_range > 0
+        and range_5 >= float(expand_mult) * median_range
+    )
+    record.update(
+        {
+            "aligned": True,
+            "align_clock": aligned["clock"],
+            "align_end_clock": aligned["end_clock"],
+            "align_start_ts": align_start,
+            "time_to_align_s": (align_start - int(record["opp_end_ts"])) // SECOND_NS,
+            "align_mnq_delta": int(aligned["mnq_cvd_delta"]),
+            "align_nq_delta": int(aligned["nq_cvd_delta"]),
+            "align_sign": align_sign,
+            "align_first_px": a_first,
+            "align_last_px": a_last,
+            "move_5": move_5,
+            "range_5": range_5,
+            "move_h": horizon[2],
+            "range_h": horizon[3],
+            "wide_vs_median": wide,
+            "moved_with_align": (not math.isnan(move_5)) and _sign(move_5) == align_sign,
+            "moved_with_nq_opp": (not math.isnan(move_5)) and _sign(move_5) == nq_s,
+        }
+    )
+
+
+def scan_cvd_align_expansion(
+    mnq_mbo: pl.DataFrame,
+    mnq_trades: pl.DataFrame,
+    nq_trades: pl.DataFrame,
+    *,
+    bin_s: int = 300,
+    tz_name: str = TZ_NAME,
+    strong_mnq: int = STRONG_MNQ_ABS,
+    strong_nq: int = STRONG_NQ_ABS,
+    expand_mult: float = EXPAND_MULT,
+    horizon_bins: int = ALIGN_HORIZON_BINS,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """بعد حلقة ΔCVD متعاكسة قوية: أول توافق ثم مدى السعر. ليس نمطًا."""
+
+    bins, opp_diag = scan_cvd_opposite(
+        mnq_mbo,
+        mnq_trades,
+        nq_trades,
+        bin_s=bin_s,
+        tz_name=tz_name,
+    )
+    book = prepare_mbo_events(mnq_mbo)
+    cvd_mbo = _cvd_index(book)
+    median_range = _median_bin_range(bins)
+    diagnostics = _align_diag(
+        bin_s=bin_s,
+        tz_name=tz_name,
+        strong_mnq=strong_mnq,
+        strong_nq=strong_nq,
+        expand_mult=expand_mult,
+        horizon_bins=horizon_bins,
+        median_range=median_range,
+        opp_diag=opp_diag,
+    )
+    if bins.height == 0 or cvd_mbo.ts.size == 0:
+        return pl.DataFrame(), diagnostics
+    rows = list(bins.sort("start_ts").iter_rows(named=True))
+    episodes: list[dict[str, Any]] = []
+    idx = 0
+    while idx < len(rows):
+        if not bool(rows[idx]["delta_opposite"]):
+            idx += 1
+            continue
+        start, stop = _next_opposite_chunk(rows, idx)
+        chunk = rows[start : stop + 1]
+        idx = stop + 1
+        max_mnq = max(abs(int(item["mnq_cvd_delta"])) for item in chunk)
+        max_nq = max(abs(int(item["nq_cvd_delta"])) for item in chunk)
+        if max_mnq < strong_mnq and max_nq < strong_nq:
+            continue
+        record = _blank_episode(
+            chunk,
+            cvd_mbo=cvd_mbo,
+            median_range=median_range,
+            nq_s=_sign(int(chunk[0]["nq_cvd_delta"])),
+            max_mnq=max_mnq,
+            max_nq=max_nq,
+        )
+        aligned = _first_aligned(rows, stop)
+        if aligned is not None:
+            _fill_align(
+                record,
+                aligned,
+                cvd_mbo=cvd_mbo,
+                bin_s=bin_s,
+                expand_mult=expand_mult,
+                horizon_bins=horizon_bins,
+                median_range=median_range,
+                nq_s=int(record["nq_opp_sign"]),
+            )
+        episodes.append(record)
+    table = pl.DataFrame(episodes)
+    diagnostics["n_strong_episodes"] = table.height
+    if table.height:
+        diagnostics["n_aligned"] = int(table.filter(pl.col("aligned")).height)
+        diagnostics["n_wide_vs_median"] = int(table.filter(pl.col("wide_vs_median")).height)
+        diagnostics["n_moved_with_align"] = int(table.filter(pl.col("moved_with_align")).height)
+        diagnostics["n_moved_with_nq_opp"] = int(table.filter(pl.col("moved_with_nq_opp")).height)
+    return table, diagnostics
+
+
+def write_cvd_align_expansion_report(
+    table: pl.DataFrame,
+    diagnostics: Mapping[str, Any],
+    output_dir: Path | str,
+) -> Path:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    if table.height:
+        table.write_parquet(out / "cvd_align_expansion.parquet")
+    (out / "summary.json").write_text(
+        json.dumps(dict(diagnostics), indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    lines = [
+        "# Strong opposite CVD → first MNQ/NQ align → price range",
+        "",
+        f"bin_s={diagnostics.get('bin_s')} strong_mnq={diagnostics.get('strong_mnq')} "
+        f"strong_nq={diagnostics.get('strong_nq')} expand_mult={diagnostics.get('expand_mult')} "
+        f"horizon_bins={diagnostics.get('horizon_bins')} "
+        f"median_bin_range={diagnostics.get('median_bin_range')}.",
+        f"strong_episodes={diagnostics.get('n_strong_episodes')} "
+        f"aligned={diagnostics.get('n_aligned')} "
+        f"wide_vs_median={diagnostics.get('n_wide_vs_median')} "
+        f"moved_with_align={diagnostics.get('n_moved_with_align')} "
+        f"moved_with_nq_opp={diagnostics.get('n_moved_with_nq_opp')}.",
+        "Strong = |MNQ Δ|>=strong_mnq or |NQ Δ|>=strong_nq. Align = first later bin "
+        "with the same nonzero ΔCVD sign. Wide = align 5m range >= expand_mult × median "
+        "5m range. Not a pattern lock.",
+        "",
+        "| opp | align | wait_s | MNQΔ opp | NQΔ opp | MNQΔ al | NQΔ al | "
+        "opp rng | rng 5 | rng h | move 5 | wide | with_align | with_nq_opp |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|",
+    ]
+
+    def _num(value: object, digits: int = 2) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            return str(value)
+        number = float(value)
+        if math.isnan(number):
+            return "nan"
+        return f"{number:.{digits}f}"
+
+    if table.height:
+        for row in table.iter_rows(named=True):
+            opp = str(row["opp_clock"])[11:16] + "–" + str(row["opp_end_clock"])[11:16]
+            align = ""
+            if row["aligned"]:
+                align = str(row["align_clock"])[11:16] + "–" + str(row["align_end_clock"])[11:16]
+            wait = "" if row["time_to_align_s"] is None else str(row["time_to_align_s"])
+            lines.append(
+                f"| {opp} | {align} | {wait} | {row['mnq_cvd_delta']} | {row['nq_cvd_delta']} | "
+                f"{row['align_mnq_delta'] if row['align_mnq_delta'] is not None else ''} | "
+                f"{row['align_nq_delta'] if row['align_nq_delta'] is not None else ''} | "
+                f"{_num(row['opp_range'])} | {_num(row['range_5'])} | {_num(row['range_h'])} | "
+                f"{_num(row['move_5'])} | {row['wide_vs_median']} | {row['moved_with_align']} | "
+                f"{row['moved_with_nq_opp']} |"
+            )
+    (out / "CVD_ALIGN_EXPANSION.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
 __all__ = [
     "AFTER_S",
+    "ALIGN_HORIZON_BINS",
     "BIN_S",
+    "EXPAND_MULT",
     "LAYER_ID",
+    "STRONG_MNQ_ABS",
+    "STRONG_NQ_ABS",
     "clock_to_ns",
     "clock_windows",
     "compare_clock_range",
     "et_clock_to_ns",
+    "scan_cvd_align_expansion",
     "scan_cvd_opposite",
     "write_clock_report",
+    "write_cvd_align_expansion_report",
     "write_cvd_opposite_report",
 ]
