@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""تدفق MNQ/NQ على شريحة ساعة نيويورك.
+"""تدفق MNQ/NQ على شريحة ساعة مسمّاة.
 
     .venv/bin/python scripts/run_clock_flow.py \\
-      --day 2026-08-17 --start 11:00:00 --end 11:30:00 \\
+      --day 2026-08-17 --start 03:12:00 --end 03:41:00 \\
+      --tz Europe/London --price-lo 30259 \\
       --mnq-mbo path/to/mnq.mbo.clean.parquet \\
       --mnq-trades path/to/mnq.trades.clean.parquet \\
       --nq-trades path/to/nq.trades.clean.parquet \\
@@ -25,10 +26,12 @@ from nq.research.clock_flow import compare_clock_range, write_clock_report  # no
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="NY clock window MNQ/NQ flow")
+    parser = argparse.ArgumentParser(description="Named-clock MNQ/NQ three-tape flow")
     parser.add_argument("--day", type=str, required=True)
-    parser.add_argument("--start", type=str, required=True, help="America/New_York HH:MM:SS")
-    parser.add_argument("--end", type=str, required=True, help="America/New_York HH:MM:SS")
+    parser.add_argument("--start", type=str, required=True, help="HH:MM:SS in --tz")
+    parser.add_argument("--end", type=str, required=True, help="HH:MM:SS in --tz")
+    parser.add_argument("--tz", type=str, default="America/New_York")
+    parser.add_argument("--price-lo", type=float, default=None, help="named trough/level")
     parser.add_argument("--mnq-mbo", type=Path, required=True)
     parser.add_argument("--mnq-trades", type=Path, required=True)
     parser.add_argument("--nq-trades", type=Path, required=True)
@@ -59,6 +62,8 @@ def main() -> None:
         start_clock=args.start,
         end_clock=args.end,
         bin_s=args.bin_s,
+        tz_name=args.tz,
+        price_lo=args.price_lo,
     )
     diagnostics["mnq_mbo_path"] = str(args.mnq_mbo)
     diagnostics["mnq_trades_path"] = str(args.mnq_trades)
@@ -90,8 +95,12 @@ def main() -> None:
         diagnostics.get("range_nq_imbalance"),
         "MNQ fill",
         diagnostics.get("range_mnq_fill_ratio"),
-        "after NQ imb",
-        diagnostics.get("after_nq_imbalance"),
+        "low",
+        diagnostics.get("low_clock"),
+        diagnostics.get("low_px"),
+        "level",
+        diagnostics.get("price_lo"),
+        diagnostics.get("level_clock"),
         flush=True,
     )
     print(f"wrote {written}", flush=True)
