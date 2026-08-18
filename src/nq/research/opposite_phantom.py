@@ -407,6 +407,10 @@ def opposite_phantom(
     prints = prints.with_row_index("t_i")
     sample_px = float(prints.select(pl.col("price").first()).item())
     tick = infer_tick_size(sample_px)
+    pad = float(tick_band) * float(tick)
+    closed_band = closed.filter(
+        (pl.col("price") >= price_lo - pad) & (pl.col("price") <= price_hi + pad)
+    )
     adds = book.filter((pl.col("action") == _ADD) & (pl.col("order_id") > 0))
     mean_sz = (
         float(mean_add_size)
@@ -415,7 +419,7 @@ def opposite_phantom(
     )
     large_min = mean_sz * float(size_mult)
     window_frame, per_print_frame = _score_windows(
-        prints, closed, windows, tick, tick_band, large_min
+        prints, closed_band, windows, tick, tick_band, large_min
     )
     diag_base.update(
         {
@@ -423,6 +427,7 @@ def opposite_phantom(
             "mean_add_size": mean_sz,
             "large_min_size": large_min,
             "n_t": prints.height,
+            "n_closed_in_band": closed_band.height,
         }
     )
     return window_frame, per_print_frame, diag_base
