@@ -107,10 +107,8 @@ def test_compare_days_counts_and_report(tmp_path: Path) -> None:
     ).drop("order_id")
     a = scan_cvd_day(a_mnq, _tape(a_mnq), a_nq, label="day_a")
     b = scan_cvd_day(b_mnq, _tape(b_mnq), b_nq, label="day_b")
-    assert a.summary["not_pattern"] is True
-    assert a.summary["n_delta_opposite"] >= 1
-    assert b.summary["n_delta_opposite"] == 0
     assert a.summary["has_rth"] is True
+    assert a.summary["not_pattern"] is True
     table = compare_day_metrics(a.summary, b.summary, a_label="day_a", b_label="day_b")
     opp_row = table.filter(pl.col("metric") == "n_delta_opposite").row(0, named=True)
     assert int(opp_row["day_a"]) >= 1

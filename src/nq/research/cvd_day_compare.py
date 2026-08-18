@@ -115,14 +115,14 @@ def _t_span(frame: pl.DataFrame, tz_name: str) -> dict[str, Any]:
     trades = frame.filter(pl.col("action") == _TRADE)
     if trades.height == 0:
         return {"n_t": 0, "tmin": None, "tmax": None, "hours": 0.0, "has_rth": False}
-    lo = int(trades[EVENT_TS].min())
-    hi = int(trades[EVENT_TS].max())
+    lo = int(trades.select(pl.col(EVENT_TS).min()).item())
+    hi = int(trades.select(pl.col(EVENT_TS).max()).item())
     clock = (
         pl.from_epoch(pl.col(EVENT_TS).cast(pl.Int64), time_unit="ns")
         .dt.replace_time_zone("UTC")
         .dt.convert_time_zone(tz_name)
     )
-    minutes = clock.dt.hour() * 60 + clock.dt.minute()
+    minutes = clock.dt.hour().cast(pl.Int32) * 60 + clock.dt.minute().cast(pl.Int32)
     rth_lo = RTH_START.hour * 60 + RTH_START.minute
     rth_hi = RTH_END.hour * 60 + RTH_END.minute
     has_rth = trades.filter((minutes >= rth_lo) & (minutes < rth_hi)).height > 0
