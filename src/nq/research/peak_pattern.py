@@ -189,6 +189,21 @@ def _episode_ids(slots: np.ndarray) -> np.ndarray:
     return ids
 
 
+def _hour_utc_counts(frame: pl.DataFrame) -> dict[str, int]:
+    if frame.height == 0:
+        return {}
+    hours = (
+        frame.select(pl.from_epoch(pl.col("end_ts"), time_unit="ns").dt.hour().alias("h"))
+        .group_by("h")
+        .len()
+        .sort("h")
+    )
+    return {
+        str(int(h)): int(n)
+        for h, n in zip(hours["h"].to_list(), hours["len"].to_list(), strict=True)
+    }
+
+
 def _rate(frame: pl.DataFrame, col: str) -> float:
     if frame.height == 0:
         return float("nan")
@@ -261,11 +276,14 @@ def scan_peak_pattern(
     if n_rand > 0 and ctrl.height > 0:
         idx = np.sort(rng.choice(ctrl.height, size=n_rand, replace=False))
         random_ctrl = ctrl.gather(idx.tolist())
+    busy = scored.filter(pl.col("t_rate") > t_rate_min)
+    busy_ctrl = busy.filter(~mask)
     summary = {
         "pattern_windows": _summarize_group(hits, "pattern_windows"),
         "pattern_episodes": _summarize_group(episodes, "pattern_episodes"),
         "control": _summarize_group(ctrl, "control"),
         "random_control": _summarize_group(random_ctrl, "random_control"),
+        "busy_control": _summarize_group(busy_ctrl, "busy_control"),
     }
     named: dict[str, Any] = {}
     if price_hi is not None:
@@ -310,6 +328,9 @@ def scan_peak_pattern(
         "n_pattern_windows": hits.height,
         "n_pattern_episodes": n_ep,
         "n_control": ctrl.height,
+        "n_busy_control": busy_ctrl.height,
+        "n_busy": busy.height,
+        "pattern_hour_utc": _hour_utc_counts(hits),
         "summary": summary,
         "named_peak": named,
         "note_50bps": (
@@ -352,6 +373,7 @@ def write_pattern_report(
         "",
         "Locked from PR #116: T_rate>50, T_imb>0.10, ask_hit<0.20.",
         "Outcome is the 5 minutes after window end only. Not a live overlay.",
+        "busy_control = T_rate above the lock, but imb/fill fail (activity-matched).",
         "",
     ]
     if isinstance(summ, Mapping):
@@ -359,7 +381,13 @@ def write_pattern_report(
             "| group | n | med pts | med frac | 10bps | 50bps | 100bps | 20pt | 40pt |",
             "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
-        for key in ("pattern_windows", "pattern_episodes", "control", "random_control"):
+        for key in (
+            "pattern_windows",
+            "pattern_episodes",
+            "control",
+            "random_control",
+            "busy_control",
+        ):
             row = summ.get(key, {})
             if not isinstance(row, Mapping) or not row:
                 continue
@@ -379,6 +407,9 @@ def write_pattern_report(
     peak = diagnostics.get("named_peak", {})
     if isinstance(peak, Mapping) and peak:
         lines += ["", f"Named peak window: {json.dumps(peak, default=str)}"]
+    hours = diagnostics.get("pattern_hour_utc", {})
+    if isinstance(hours, Mapping) and hours:
+        lines += ["", f"Pattern windows by UTC hour: {json.dumps(dict(hours), default=str)}"]
     lines.append("")
     (out / "PEAK_PATTERN.md").write_text("\n".join(lines), encoding="utf-8")
     return out

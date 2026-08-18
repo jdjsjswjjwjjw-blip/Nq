@@ -103,6 +103,9 @@ def test_pattern_then_drop_counts_reversal_control_does_not_need_pattern() -> No
     assert diag["summary"]["pattern_episodes"]["rate_100bps"] > 0
     ctrl = diag["summary"]["control"]
     assert ctrl["n"] >= 1
+    assert "busy_control" in diag["summary"]
+    assert diag["n_busy_control"] >= 0
+    assert "pattern_hour_utc" in diag
 
 
 def test_named_peak_is_scored_without_using_future_in_pattern() -> None:
