@@ -18,10 +18,12 @@ from nq.research.clock_flow import (
     scan_cvd_align_expansion,
     scan_cvd_opposite,
     scan_cvd_prealign,
+    scan_tape_bins,
     write_clock_report,
     write_cvd_align_expansion_report,
     write_cvd_opposite_report,
     write_cvd_prealign_report,
+    write_tape_bins_report,
 )
 from nq.research.mbo_sequence_mlp import assert_single_day_mbo
 from nq.research.opposite_phantom import SECOND_NS
@@ -44,9 +46,11 @@ def test_not_exported_from_research_init() -> None:
     assert "scan_cvd_opposite" not in nq.research.__all__
     assert "scan_cvd_align_expansion" not in nq.research.__all__
     assert "scan_cvd_prealign" not in nq.research.__all__
+    assert "scan_tape_bins" not in nq.research.__all__
     assert not hasattr(nq.research, "scan_cvd_opposite")
     assert not hasattr(nq.research, "scan_cvd_align_expansion")
     assert not hasattr(nq.research, "scan_cvd_prealign")
+    assert not hasattr(nq.research, "scan_tape_bins")
 
 
 def test_ny_1130_windows_start_at_eleven_and_cover_after() -> None:
@@ -580,3 +584,36 @@ def test_prealign_minutes_cover_flip_and_are_not_a_pattern(tmp_path: Path) -> No
     text = (written / "CVD_PREALIGN.md").read_text(encoding="utf-8")
     assert "not a lock" in text
     assert (written / "cvd_prealign_minutes.parquet").exists()
+
+
+def test_tape_bins_cluster_share_higher_when_prints_bunch(tmp_path: Path) -> None:
+    burst_ts = [_ns("11:00:00") + i * 80_000_000 for i in range(8)]
+    spread_ts = [_ns("11:02:00") + i * 7 * _NS for i in range(8)]
+    mnq = make_stream(
+        [("T", "B", _PX, 1, i + 1) for i in range(16)],
+        event_ts=[*burst_ts, *spread_ts],
+        sequence=list(range(1, 17)),
+    )
+    nq = make_stream(
+        [("T", "B", _PX, 1, 0), ("T", "B", _PX, 1, 0)],
+        event_ts=[burst_ts[0], spread_ts[0]],
+        sequence=[100, 101],
+    ).drop("order_id")
+    table, diag = scan_tape_bins(
+        mnq,
+        _tape_like(mnq),
+        nq,
+        bin_s=60,
+        start_ts=_ns("11:00:00"),
+        end_ts=_ns("11:03:00"),
+        inner_s=5,
+        label="test",
+    )
+    assert diag["not_burst_lock"] is True
+    assert diag["not_pattern"] is True
+    burst = table.filter(pl.col("clock").str.contains("11:00")).row(0, named=True)
+    spread = table.filter(pl.col("clock").str.contains("11:02")).row(0, named=True)
+    assert burst["busiest_inner_share"] > spread["busiest_inner_share"]
+    written = write_tape_bins_report({"day60": table}, {"day60": diag}, tmp_path)
+    text = (written / "CVD_BURST.md").read_text(encoding="utf-8")
+    assert "Not a lock" in text
